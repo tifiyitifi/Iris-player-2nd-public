@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
@@ -30,6 +31,7 @@ class OpenLinkBottomSheet extends HookWidget {
       if (url.value.isNotEmpty &&
           RegExp(r'^(http://|https://)').hasMatch(url.value)) {
         useAppStore().updateAutoPlay(true);
+        PlaybackProviderRegistry.beginExternalFeed();
         usePlayQueueStore().update(
           playQueue: [
             PlayQueueItem(

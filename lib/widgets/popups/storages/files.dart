@@ -8,6 +8,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/globals.dart' as globals;
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/progress.dart';
 import 'package:iris/models/storages/storage.dart';
@@ -104,6 +105,7 @@ class Files extends HookWidget {
 
       await useAppStore().updateAutoPlay(true);
       await useAppStore().updateShuffle(false);
+      PlaybackProviderRegistry.beginExternalFeed();
       await usePlayQueueStore().update(playQueue: playQueue, index: newIndex);
     }
 

@@ -2,6 +2,7 @@ import 'package:iris/features/background_playback/controller/background_playback
 import 'package:iris/features/background_playback/services/background_lock_mapping.dart';
 import 'package:iris/features/background_playback/services/segment_edit_guard.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
+import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_progress.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/playback/legacy_queue_provider.dart';
@@ -89,6 +90,23 @@ class PlaybackProviderRegistry {
   static void _resetEphemerals() {
     AbLoopEngine.instance.reset();
     useKeySequenceBufferStore().close();
+  }
+
+  /// Declares that playback is now fed from OUTSIDE the scenario provider (the
+  /// history popup, the storage / media-library browsers, open file, open link,
+  /// a share intent, SAF) and drops the scenario's published position.
+  ///
+  /// The bar title's `[cur/total]` prefix reads a process-wide signal that only
+  /// `ScenarioPlaybackProvider.play` resets, so a feed that bypasses the
+  /// provider left the previous stream's numbers behind and the title kept
+  /// claiming them over unrelated content. Every "I am taking the player now"
+  /// declaration must go through here.
+  ///
+  /// The hand-off also drops context OWNERSHIP ([clear] resets both), which is
+  /// what hands the prefix to the incoming feed's own queue index — an
+  /// external list feed carries a meaningful one that must not stay suppressed.
+  static void beginExternalFeed() {
+    PlaybackPositionSignal.instance.clear();
   }
 
   /// Steps to the previous/next entry, feeding the player when running in
@@ -226,6 +244,11 @@ class PlaybackProviderRegistry {
       return;
     }
     _resetEphemerals();
+    // The foreground feed is going away, so the scenario's published position
+    // no longer describes anything on screen. Deliberately AFTER the 副音
+    // early-return above: stopping the background runtime leaves the foreground
+    // scenario position valid.
+    beginExternalFeed();
     await useAppStore().updateAutoPlay(false);
     // Virtual Media session: unload feed + flush anchor + deactivate.
     if (VirtualMediaController.instance.isActive) {
@@ -264,10 +287,23 @@ class PlaybackProviderRegistry {
       }
       return;
     }
-    var entry = await scenario.current();
-    entry ??= await scenario.itemAt(0);
+    final entry = await scenario.current();
     if (entry != null) {
+      // Same shape as ScenarioPlaybackProvider.play: a stop cleared the
+      // position, and advanceEntry alone does not re-publish it — without this
+      // "stop → play" would show no prefix at all instead of a stale one.
+      await scenario.establishCurrentPosition();
       await scenario.advanceEntry(entry, autoplay: autoplay);
+      return;
+    }
+    // No persisted current item ("file lost → play from the top"): there is
+    // nothing to locate, and `establishCurrentPosition` would resolve that
+    // absent occurrence and publish nothing — the bar title would sit prefix-
+    // less while item 0 plays. The fallback's own index is known outright, so
+    // book it directly instead of looking it up.
+    final head = await scenario.itemAt(0);
+    if (head != null) {
+      await scenario.advanceTo(head, index: 0, autoplay: autoplay);
     }
   }
 
@@ -359,7 +395,13 @@ class PlaybackProviderRegistry {
       return true;
     }
     if (_useScenarioMode) {
-      await scenario.advanceEntry(entries[targetIndex], autoplay: keepPlaying);
+      // The roll is a real jump, so the target gets BOOKED (current item +
+      // published position) the way the scenario's own next()/previous() book
+      // theirs before handing the entry over. `advanceEntry` only feeds, which
+      // left the bar title — and the next next/prev, which steps from the
+      // current item — describing the file the roll left.
+      await scenario.advanceTo(entries[targetIndex],
+          index: targetIndex, autoplay: keepPlaying);
       return true;
     }
 

@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:iris/features/app_update/model/update_check_result.dart';
+import 'package:iris/features/app_update/view/update_flow.dart';
 import 'package:iris/info.dart';
 import 'package:iris/models/db/app_database_holder.dart';
 import 'package:iris/utils/get_latest_release.dart';
@@ -44,6 +46,10 @@ class About extends HookWidget {
     final packageInfo = useState<PackageInfo?>(null);
     final noNewVersion = useState(false);
 
+    // Asked once: the packaging of a build cannot change while the app runs,
+    // and a disk call has no business in `build`.
+    final msix = useMemoized(isMsix);
+
     useEffect(() {
       void getPackageInfo() async => packageInfo.value = await PackageInfo.fromPlatform();
 
@@ -77,13 +83,24 @@ class About extends HookWidget {
             subtitle: Text(t.app_overview_about_tile_sub),
             onTap: () => showAppOverviewDialog(context),
           ),
-          // 二次开发条件限制，不提供检查更新功能；如需更新请自行获取新版本
-          // （本项目为开源软件）。占位 tile 保持 About 段语义完整。
-          ListTile(
-            leading: const Icon(Icons.update_disabled_rounded),
-            title: Text(t.about_update_title),
-            subtitle: Text(t.about_update_body),
-          ),
+          // Manual update check. There is no startup poll: a slow or blocked
+          // network must never delay the app, so a check only runs when the
+          // user asks for one.
+          //
+          // A Microsoft Store package is sandboxed (its binaries live in the
+          // read-only WindowsApps folder) and its .msix is not published to the
+          // release, so it can neither self-update nor be replaced by a
+          // download. Offering the row there would be a dead end, so it is
+          // hidden outright. A platform the updater cannot serve is the same
+          // dead end, and it is hidden the same way rather than shown and then
+          // told it has nothing to offer.
+          if (!msix && currentUpdatePlatform() != UpdatePlatform.unsupported)
+            ListTile(
+              leading: const Icon(Icons.update_rounded),
+              title: Text(t.check_update),
+              subtitle: Text(t.check_update_note),
+              onTap: () => runUpdateCheckFlow(context),
+            ),
           // 恒为 false：作者名与上游仓库入口（检查更新 / 源码 / 作者）
           // 在此隐藏。禁止删除本分支代码——作为兼容保留；改回 true
           // 可恢复上游 About 入口。

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:iris/features/webdav_discovery/model/discovery_models.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_discovery.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_group.dart';
@@ -8,16 +10,32 @@ import 'package:iris/utils/logger.dart';
 
 final _log = AreaKeyLog(LogKeys.webdav);
 
+/// How often a give-up is noticed while discovery has nothing to say.
+///
+/// Only a bound on the wait, never a cost: the poll does no work of its own,
+/// and a stream that keeps talking is still cut off at the next event.
+const _giveUpPollInterval = Duration(milliseconds: 200);
+
 /// Result of resolving a wildcard WebDAV entry to a concrete host.
 ///
 /// Carries the failure classification (and a raw technical detail) so a caller
 /// can explain an unreachable storage instead of silently doing nothing.
 class WebDavResolveOutcome {
-  const WebDavResolveOutcome({this.host, this.errorKind, this.errorDetail});
+  const WebDavResolveOutcome({
+    this.host,
+    this.errorKind,
+    this.errorDetail,
+    this.cancelled = false,
+  });
 
   final String? host;
   final StorageListErrorKind? errorKind;
   final String? errorDetail;
+
+  /// The caller stopped waiting (see [WebDavConnectCoordinator.resolveDetailed]'s
+  /// `stillWanted`). Deliberately distinct from a failure: nothing is known
+  /// about the far end, so the caller must neither report one nor navigate.
+  final bool cancelled;
 
   bool get ok => host != null;
 }
@@ -57,9 +75,21 @@ class WebDavConnectCoordinator {
   }
 
   /// [resolveAndRecord] with the failure classification kept.
+  ///
+  /// [onCandidate] receives every host about to be probed, so a caller can
+  /// surface live progress instead of an opaque wait (a full subnet scan is
+  /// unbounded). [stillWanted] is polled on a timer AND between events:
+  /// returning false abandons the run — which cancels the discovery stream and
+  /// stops the in-flight probes — and reports
+  /// [WebDavResolveOutcome.cancelled] rather than a failure nobody is waiting
+  /// for. The timer is what makes that true while discovery is silent, which
+  /// it is for whole seconds at a time: the SSDP collection window, a probe
+  /// waiting out its timeout, a subnet with nothing to say.
   Future<WebDavResolveOutcome> resolveDetailed(
     WebDAVStorage storage, {
     Set<String> excludeHosts = const <String>{},
+    void Function(DiscoveryCandidate candidate)? onCandidate,
+    bool Function()? stillWanted,
   }) async {
     final store = useStorageStore();
     final excluded = <String>{
@@ -70,9 +100,32 @@ class WebDavConnectCoordinator {
     StorageListErrorKind? errorKind;
     String? errorDetail;
 
+    final events = StreamIterator<DiscoveryEvent>(
+      _discovery.resolve(storage, excludedHosts: excluded),
+    );
+    var abandoned = false;
+    final ticker = stillWanted == null
+        ? null
+        : Timer.periodic(_giveUpPollInterval, (_) {
+            if (!abandoned && stillWanted() == false) {
+              abandoned = true;
+              // Cancelling is what tells the discovery to stop taking new work.
+              unawaited(events.cancel());
+            }
+          });
+
     try {
-      await for (final event
-          in _discovery.resolve(storage, excludedHosts: excluded)) {
+      while (await events.moveNext()) {
+        if (abandoned || stillWanted?.call() == false) {
+          abandoned = true;
+          await events.cancel();
+          break;
+        }
+        final event = events.current;
+        if (event is DiscoveryCandidate) {
+          onCandidate?.call(event);
+          continue;
+        }
         if (event is DiscoveryAmbiguous) {
           _log.w(
             'resolve(${storage.id}): ${event.hosts.length} hosts authenticated '
@@ -103,8 +156,11 @@ class WebDavConnectCoordinator {
         errorKind: StorageListErrorKind.unknown,
         errorDetail: e.toString(),
       );
+    } finally {
+      ticker?.cancel();
     }
 
+    if (abandoned) return const WebDavResolveOutcome(cancelled: true);
     return WebDavResolveOutcome(errorKind: errorKind, errorDetail: errorDetail);
   }
 }

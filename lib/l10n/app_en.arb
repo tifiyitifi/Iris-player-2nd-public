@@ -2376,6 +2376,16 @@
       "endpoint": {"type": "String"}
     }
   },
+  "storage_connecting": "Connecting to {endpoint}",
+  "@storage_connecting": {
+    "placeholders": {
+      "endpoint": {"type": "String"}
+    }
+  },
+  "storage_connecting_stage_cached": "Trying saved addresses",
+  "storage_connecting_stage_ssdp": "Looking for devices on the network",
+  "storage_connecting_stage_scan": "Scanning the network",
+  "storage_connecting_listing": "Reading the folder",
   "storage_connect_offline_note": "Library entries stay greyed and browse-only until it reconnects.",
   "storage_offline": "Offline",
   "storage_lost_play_blocked": "Storage is offline. Library entries are greyed and cannot be played until it reconnects.",
@@ -2581,8 +2591,73 @@
   "app_overview_desktop_body": "Aligned as closely as possible with PotPlayer keys and habits.\nA PotPlayer-style keyboard scheme, offering only functions that are actually supported.",
   "app_overview_phone_title": "Phone one-handed control (landscape ring dial + screen gestures)",
   "app_overview_phone_body": "One-handed optimization for landscape video; the Gesture guide lets the layout be viewed and edited.\nA one-handed ring-dial scrubber keeps everything controllable with one hand.",
-  "about_update_title": "Update notes",
-  "about_update_body": "Redistribution terms restrict update checks; fetch new versions yourself (open-source project).",
+  "check_update_note": "Update checks and downloads depend on reaching GitHub.",
+  "update_checking": "Checking for updates…",
+  "update_result_up_to_date_title": "Up to date",
+  "update_result_up_to_date_body": "You are on the latest version, v{version}.",
+  "@update_result_up_to_date_body": {
+    "placeholders": {
+      "version": {"type": "String"}
+    }
+  },
+  "update_result_ahead_title": "Newer than the public release",
+  "update_result_ahead_body": "You are running v{current}, which is newer than the public v{latest}. This build may be a development or pre-release version.",
+  "@update_result_ahead_body": {
+    "placeholders": {
+      "current": {"type": "String"},
+      "latest": {"type": "String"}
+    }
+  },
+  "update_result_failed_title": "Update check failed",
+  "update_failed_network": "IRIS could not open the release page on GitHub. Check that you are online. If you are on a work or school network, that page may be blocked — a phone hotspot usually works.",
+  "update_failed_timeout": "IRIS asked GitHub for the newest version, but the answer never came in time. This usually means a slow connection. Please try again.",
+  "update_failed_rate_limited": "Too many people are checking for updates at the same time, so GitHub asked IRIS to wait its turn. Please try again in a few minutes — trying again sooner only makes the wait longer.",
+  "update_failed_forbidden": "GitHub would not show IRIS the release page, most likely because it thought the app was a robot. Please try again later, or open the release page in your browser.",
+  "update_failed_server_error": "GitHub's release page is having problems right now. Nothing is wrong with your device or your copy of IRIS — please try again in a few minutes.",
+  "update_failed_http": "GitHub's release page answered in a way IRIS did not understand. Please try again, or open the release page in your browser.",
+  "update_failed_unreadable_page": "IRIS reached the release page, but no version number was on it — it may have been a sign-in screen, or a page put in the way by your network. Please try again, or open the release page in your browser.",
+  "update_failed_malformed_tag": "The newest release on GitHub is named \"{tag}\", which is not a version number, so IRIS cannot tell whether it is newer than what you have.",
+  "@update_failed_malformed_tag": {
+    "placeholders": {
+      "tag": {"type": "String"}
+    }
+  },
+  "update_failed_no_asset": "The new release has no package for this platform.",
+  "update_failed_unsupported": "Update checks are not available on this platform.",
+  "update_retry": "Retry",
+  "update_copy_link": "Copy link",
+  "update_link_copied": "Link copied",
+  "update_download_progress": "{done} of {total}",
+  "@update_download_progress": {
+    "placeholders": {
+      "done": {"type": "String"},
+      "total": {"type": "String"}
+    }
+  },
+  "update_download_verifying": "Verifying…",
+  "update_download_interrupted": "The download was interrupted.",
+  "update_download_size_mismatch": "The downloaded file does not match the expected size.",
+  "update_download_hash_mismatch": "The downloaded file does not match the published checksum.",
+  "update_download_not_writable": "IRIS could not write the update package to this device. There may not be enough free space, or its update folder may not be writable. Nothing is wrong with your network — free up some space and try again.",
+  "update_install_confirm_title": "Install update",
+  "update_install_confirm_body": "IRIS will close and the update will be installed. The current playback position is saved first.",
+  "update_install_failed": "The installer could not be started.",
+  "update_install_needs_permission_title": "Permission required",
+  "update_install_needs_permission_body": "Allow IRIS to install this update, then try again.",
+  "update_open_settings": "Open settings",
+  "update_will_download": "Will download: {name} · {size}",
+  "@update_will_download": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "size": {"type": "String"}
+    }
+  },
+  "update_use_universal": "Use the universal package ({size})",
+  "@update_use_universal": {
+    "placeholders": {
+      "size": {"type": "String"}
+    }
+  },
   "set_legacy_compat_row": "Legacy compatibility",
   "set_storage_info_title": "Data & password storage",
   "set_storage_info_sub": "Data location, password handling & security notes",

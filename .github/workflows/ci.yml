@@ -225,6 +225,15 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Publish checksums
+        if: steps.check-tag.outputs.exists == 'false'
+        # Ships a SHA256SUMS.txt next to the packages so the in-app updater can
+        # verify a download it did not fetch over a channel it controls. Written
+        # in `sha256sum` format (digest, two spaces, file name).
+        run: |
+          cd artifacts
+          sha256sum IRIS-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Release
         if: steps.check-tag.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
@@ -236,6 +245,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
+            artifacts/SHA256SUMS.txt
             artifacts/IRIS-windows-*.zip
             artifacts/IRIS-windows-installer-*.exe
             artifacts/IRIS-android-universal-v*.apk

@@ -9,7 +9,16 @@
   while strictly preserving the 'userdata' directory.
 #>
 
-param()
+param(
+    # Path to the update package. Supplied when the app drives the update (it
+    # has already downloaded and verified the file); omitted for a manual run,
+    # where the script asks for the path.
+    [string]$ZipPath,
+
+    # Runs without asking anything. The app uses this because nobody is at the
+    # keyboard once it has handed over: every prompt below takes its default.
+    [switch]$NonInteractive
+)
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -29,7 +38,18 @@ function Invoke-PausePrompt {
     # Keeps the window open on error paths for both direct .ps1 runs and the
     # .bat wrapper (which has no trailing `pause` by design).
     # Read-Host is available in both Windows PowerShell 5.1 and PowerShell 7.
+    if ($NonInteractive) { return }
     [void](Read-Host "按回车键继续")
+}
+
+function Read-Answer {
+    param([string]$Prompt, [string]$Default)
+    # A non-interactive run takes the default instead of blocking on stdin: the
+    # app launches this window detached and nobody will ever answer.
+    if ($NonInteractive) { return $Default }
+    $answer = Read-Host $Prompt
+    if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
+    return $answer
 }
 
 $exeDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -45,6 +65,18 @@ Write-ColorText "========================================" "Magenta"
 Write-Host ""
 
 while ($true) {
+    if (-not [string]::IsNullOrWhiteSpace($ZipPath)) {
+        # App-driven: the package is already downloaded and verified, so skip the
+        # interactive discovery loop entirely.
+        $cleanInput = $ZipPath.Trim().Trim('"')
+        if (-not (Test-Path -LiteralPath $cleanInput)) {
+            Write-ColorText "错误: 指定的更新包不存在: $cleanInput" "Red"
+            exit 1
+        }
+        $zipPath = (Resolve-Path -LiteralPath $cleanInput).Path
+        break
+    }
+
     $rawInput = Read-Host "请粘贴新版 ZIP 文件的完整路径或所在目录"
     if ([string]::IsNullOrWhiteSpace($rawInput)) {
         Write-Host "输入为空，请重新输入。" -ForegroundColor Yellow
@@ -106,7 +138,7 @@ while ($true) {
     $l1Match = ($fileName -like "IRIS-windows*.zip" -or $fileName -like "IRIS*.zip")
     if (-not $l1Match) {
         Write-Host "警告: 文件名 '$fileName' 不符合标准命名 (IRIS-windows*.zip / IRIS*.zip)" -ForegroundColor Yellow
-        $choice = Read-Host "是否仍要使用此 ZIP 包继续？(Y/N)"
+        $choice = Read-Answer "是否仍要使用此 ZIP 包继续？(Y/N)" "N"
         if ($choice -ne 'Y' -and $choice -ne 'y') {
             continue
         }
@@ -268,7 +300,7 @@ if ($cmp -lt 0) {
     Write-ColorText "检测到版本升级 ($curVer -> $newVer)，将自动执行更新。" "Green"
 } elseif ($cmp -eq 0) {
     Write-Host "当前已是相同版本 ($curVer)。" -ForegroundColor Yellow
-    $ans = Read-Host "确认要重新覆盖安装吗？(Y/N)"
+    $ans = Read-Answer "确认要重新覆盖安装吗？(Y/N)" "N"
     if ($ans -ne 'Y' -and $ans -ne 'y') {
         Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         exit 0
@@ -276,7 +308,7 @@ if ($cmp -lt 0) {
 } else {
     Write-ColorText "警告: 正在进行版本降级 ($curVer -> $newVer)！" "Yellow"
     Write-ColorText "降级可能导致数据库 Schema 版本不兼容，系统将自动对 userdata 进行时间戳备份。" "Yellow"
-    $ans = Read-Host "确认要强制降级并更新吗？(Y/N)"
+    $ans = Read-Answer "确认要强制降级并更新吗？(Y/N)" "N"
     if ($ans -ne 'Y' -and $ans -ne 'y') {
         Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         exit 0
@@ -311,11 +343,21 @@ if ($LASTEXITCODE -ge 8) {
 # Cleanup temp
 Remove-Item -Path $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 
+# The app downloads the package outside the install folder (its own support
+# directory), so it is not covered by the robocopy exclusion list above. Drop it
+# once the files are in place, otherwise every update leaves a full-size ZIP
+# behind in the user's profile.
+if (-not $zipPath.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase)) {
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+}
+
 Write-ColorText "========================================" "Green"
 Write-ColorText "   IRIS 更新成功完成！                  " "Green"
 Write-ColorText "========================================" "Green"
 
-$startNow = Read-Host "是否立即启动 IRIS？(Y/N)"
+# Relaunch: the default in a non-interactive (app-driven) run, because the user
+# asked for the update from inside the app and expects IRIS back.
+$startNow = Read-Answer "是否立即启动 IRIS？(Y/N)" "Y"
 if ($startNow -eq 'Y' -or $startNow -eq 'y') {
     Start-Process (Join-Path $exeDir "iris.exe")
 }

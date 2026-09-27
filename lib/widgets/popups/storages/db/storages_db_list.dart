@@ -17,7 +17,8 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_action
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_connect_coordinator.dart';
-import 'package:iris/features/webdav_discovery/view/webdav_connect_error_dialog.dart';
+import 'package:iris/features/webdav_discovery/view/gated_webdav_connect.dart';
+import 'package:iris/features/webdav_discovery/view/webdav_connect_loop.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart';
@@ -263,33 +264,72 @@ class StoragesDbList extends HookWidget {
     /// scan that can only fail — and the scanner never mistakes a failed
     /// listing for an empty directory (which would purge the snapshot).
     Future<void> startStorageScan(BuildContext context, Storage storage) async {
-      final pre = await prepareStorageForScan(storage);
+      // Captured before the first attempt: the surface must land on the root
+      // navigator even if the popup hosting this goes away.
+      final navigator = Navigator.of(context, rootNavigator: true);
+      final endpoint = scanEndpointLabel(storage);
+
+      final ConnectLoopResult<Storage> loop = await runRemoteConnectLoop(
+        attempt: (_) async {
+          // The caller went away while the failure dialog was up: there is no
+          // longer anything to connect for.
+          if (!context.mounted) return const ConnectAttempt<Storage>.abandoned();
+          final connect = GatedWebDavConnect(endpoint: endpoint)..arm(navigator: navigator);
+          late final ScanPreflightResult pre;
+          try {
+            pre = await prepareStorageForScan(
+              storage,
+              onProgress: connect.report,
+              stillWanted: () => !connect.cancelled,
+            );
+          } on Object {
+            // Never leave the surface behind on an unexpected throw.
+            await connect.succeed();
+            connect.dispose();
+            rethrow;
+          }
+          // The user gave up: nothing is known about the far end, so neither a
+          // failure dialog nor a scan, and the entry keeps its current state.
+          // The surface was pushed on the root navigator, so a gone caller is
+          // not a gone window: cancel() is what takes it down.
+          if (!context.mounted || pre.cancelled) {
+            await connect.cancel();
+            connect.dispose();
+            return const ConnectAttempt<Storage>.abandoned();
+          }
+
+          if (!pre.ok) {
+            store.markDisconnected(storage.id);
+            // The gate is handed over undisposed: the loop turns this same
+            // window into the failure dialog instead of stacking one on it.
+            return ConnectAttempt<Storage>.failed(
+              errorKind: pre.errorKind,
+              errorDetail: pre.errorDetail,
+              endpoint: endpoint,
+              gate: connect,
+            );
+          }
+
+          final target = pre.storage!;
+          store.markConnected(target.id);
+          final gaveUp = await connect.succeed();
+          connect.dispose();
+          // Dismissed mid-connect: drop the result rather than acting on it.
+          if (gaveUp) return const ConnectAttempt<Storage>.abandoned();
+          return ConnectAttempt<Storage>.connected(target);
+        },
+        onEdit: () async {
+          if (!context.mounted) return;
+          await editStorage(context, storage);
+        },
+        onRunningChanged: (running) => isHandlingTap.value = running,
+      );
+
+      // Only a connected attempt is allowed to go on; the other two endings
+      // have already left the entry exactly as it was.
+      if (!loop.connected) return;
       if (!context.mounted) return;
-
-      if (!pre.ok) {
-        store.markDisconnected(storage.id);
-        final action = await showWebdavConnectFailure(
-          context,
-          endpoint: scanEndpointLabel(storage),
-          errorKind: pre.errorKind,
-          errorDetail: pre.errorDetail,
-        );
-        if (!context.mounted) return;
-        switch (action) {
-          case WebdavConnectAction.retry:
-            await startStorageScan(context, storage);
-            break;
-          case WebdavConnectAction.edit:
-            await editStorage(context, storage);
-            break;
-          case WebdavConnectAction.cancel:
-            break;
-        }
-        return;
-      }
-
-      final target = pre.storage!;
-      store.markConnected(target.id);
+      final target = loop.value!;
 
       // Scan options gate: null = cancelled by the user.
       final probeEnabled =
@@ -391,82 +431,113 @@ class StoragesDbList extends HookWidget {
       );
     }
 
-    late Future<void> Function(BuildContext context, WebDAVStorage storage)
-        handleWebDAVTap;
-
-    /// Explains first, then lets the user choose. The storage browser stays
-    /// closed on failure and the last resolved host is kept (the coordinator
-    /// only persists on success); the entry is marked disconnected so the
-    /// library page can render its snapshot greyed.
-    Future<void> showConnectFailure(
-      BuildContext ctx,
-      WebDAVStorage storage,
-      WebDavResolveOutcome failure,
-    ) async {
-      store.markDisconnected(storage.id);
-      if (!ctx.mounted) return;
-      final endpoint = storage.resolvedHost ?? storage.host;
-      final action = await showWebdavConnectFailure(
-        ctx,
-        endpoint: endpoint,
-        errorKind: failure.errorKind,
-        errorDetail: failure.errorDetail,
-      );
-      if (!ctx.mounted) return;
-      switch (action) {
-        case WebdavConnectAction.retry:
-          await handleWebDAVTap(ctx, storage);
-          break;
-        case WebdavConnectAction.edit:
-          await showWebDAVDialog(ctx, storage: storage);
-          break;
-        case WebdavConnectAction.cancel:
-          break;
-      }
-    }
-
-    handleWebDAVTap = (BuildContext context, WebDAVStorage storage) async {
+    /// Connects a wildcard WebDAV entry: resolves a concrete host, then lets
+    /// the user retry / edit / cancel for as long as they keep choosing retry.
+    ///
+    /// The retry lives in [runRemoteConnectLoop] instead of re-entering this
+    /// function. A re-entry comes back through the `isHandlingTap` guard above,
+    /// which the previous attempt is still holding at that point, so the retry
+    /// the user just asked for returned without dialling anything.
+    Future<void> handleWebDAVTap(BuildContext context, WebDAVStorage storage) async {
       if (isHandlingTap.value) return; // ignore repeated taps
 
-      isHandlingTap.value = true;
-      try {
-        final ctx = context;
-        if (!isIPv4WildcardHost(storage.host)) {
-          store.updateCurrentPath(storage.basePath);
-          store.updateCurrentStorage(storage);
-          return;
-        }
+      final ctx = context;
+      if (!isIPv4WildcardHost(storage.host)) {
+        store.updateCurrentPath(storage.basePath);
+        store.updateCurrentStorage(storage);
+        return;
+      }
 
-        // Legacy strategy: the dialog owns the serial isolate scan.
-        if (scanMode == WebDavScanMode.legacyScan) {
+      // Legacy strategy: the dialog owns the serial isolate scan.
+      if (scanMode == WebDavScanMode.legacyScan) {
+        isHandlingTap.value = true;
+        try {
           await showWebDAVDialog(ctx, storage: storage); //  await!
-          return;
+        } finally {
+          isHandlingTap.value = false; // always release lock
         }
+        return;
+      }
 
-        // Discovery strategy: cached hosts → SSDP → subnet scan. A failure
-        // keeps the last resolved host and stays on the list: the edit form
-        // opens only when the user explicitly chooses it.
-        final outcome =
-            await webdavConnectCoordinator().resolveDetailed(storage);
-        if (!ctx.mounted) return;
+      // Discovery strategy: cached hosts → SSDP → subnet scan. A failure
+      // keeps the last resolved host and stays on the list: the edit form
+      // opens only when the user explicitly chooses it, and the entry is
+      // marked disconnected so the library page renders its snapshot greyed.
+      //
+      // The resolve is unbounded (a wide pattern scans a whole subnet), so it
+      // runs behind a progress surface: silent while a cached host answers,
+      // naming the host being tried once it does not, and cancellable
+      // throughout — an unbounded wait the user cannot escape is what made
+      // this tap look like a dead button.
+      //
+      // Captured before the first await so the surface still lands on the root
+      // navigator if this popup is gone by the time it appears.
+      final navigator = Navigator.of(ctx, rootNavigator: true);
 
-        if (outcome.ok) {
-          store.markConnected(storage.id);
-          final resolved =
-              (store.findById(storage.id) as WebDAVStorage?) ?? storage;
-          store.updateCurrentPath(resolved.basePath);
-          store.updateCurrentStorage(resolved);
-        } else {
-          await showConnectFailure(ctx, storage, outcome);
-        }
+      final ConnectLoopResult<WebDAVStorage> loop;
+      try {
+        loop = await runRemoteConnectLoop<WebDAVStorage>(
+          attempt: (_) async {
+            // The caller went away while the failure dialog was up: there is no
+            // longer anything to connect for.
+            if (!ctx.mounted) return const ConnectAttempt<WebDAVStorage>.abandoned();
+            final gate = GatedWebDavConnect(endpoint: storage.host)
+              ..arm(navigator: navigator);
+
+            final outcome = await webdavConnectCoordinator().resolveDetailed(
+              storage,
+              onCandidate: gate.report,
+              stillWanted: () => !gate.cancelled,
+            );
+            // The user dismissed the progress surface, or the caller went away:
+            // nothing is known about the far end, so do not navigate and do not
+            // report a failure.
+            if (!ctx.mounted || outcome.cancelled) {
+              await gate.cancel();
+              gate.dispose();
+              return const ConnectAttempt<WebDAVStorage>.abandoned();
+            }
+
+            if (outcome.ok) {
+              final gaveUp = await gate.succeed();
+              gate.dispose();
+              if (gaveUp) return const ConnectAttempt<WebDAVStorage>.abandoned();
+              return ConnectAttempt<WebDAVStorage>.connected(storage);
+            }
+
+            store.markDisconnected(storage.id);
+            // The gate is handed over undisposed: the loop turns this same
+            // window into the failure dialog instead of stacking one on it.
+            return ConnectAttempt<WebDAVStorage>.failed(
+              errorKind: outcome.errorKind,
+              errorDetail: outcome.errorDetail,
+              // The address that was actually dialled, not the pattern the
+              // progress surface named.
+              endpoint: storage.resolvedHost ?? storage.host,
+              gate: gate,
+            );
+          },
+          onEdit: () async {
+            if (!ctx.mounted) return;
+            await showWebDAVDialog(ctx, storage: storage);
+          },
+          onRunningChanged: (running) => isHandlingTap.value = running,
+        );
       } on Object catch (e, s) {
         // Never a silent no-op: an async failure here used to vanish into an
         // unhandled future error (the shape of "tap does nothing").
         _log.e('webdav tile tap failed: $e\n$s');
-      } finally {
         isHandlingTap.value = false; // always release lock
+        return;
       }
-    };
+      isHandlingTap.value = false; // always release lock
+
+      if (!loop.connected || !ctx.mounted) return;
+      store.markConnected(storage.id);
+      final resolved = (store.findById(storage.id) as WebDAVStorage?) ?? storage;
+      store.updateCurrentPath(resolved.basePath);
+      store.updateCurrentStorage(resolved);
+    }
 
     String? buildSubtitle(Storage storage) {
       switch (storage.type) {

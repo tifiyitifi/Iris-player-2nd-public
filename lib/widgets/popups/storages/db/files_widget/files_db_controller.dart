@@ -9,6 +9,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
   import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/storage.dart';
@@ -186,6 +187,7 @@ FilesDbController useFilesDbController(
 
     await appStore.updateAutoPlay(true);
     await appStore.updateShuffle(false);
+    PlaybackProviderRegistry.beginExternalFeed();
 
     await playQueueStore.update(
       playQueue: queue,

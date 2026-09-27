@@ -6,6 +6,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/progress.dart';
 import 'package:iris/models/storages/local.dart';
@@ -58,6 +59,7 @@ class History extends HookWidget {
           .values
           .toList();
 
+      PlaybackProviderRegistry.beginExternalFeed();
       usePlayQueueStore().update(playQueue: playQueue, index: index);
     }
 

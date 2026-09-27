@@ -1,10 +1,23 @@
-import 'dart:convert';
-import 'dart:io';
-import 'package:http/http.dart' as http;
+import 'package:iris/features/app_update/model/app_version.dart';
+import 'package:iris/features/app_update/model/update_check_result.dart';
+import 'package:iris/features/app_update/services/update_check_service.dart';
+import 'package:iris/utils/app_paths.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/platform.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+
 final areaKeyLog = AreaKeyLog(LogKeys.legacyUtil);
 
+/// Legacy view of a published release.
+///
+/// Kept only for the compatibility branch in the About page (see
+/// `kShowUpstreamAboutEntries`), which predates the app_update module and must
+/// keep compiling. This is a projection of the module's own result, not a
+/// second implementation: the tag lookup, the version comparison and the asset
+/// selection all live under `features/app_update`. The About page itself uses
+/// the app_update flow, which reports "up to date", "ahead of the public
+/// release" and each failure separately — none of which this null-returning
+/// signature can express.
 class Release {
   final String version;
   final String url;
@@ -21,84 +34,42 @@ class Release {
   });
 }
 
+/// Returns the newest release this build could install, or null.
 Future<Release?> getLatestRelease() async {
-  String platform = '';
-
-  if (Platform.isWindows) {
-    platform = 'windows';
-  } else if (Platform.isAndroid) {
-    platform = 'android';
-  } else {
+  if (currentUpdatePlatform() == UpdatePlatform.unsupported) {
     areaKeyLog.i('Unsupported platform');
     return null;
   }
 
-  PackageInfo packageInfo = await PackageInfo.fromPlatform();
-
-  if (packageInfo.version.isNotEmpty) {
-    const api = 'https://api.github.com/repos/nini22P/iris/releases/latest';
-
-    try {
-      final response = await http.get(Uri.parse(api));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final List<dynamic> assets = data['assets'];
-
-        final String version = data['tag_name'] ?? 'Unknown version';
-
-        final String url =
-            data['html_url'] ?? 'https://github.com/nini22P/iris/releases/';
-
-        final filtteredAssets = assets.where((assets) =>
-            assets['name'].toString().toLowerCase().contains(platform));
-
-        final downloadUrl = filtteredAssets.first['browser_download_url'];
-
-        final size = filtteredAssets.first['size'];
-
-        final String changeLog = data['body'];
-
-        final bool isUpdate = isVersionUpdated(packageInfo.version, version);
-
-        if (isUpdate) {
-          return Release(
-            version: version,
-            url: url,
-            downloadUrl: downloadUrl,
-            size: size,
-            changeLog: changeLog,
-          );
-        } else {
-          return null;
-        }
-      } else {
-        areaKeyLog.e('Failed to load latest release: ${response.statusCode}');
-        return null;
-      }
-    } catch (e) {
-      areaKeyLog.e('Error fetching latest release: $e');
-      return null;
-    }
-  } else {
+  final String currentVersion;
+  try {
+    currentVersion = (await PackageInfo.fromPlatform()).version;
+  } catch (e) {
+    areaKeyLog.e('Could not read the app version: $e');
     return null;
   }
+
+  final result = await checkForUpdate(currentVersion: currentVersion);
+  if (result is! UpdateAvailable) return null;
+
+  return Release(
+    version: result.version,
+    url: result.pageUrl,
+    downloadUrl: result.asset.downloadUrl,
+    size: result.asset.size,
+    changeLog: result.notes,
+  );
 }
 
+/// Whether [latestVersion] is newer than [currentVersion].
+///
+/// An unparseable version on either side answers false rather than throwing:
+/// the compatibility branch treats false as "nothing to show".
 bool isVersionUpdated(String currentVersion, String latestVersion) {
-  List<int> currentVersionParts =
-      currentVersion.replaceAll('v', '').split('.').map(int.parse).toList();
-  List<int> latestVersionParts =
-      latestVersion.replaceAll('v', '').split('.').map(int.parse).toList();
-
-  for (int i = 0; i < currentVersionParts.length; i++) {
-    if (i >= latestVersionParts.length ||
-        currentVersionParts[i] < latestVersionParts[i]) {
-      return true;
-    } else if (currentVersionParts[i] > latestVersionParts[i]) {
-      return false;
-    }
-  }
-
-  return false;
+  final comparison = compareVersions(currentVersion, latestVersion);
+  return comparison != null && comparison < 0;
 }
+
+/// Whether the running build ships the portable self-updater next to its
+/// executable, i.e. whether an in-place update is possible at all.
+bool isPortableRelease() => isWindows && AppPaths.isPortable;

@@ -2212,6 +2212,16 @@
       "endpoint": {"type": "String"}
     }
   },
+  "storage_connecting": "正在连接 {endpoint}",
+  "@storage_connecting": {
+    "placeholders": {
+      "endpoint": {"type": "String"}
+    }
+  },
+  "storage_connecting_stage_cached": "正在尝试已保存的地址",
+  "storage_connecting_stage_ssdp": "正在查找网络上的设备",
+  "storage_connecting_stage_scan": "正在扫描网络",
+  "storage_connecting_listing": "正在读取目录",
   "storage_connect_offline_note": "已入库内容置灰、仅可浏览，恢复连接后自动恢复。",
   "storage_offline": "离线",
   "storage_lost_play_blocked": "存储已离线。资料库条目置灰，恢复连接前无法播放。",
@@ -2411,8 +2421,73 @@
   "app_overview_desktop_body": "尽量对齐 PotPlayer 键位与操作习惯。\n提供 PotPlayer 风格键盘方案，仅提供实际支持的功能。",
   "app_overview_phone_title": "手机端单手操作（横屏环形拨盘 + 屏幕手势）",
   "app_overview_phone_body": "横屏视频的单手操作优化，可在「手势指引」中查看与修改。\n提供单手环形拨盘进度条，便于单手全控。",
-  "about_update_title": "更新说明",
-  "about_update_body": "二次开发条件限制，不提供检查更新功能；如需更新请自行获取新版本（开源软件）。",
+  "check_update_note": "更新检查与下载依赖能否正常连接 GitHub。",
+  "update_checking": "正在检查更新…",
+  "update_result_up_to_date_title": "已是最新版本",
+  "update_result_up_to_date_body": "当前已经是最新版本 v{version}。",
+  "@update_result_up_to_date_body": {
+    "placeholders": {
+      "version": {"type": "String"}
+    }
+  },
+  "update_result_ahead_title": "版本领先于公开发布版",
+  "update_result_ahead_body": "当前运行的是 v{current}，比公开发布的 v{latest} 更新。这个版本可能是开发版或预发布版。",
+  "@update_result_ahead_body": {
+    "placeholders": {
+      "current": {"type": "String"},
+      "latest": {"type": "String"}
+    }
+  },
+  "update_result_failed_title": "检查更新失败",
+  "update_failed_network": "IRIS 无法打开 GitHub 上的发布页。请检查是否已联网；如果处于公司或学校网络，该页面可能被拦截，可以试试手机热点。",
+  "update_failed_timeout": "IRIS 已向 GitHub 询问最新版本，但一直没有等到回应，通常是网络太慢。请重试。",
+  "update_failed_rate_limited": "同一时间查看更新的人太多，GitHub 让 IRIS 排队等候。请几分钟后再试——越早重试，等得越久。",
+  "update_failed_forbidden": "GitHub 不肯把发布页展示给 IRIS，很可能把它误当成了自动程序。请稍后重试，或直接用浏览器打开发布页。",
+  "update_failed_server_error": "GitHub 的发布页现在自身出了故障，与你的设备和 IRIS 本身无关。请几分钟后再试。",
+  "update_failed_http": "GitHub 的发布页回了 IRIS 看不懂的内容。请重试，或直接用浏览器打开发布页。",
+  "update_failed_unreadable_page": "IRIS 打开了发布页，但上面找不到版本号——可能是一张需要登录的页面，也可能是你的网络中间拦了一张页面。请重试，或直接用浏览器打开发布页。",
+  "update_failed_malformed_tag": "GitHub 上最新的那个发布叫「{tag}」，不是版本号，所以 IRIS 无法判断它比你现在的版本新。",
+  "@update_failed_malformed_tag": {
+    "placeholders": {
+      "tag": {"type": "String"}
+    }
+  },
+  "update_failed_no_asset": "新版本没有提供当前平台的安装包。",
+  "update_failed_unsupported": "当前平台不支持检查更新。",
+  "update_retry": "重试",
+  "update_copy_link": "复制链接",
+  "update_link_copied": "链接已复制",
+  "update_download_progress": "{done} / {total}",
+  "@update_download_progress": {
+    "placeholders": {
+      "done": {"type": "String"},
+      "total": {"type": "String"}
+    }
+  },
+  "update_download_verifying": "正在校验…",
+  "update_download_interrupted": "下载已中断。",
+  "update_download_size_mismatch": "下载的文件与预期大小不符。",
+  "update_download_hash_mismatch": "下载的文件与公布的校验值不符。",
+  "update_download_not_writable": "IRIS 无法把更新包写入本机。可能是可用空间不足，或更新目录不可写。这与网络无关——请清理空间后重试。",
+  "update_install_confirm_title": "安装更新",
+  "update_install_confirm_body": "IRIS 将退出并开始安装更新，当前播放进度会先保存。",
+  "update_install_failed": "无法启动安装程序。",
+  "update_install_needs_permission_title": "需要授权",
+  "update_install_needs_permission_body": "请允许 IRIS 安装本次更新，然后重试。",
+  "update_open_settings": "打开设置",
+  "update_will_download": "将下载：{name} · {size}",
+  "@update_will_download": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "size": {"type": "String"}
+    }
+  },
+  "update_use_universal": "改用通用安装包（{size}）",
+  "@update_use_universal": {
+    "placeholders": {
+      "size": {"type": "String"}
+    }
+  },
   "set_legacy_compat_row": "Legacy 兼容",
   "set_storage_info_title": "数据与密码存储说明",
   "set_storage_info_sub": "数据位置、密码保管方式与安全提醒",

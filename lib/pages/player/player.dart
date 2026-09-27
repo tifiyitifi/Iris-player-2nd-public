@@ -10,6 +10,7 @@ import 'package:iris/features/windows/desktop_keyboard/controller/ab_loop_engine
 import 'package:iris/features/windows/desktop_keyboard/store/key_sequence_buffer_store.dart';
 import 'package:iris/features/scenario_playback/actions/drag_drop_gate.dart';
 import 'package:iris/features/scenario_playback/actions/drag_drop_play_handler.dart';
+import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/pages/player/title_prefix.dart';
 import 'package:iris/hooks/use_cover.dart';
@@ -190,13 +191,26 @@ class Player extends HookWidget {
     final tagStatus = useValueListenable(
       PlaybackProviderRegistry.tagPlay.tagViewStatus,
     );
+    // Read from the shared signal, NOT from one provider instance: list taps
+    // publish through a short-lived provider, next/previous through the
+    // registry singleton, and the title must follow both.
     final scenarioPos =
         useValueListenable(PlaybackProviderRegistry.scenario.position);
+    // Per-CONTEXT ownership, NOT the global `scenarioModeActive` flag: in the
+    // default drift configuration that flag is true for every playback, so it
+    // cannot tell a scenario stream from a history / file-browser feed whose
+    // queue index is meaningful and must win. Reading it as a listenable also
+    // rebuilds the title on the hand-off itself, not only on the feed that
+    // follows it.
+    final scenarioOwnsPlayback = useValueListenable(
+      PlaybackPositionSignal.instance.scenarioOwnsContext,
+    );
 
     final String? queueLabel = useMemoized(
       () => resolveQueuePrefix(
         tagView: tagStatus,
         scenarioPos: scenarioPos,
+        scenarioOwnsPlayback: scenarioOwnsPlayback,
         isQueryMode: store.isQueryMode,
         queryVirtualPos: store.currentVirtualPos,
         queryTotalCount: store.totalCount,
@@ -206,6 +220,7 @@ class Player extends HookWidget {
       [
         tagStatus,
         scenarioPos,
+        scenarioOwnsPlayback,
         store.isQueryMode,
         store.currentVirtualPos,
         store.totalCount,
@@ -463,6 +478,7 @@ class Player extends HookWidget {
           }
           if (filteredPlayQueue.isEmpty) return;
           useAppStore().updateAutoPlay(true);
+          PlaybackProviderRegistry.beginExternalFeed();
           usePlayQueueStore().update(
               playQueue: filteredPlayQueue, index: playQueue.currentIndex);
         }

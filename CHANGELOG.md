@@ -1,3 +1,23 @@
+## v2.0.5
+
+### Changelog
+
+* In-app update check against the public release repository, run manually from the About page: the newest tag is read without spending API quota, the package is chosen for the running build (ABI-specific on Android, ZIP for the portable Windows edition, installer otherwise), verified against the published byte count and `SHA256SUMS.txt` before anything is launched, and an abandoned or cancelled transfer is deleted instead of left behind
+* Update failures say what actually happened: a refused, throttled or broken host is no longer reported as "you are up to date", and a network refusal, a timeout, an unreadable release page, a missing package, a wrong size, a bad digest and a full disk each get their own advice
+* The update row is hidden where it cannot work: a Microsoft Store package and any platform the updater cannot serve no longer offer a dead end
+* Remote storage connections: one connect-retry loop shared by the tile tap and the scan preflight, so a retry is no longer swallowed by the lock the previous attempt still held; a slow connect shows a progress surface that names the host being tried and can be abandoned at any point
+* Recursive scan: a wildcard WebDAV root that lists empty is re-resolved once, and a host that still cannot be reached is reported as unreachable rather than as an empty directory, so a scan can no longer purge a storage's snapshot
+* Player bar `[cur/total]`: the position is published through a shared signal with per-context ownership, so a scenario list tap, an external feed (history, browser, open file/link, share intent), a sub-audio roll and a resume all show the position of what is actually playing
+
+### 更新日志
+
+* 应用内更新检查：关于页手动检查公仓 release，不消耗 API 配额；按当前构建选择安装包（安卓按 ABI、便携版选 ZIP、安装版选安装器），启动前按发布字节数与 `SHA256SUMS.txt` 校验，被放弃或取消的下载会被删除而不是留在本地
+* 更新失败会如实说明：被拒绝、被限流或 GitHub 故障不再被报成「已是最新」；网络不通、超时、发布页不可读、没有可用安装包、大小不符、校验不符、磁盘空间不足各有对应的处理建议
+* 更新入口在无法工作的地方隐藏：微软商店版以及更新器不支持的平台不再给出死路
+* 远程存储连接：列表点击与扫描前置共用同一个「连接—重试」循环，重试不再被上一次尝试持有的锁吞掉；慢连接会显示进度界面，标出正在尝试的主机，并可随时放弃
+* 递归扫描：通配符 WebDAV 根目录列空后会重解析一次，仍无法连上的主机报为不可达而不是空目录，扫描不会再因此清空存储快照
+* 播放栏 `[cur/total]`：位置改为带逐上下文归属的共享信号，场景列表点击、外部片单（历史、浏览器、打开文件/链接、分享意图）、副音跳转与断点恢复都显示真正在播的那一项
+
 ## v2.0.4
 
 ### Changelog

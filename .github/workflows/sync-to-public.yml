@@ -1,0 +1,67 @@
+name: Sync squashed v2 to public repository (manual)
+
+# Manual-only: never auto-runs, so in-progress private work cannot leak.
+#
+# The public repository mirrors the `feature/func-squashed-v2` branch as-is:
+# the upstream (nini22P) commit chain plus ONE squashed second-development
+# commit PER RELEASE, appended on top of the previous one. The branch is
+# therefore a fast-forward of the public `main`; --force is kept only as an
+# idempotency fallback and to allow a deliberate rebuild.
+on:
+  workflow_dispatch:
+    inputs:
+      sync_message:
+        description: 'Optional: override the message of the squashed tip commit'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history is mandatory: the public repo must receive the upstream
+      # commit chain, not a single squashed root commit.
+      - name: Checkout squashed v2 source
+        uses: actions/checkout@v4
+        with:
+          ref: feature/func-squashed-v2
+          fetch-depth: 0
+
+      - name: Mirror the branch into the public repository
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          INPUT_MSG: ${{ github.event.inputs.sync_message }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+
+          # A token pasted with stray whitespace/newlines makes libcurl reject
+          # the URL ("Malformed input to a URL function"), so normalise it first
+          # and fail loudly when it is unusable.
+          TOKEN="$(printf '%s' "${SYNC_TOKEN}" | tr -d '[:space:]')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::SYNC_TOKEN is empty or contains only whitespace."
+            exit 1
+          fi
+          echo "SYNC_TOKEN normalised length: ${#TOKEN}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Optional message override for the release commit being mirrored.
+          if [ -n "$INPUT_MSG" ]; then
+            git commit --amend -m "$INPUT_MSG"
+          fi
+
+          # actions/checkout leaves a github.com Authorization extraheader that
+          # points at this private repo. Drop it, then authenticate with the
+          # token through a header instead of a URL so no character of the
+          # token can be misparsed as URL syntax.
+          git config --local --unset-all "http.https://github.com/.extraheader" || true
+          AUTH="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+
+          echo "Pushing $(git rev-list --count HEAD) commits to the public repository..."
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" \
+            push --force \
+            "https://github.com/tifiyiti/Iris-player-2nd-public.git" \
+            HEAD:main

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/domain/effective_playback_item.dart';
+import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
@@ -132,6 +133,7 @@ void main() {
         ));
     VirtualMediaService.instance.invalidate();
     useVmPlaybackStore().replace(const VmPlaybackState());
+    PlaybackPositionSignal.instance.clear();
     final sys = await usePlaybackScenarioStore().ensureSystemPlayingScenario();
     await usePlaybackScenarioStore().setActiveScenario(sys.id);
     scenarioId = sys.id;
@@ -142,6 +144,7 @@ void main() {
         .stop()
         .catchError((_) {});
     useVmPlaybackStore().replace(const VmPlaybackState());
+    PlaybackPositionSignal.instance.clear();
   });
 
   test('stream-run grouping agrees with the rule pipeline (boundary)', () async {
@@ -273,5 +276,52 @@ void main() {
       reason: 'the session must feed the children the row displayed '
           '(the tap must not resolve to a different directory\'s group)',
     );
+  });
+
+  // The merge branch of `play()` returned before establishing the position, so
+  // a merged row left the bar title on the previous item's number for the whole
+  // session — and on nothing at all when the context had never been located.
+  // A merged row is still ONE position in the scenario stream.
+  test('tapping a merged row publishes the bar position', () async {
+    await DbModule.scenarioRepo.addSource(
+      scenarioId: scenarioId,
+      storageId: 'st1',
+      path: 'root',
+      recursive: true,
+    );
+    await seedMedia('root/keqing 2024-12-26.mp4', durationMs: 8 * 60 * 1000);
+    await seedMedia('root/zack-selene-4k60fps.mp4', durationMs: 43 * 1000);
+    for (var i = 0; i < 6; i++) {
+      await seedMedia('root/sub/f$i.mp4', durationMs: 3 * 60 * 1000);
+    }
+    await DbModule.virtualMediaRepo.saveRule(buildRule());
+    VirtualMediaService.instance.invalidate();
+
+    final store = usePlaybackScenarioStore();
+    await store.ensureQueueIndex(scenarioId);
+    final page = await store.resolver.resolvePageIndexed(
+      scenarioId: scenarioId,
+      page: 0,
+      pageSize: 50,
+    );
+    final merged = page.items.firstWhere((i) => i.virtualMerged);
+    final total = page.totalItems;
+
+    final tapProvider = ScenarioPlaybackProvider(store: store);
+    await tapProvider.play(entryOf(merged, tapProvider));
+
+    expect(
+      VirtualMediaController.instance.state.item,
+      isNotNull,
+      reason: 'fixture must start a merged session, or this proves nothing',
+    );
+    // The observing provider is a DIFFERENT instance than the one that played —
+    // exactly the split the bar title hits on a list tap.
+    final observer = ScenarioPlaybackProvider(store: store);
+    final pos = observer.position.value;
+    expect(pos, isNotNull, reason: 'a merged row must publish a position');
+    expect(pos!.index, greaterThanOrEqualTo(0));
+    expect(pos.index, lessThan(total));
+    expect(pos.count, total);
   });
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
@@ -24,6 +26,21 @@ class _ScriptedDiscovery extends WebDavDiscovery {
     Set<String> excludedHosts = const <String>{},
   }) =>
       Stream<DiscoveryEvent>.fromIterable(events);
+}
+
+/// Emits whatever it is handed, whenever — including nothing at all, which is
+/// what an SSDP window or a slow probe looks like from the caller's side.
+class _ManualDiscovery extends WebDavDiscovery {
+  _ManualDiscovery(this.controller);
+
+  final StreamController<DiscoveryEvent> controller;
+
+  @override
+  Stream<DiscoveryEvent> resolve(
+    WebDAVStorage storage, {
+    Set<String> excludedHosts = const <String>{},
+  }) =>
+      controller.stream;
 }
 
 WebDAVStorage _storage({String host = '192.168.*.*', List<String> resolved = const <String>[]}) =>
@@ -92,6 +109,146 @@ void main() {
 
       expect(outcome.errorKind, StorageListErrorKind.unauthorized);
       expect(outcome.errorDetail, contains('192.168.1.9'));
+    });
+  });
+
+  group('resolveDetailed progress', () {
+    test('every candidate is forwarded so the UI can show live progress',
+        () async {
+      final seen = <DiscoveryCandidate>[];
+      final coordinator = WebDavConnectCoordinator(
+        discovery: _ScriptedDiscovery(const [
+          DiscoveryCandidate(
+            host: '192.168.1.7',
+            index: 1,
+            total: 3,
+            stage: DiscoveryStage.cached,
+          ),
+          DiscoveryCandidate(
+            host: '192.168.1.8',
+            index: 2,
+            total: 3,
+            stage: DiscoveryStage.scan,
+          ),
+          DiscoveryVerified('192.168.1.8'),
+        ]),
+      );
+      final outcome = await coordinator.resolveDetailed(
+        _storage(),
+        onCandidate: seen.add,
+      );
+
+      expect(seen.map((c) => c.host), ['192.168.1.7', '192.168.1.8']);
+      expect(seen.last.total, 3);
+      expect(outcome.ok, isTrue);
+    });
+
+    test('a caller that gives up reports cancelled, not a failure', () async {
+      final seen = <DiscoveryCandidate>[];
+      var wants = true;
+      final coordinator = WebDavConnectCoordinator(
+        discovery: _ScriptedDiscovery(const [
+          DiscoveryCandidate(
+            host: '192.168.1.7',
+            index: 1,
+            total: 9,
+            stage: DiscoveryStage.scan,
+          ),
+          DiscoveryCandidate(
+            host: '192.168.1.8',
+            index: 2,
+            total: 9,
+            stage: DiscoveryStage.scan,
+          ),
+          DiscoveryExhausted(),
+        ]),
+      );
+      // The user dismisses the progress surface on the first candidate: the
+      // rest of the (potentially huge) scan must not be reported as a failure.
+      final outcome = await coordinator.resolveDetailed(
+        _storage(),
+        onCandidate: (c) {
+          seen.add(c);
+          wants = false;
+        },
+        stillWanted: () => wants,
+      );
+
+      expect(outcome.cancelled, isTrue);
+      expect(outcome.ok, isFalse);
+      expect(outcome.errorKind, isNull);
+      expect(outcome.errorDetail, isNull);
+      expect(seen.length, 1, reason: 'the loop must stop at the cancellation');
+    });
+
+    test('a give-up during a silent stretch lands without waiting for an event',
+        () async {
+      // The progress surface is cancellable, so a cancel has to be noticed even
+      // while discovery says nothing: the SSDP collection window and a probe
+      // waiting out its timeout are exactly this shape, and a polling that only
+      // runs between events leaves the user looking at a window that stopped
+      // responding for seconds after they dismissed it.
+      final controller = StreamController<DiscoveryEvent>();
+      var subscriptionCancelled = false;
+      controller.onCancel = () => subscriptionCancelled = true;
+      addTearDown(controller.close);
+
+      var wants = true;
+      final coordinator = WebDavConnectCoordinator(
+        discovery: _ManualDiscovery(controller),
+      );
+
+      final pending = coordinator.resolveDetailed(
+        _storage(),
+        stillWanted: () => wants,
+      );
+      Timer(const Duration(milliseconds: 50), () => wants = false);
+      final outcome = await pending.timeout(const Duration(seconds: 3));
+
+      expect(outcome.cancelled, isTrue,
+          reason: 'no event will ever arrive to notice the cancel');
+      expect(outcome.errorKind, isNull,
+          reason: 'nothing is known about the far end, so nothing is reported');
+      expect(subscriptionCancelled, isTrue,
+          reason: 'abandoning the run has to stop the discovery stream');
+    });
+
+    test('events still stop the run at the next one', () async {
+      // The timer is a safety net, not the mechanism: a stream that keeps
+      // talking must still be cut off by the event that follows the cancel.
+      final controller = StreamController<DiscoveryEvent>();
+      addTearDown(controller.close);
+
+      var wants = true;
+      final seen = <DiscoveryCandidate>[];
+      final coordinator = WebDavConnectCoordinator(
+        discovery: _ManualDiscovery(controller),
+      );
+
+      final pending = coordinator.resolveDetailed(
+        _storage(),
+        onCandidate: seen.add,
+        stillWanted: () => wants,
+      );
+      controller.add(DiscoveryCandidate(
+        host: '192.168.1.7',
+        index: 1,
+        total: 9,
+        stage: DiscoveryStage.scan,
+      ));
+      await Future<void>.delayed(Duration.zero);
+      wants = false;
+      controller.add(DiscoveryCandidate(
+        host: '192.168.1.8',
+        index: 2,
+        total: 9,
+        stage: DiscoveryStage.scan,
+      ));
+      controller.add(const DiscoveryExhausted());
+
+      final outcome = await pending.timeout(const Duration(seconds: 3));
+      expect(outcome.cancelled, isTrue);
+      expect(seen.length, 1);
     });
   });
 }

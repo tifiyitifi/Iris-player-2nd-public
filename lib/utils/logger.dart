@@ -208,6 +208,9 @@ abstract final class LogKeys {
   /// (flutter/flutter #182444). Standalone channel (not under [legacy]) so
   /// its INFO-level tree dumps are gated independently.
   static const String axtreeDiag = 'log.axtree_diag';
+
+  /// App-update feature (release lookup, asset selection, download, install).
+  static const String appUpdate = 'log.app_update';
 }
 
 /// Development diag channel for the player "jumps to end" investigation is

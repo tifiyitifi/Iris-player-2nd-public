@@ -27,6 +27,7 @@ import 'package:iris/features/scenario_playback/model/enum/playback_order.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_kind.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/commands/scenario_commands.dart';
+import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_progress.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
@@ -1560,6 +1561,10 @@ void main() {
       await db.customStatement('DELETE FROM scenario_queue_builds');
       await db.customStatement('DELETE FROM scenario_shared_index');
       await db.customStatement('DELETE FROM media_orders');
+      // The bar position is process-wide (see PlaybackPositionSignal), so each
+      // test must start from "nothing located" or it would inherit the previous
+      // case's index.
+      PlaybackPositionSignal.instance.clear();
       store = PlaybackScenarioStore();
       await store.initialized;
       provider = ScenarioPlaybackProvider(store: store);
@@ -1567,6 +1572,7 @@ void main() {
 
     tearDown(() async {
       await store.dispose();
+      PlaybackPositionSignal.instance.clear();
     });
 
     Future<void> seedMedia(List<(String storageId, String path)> files) async {
@@ -1722,6 +1728,61 @@ void main() {
       final tapped = await tapProvider.itemAt(2); // A/b in the OFF order
       await tapProvider.play(tapped!);
       expect((await provider.next())?.path, 'B/b.mp4');
+    });
+
+    // The bar title subscribes to ONE signal, but playback is initiated by two
+    // different provider instances: a list tap builds a short-lived one, while
+    // next/previous go through the registry singleton. When the notifier lived
+    // on the instance, a tap published into an object that was discarded right
+    // after — the title kept the pre-tap index until the first PageDown/PageUp
+    // re-located it through the singleton.
+    test('a fresh-provider tap publishes the bar position to every instance',
+        () async {
+      await seedMedia([
+        ('st1', 'A/ep01.mp4'),
+        ('st1', 'A/ep02.mp4'),
+        ('st1', 'A/ep03.mp4'),
+      ]);
+      final id = await newScenario();
+      await DbModule.scenarioRepo.addSource(
+          scenarioId: id, storageId: 'st1', path: 'A', recursive: true);
+
+      // Pre-tap state: the queue is located on the FIRST item, as a startup
+      // resume would leave it.
+      await store.setCurrentItem(
+        occurrence:
+            const PlaybackOccurrenceId(storageId: 'st1', path: 'A/ep01.mp4'),
+      );
+      expect(await provider.establishCurrentPosition(), 0);
+      expect(provider.position.value, (index: 0, count: 3));
+
+      // Tap ep03 — NOT the first item — through a short-lived provider.
+      final tapProvider = ScenarioPlaybackProvider(store: store);
+      await tapProvider.play((await tapProvider.itemAt(2))!);
+
+      // The pre-existing instance (the one the title listens to) must see it.
+      expect(provider.position.value, (index: 2, count: 3));
+    });
+
+    test('a fresh-provider tap re-locates instead of keeping the stale index',
+        () async {
+      await seedMedia([
+        ('st1', 'A/ep01.mp4'),
+        ('st1', 'A/ep02.mp4'),
+      ]);
+      final id = await newScenario();
+      await DbModule.scenarioRepo.addSource(
+          scenarioId: id, storageId: 'st1', path: 'A', recursive: true);
+      await store.setCurrentItem(
+        occurrence:
+            const PlaybackOccurrenceId(storageId: 'st1', path: 'A/ep01.mp4'),
+      );
+      expect(await provider.establishCurrentPosition(), 0);
+      expect(provider.position.value, (index: 0, count: 2));
+
+      final tapProvider = ScenarioPlaybackProvider(store: store);
+      await tapProvider.play((await tapProvider.itemAt(1))!);
+      expect(provider.position.value, (index: 1, count: 2));
     });
 
     test('next resolves the current OCCURRENCE under duplicates', () async {

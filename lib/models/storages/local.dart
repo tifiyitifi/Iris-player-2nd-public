@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/ab_loop_engine.dart';
 import 'package:iris/features/windows/desktop_keyboard/store/key_sequence_buffer_store.dart';
 import 'package:flutter/material.dart';
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/storages/volume_identity.dart';
@@ -218,6 +219,7 @@ Future<void> pickLocalFile() async {
     if (playQueue == null || playQueue.playQueue.isEmpty) return;
 
     await useAppStore().updateAutoPlay(true);
+    PlaybackProviderRegistry.beginExternalFeed();
     await usePlayQueueStore().update(
       playQueue: playQueue.playQueue,
       index: playQueue.currentIndex,
@@ -333,6 +335,7 @@ Future<void> pickContentFile() async {
   }
   if (file != null) {
     await useAppStore().updateAutoPlay(true);
+    PlaybackProviderRegistry.beginExternalFeed();
     await usePlayQueueStore().update(
       playQueue: [
         PlayQueueItem(

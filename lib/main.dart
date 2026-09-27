@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/app_startup.dart';
+import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/info.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/file.dart';
@@ -201,6 +202,7 @@ class MyApp extends HookWidget {
             final file = await SafUtil().documentFileFromUri(uri, false);
             if (file != null) {
               await useAppStore().updateAutoPlay(true);
+              PlaybackProviderRegistry.beginExternalFeed();
               await usePlayQueueStore().update(
                 playQueue: [
                   PlayQueueItem(
