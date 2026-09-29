@@ -10,6 +10,7 @@ import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/file.dart';
+import 'package:iris/models/enums/storage_list_error.dart';
 import 'package:iris/models/progress.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/store/app_state.dart';
@@ -37,6 +38,10 @@ class Files extends HookWidget {
   Widget build(BuildContext context) {
     final t = getLocalizations(context);
 
+    // The permission gate must react to a refusal discovered while reading
+    // (see `markStoragePermissionDenied`), not only to the startup snapshot.
+    useListenable(globals.storagePermissionStatusNotifier);
+
     final refreshState = useState(false);
     void refresh() => refreshState.value = !refreshState.value;
 
@@ -60,21 +65,32 @@ class Files extends HookWidget {
     }, []);
 
     final getFiles = useMemoized(
-        () async => await storage.getFiles(currentPath), [currentPath, refreshState.value]);
+        () async => await storage.getFilesDetailed(currentPath),
+        [currentPath, refreshState.value]);
 
     final result = useFuture(getFiles);
+    final listResult = result.data;
     final isLoading = useMemoized(
         () => result.connectionState == ConnectionState.waiting, [result.connectionState]);
-    final isError = result.error != null;
+    final isError = result.error != null || (listResult?.hasError ?? false);
+
+    // A refused local read drops the cached permission state, so the gate below
+    // takes over instead of the blank panel an empty list used to render.
+    useEffect(() {
+      if (listResult?.errorKind == StorageListErrorKind.permissionDenied) {
+        markStoragePermissionDenied();
+      }
+      return null;
+    }, [listResult]);
 
     final filteredFiles = useMemoized(
-        () => (result.data ?? [])
+        () => (listResult?.items ?? [])
             // Legacy playable-only baseline narrowed by the browse scope
             // (dirs stay scope-neutral).
             .where((file) =>
                 file.isVisible && file.matchesBrowseScope(currentBrowseMediaScope()))
             .toList(),
-        [result.data]);
+        [listResult]);
 
     final files = useMemoized(
         () => filesSort(

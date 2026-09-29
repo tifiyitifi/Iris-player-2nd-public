@@ -19,7 +19,7 @@ final _log = AreaKeyLog(LogKeys.appUpdate);
 class UpdateSource {
   const UpdateSource._();
 
-  static const String repoSlug = 'tifiyiti/Iris-player-2nd-public';
+  static const String repoSlug = 'tifiyitifi/Iris-player-2nd-public';
 
   /// The HTML release list. Its `/latest` URL answers with a 302 to the newest
   /// release's page, so the tag can be read from a redirect target without
@@ -38,29 +38,62 @@ class UpdateSource {
   static const Duration readTimeout = Duration(seconds: 10);
 }
 
+/// How many `latest` probes one check may take.
+///
+/// A rename puts one more unanswered probe in front of the real one and a
+/// transfer another. The bound is what keeps a redirect loop or a captive
+/// portal from turning a version check into a hang.
+const int _maxLatestHops = 3;
+
 /// Reads the newest published tag without spending API quota.
 ///
 /// Follows no redirect: the 302 `Location` carries `/releases/tag/<tag>`, which
 /// is all the version comparison needs. A 404 means the repository has no
-/// published release at all.
+/// published release at all. A rename is not a failure: the slug this build was
+/// compiled with answers 301 with the very same probe at the new address, and
+/// that probe is asked in turn, so a renamed repository still resolves for the
+/// builds that predate the rename.
+///
+/// [url] exists so that walk is exercisable against a loopback origin;
+/// production always asks the published one.
 Future<String?> fetchLatestReleaseTag({
   Duration connectTimeout = UpdateSource.connectTimeout,
   Duration readTimeout = UpdateSource.readTimeout,
+  String? url,
 }) async {
   final client = HttpClient()..connectionTimeout = connectTimeout;
   try {
-    final request = await client.getUrl(Uri.parse(UpdateSource.latestReleaseUrl));
-    // Redirects are the payload here, not something to follow: the 302 target
-    // names the newest published tag.
-    request.followRedirects = false;
-    request.headers.set(HttpHeaders.userAgentHeader, _userAgent());
-    final response = await request.close().timeout(readTimeout);
-    // Drain so the connection can be released promptly.
-    await response.drain<void>();
-    return latestTagFromResponse(
-      status: response.statusCode,
-      location: response.headers.value(HttpHeaders.locationHeader),
-    );
+    var asked = Uri.parse(url ?? UpdateSource.latestReleaseUrl);
+    for (var hop = 0; ; hop++) {
+      final request = await client.getUrl(asked);
+      // Redirects are the payload here, not something to follow: the 302
+      // target names the newest published tag.
+      request.followRedirects = false;
+      request.headers.set(HttpHeaders.userAgentHeader, _userAgent());
+      final response = await request.close().timeout(readTimeout);
+      // Drain so the connection can be released promptly.
+      await response.drain<void>();
+      final status = response.statusCode;
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      final isRedirect = status >= 300 && status < 400;
+
+      // 404 and a redirect that already names a tag are final answers.
+      if (status == 404 ||
+          (isRedirect && _tagFromLocation(location ?? '') != null)) {
+        return latestTagFromResponse(status: status, location: location);
+      }
+
+      // A redirect naming no tag is not necessarily a bad answer. Only a
+      // redirect can be one, so nothing else is walked here.
+      final moved = isRedirect && hop < _maxLatestHops
+          ? latestProbeTarget(location: location, asked: asked)
+          : null;
+      if (moved == null) {
+        return latestTagFromResponse(status: status, location: location);
+      }
+      _log.i('release probe moved to $moved');
+      asked = moved;
+    }
   } on TimeoutException {
     throw const UpdateFetchException(UpdateFailure.timeout);
   } on SocketException {
@@ -132,6 +165,35 @@ String? _tagFromLocation(String location) {
   if (index < 0 || index + 1 >= segments.length) return null;
   final tag = segments[index + 1];
   return tag.isEmpty ? null : tag;
+}
+
+/// The `latest` probe to ask again after a redirect that named no tag, or null
+/// when the answer is not that same question at another address.
+///
+/// `/releases/latest` is a redirector rather than a page: its answer is the
+/// tag in its `Location`. A renamed or transferred repository answers 301 with
+/// the very same redirector at the new address, and that first hop names no
+/// tag — an unanswered question, not a bad one, settled by asking it again.
+/// This is a property of the endpoint, not a rename check: no old name is
+/// known here, and any number of hops resolve the same way.
+///
+/// Narrow on purpose. The same host, an absolute URL, and a path still ending
+/// in `/releases/latest`: a sign-in challenge, the repository root and a
+/// network's own page all end somewhere else, and re-asking those would be a
+/// hang rather than a rename.
+@visibleForTesting
+Uri? latestProbeTarget({required String? location, required Uri asked}) {
+  final target = location?.trim();
+  if (target == null || target.isEmpty) return null;
+  final uri = Uri.tryParse(target);
+  // A relative target cannot be re-asked without the address it was relative
+  // to, and a cross-host one is somebody else's business.
+  if (uri == null || !uri.hasScheme || uri.host != asked.host) return null;
+  final segments = uri.pathSegments;
+  final isLatestProbe = segments.length >= 2 &&
+      segments[segments.length - 2] == 'releases' &&
+      segments.last == 'latest';
+  return isLatestProbe ? uri : null;
 }
 
 /// Fetches one release payload and normalizes it.

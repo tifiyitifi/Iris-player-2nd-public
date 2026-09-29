@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
-import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/bg_step_mode.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
@@ -13,7 +12,9 @@ import 'package:iris/features/background_playback/view/background_scope_dialog.d
 import 'package:iris/features/background_playback/view/bg_alignment_panel.dart';
 import 'package:iris/features/background_playback/view/control_target_indicator.dart';
 import 'package:iris/features/background_playback/view/media_ratio_dialog.dart';
+import 'package:iris/models/store/app_state.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/control_bar_constants.dart';
+import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/widgets/a11y_tooltip.dart';
 import 'package:iris/widgets/controls/balanced_button_wrap.dart';
@@ -68,7 +69,23 @@ class BackgroundQuickBar extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!BackgroundPlaybackGate.enabled) return const SizedBox.shrink();
+    // The feature gate arrives through its OWN subscription, never off
+    // `useAppStore().state`: every ancestor of this bar (ControlsOverlay ->
+    // ControlBar -> CircleSliderLayout) subscribes to `useMetadataSettings`
+    // but NOT to `useLegacyStoragePersistence`, which
+    // `toggleUseLegacyStoragePersistence()` writes on its own. The gate needs
+    // BOTH, so a bare read survived a live legacy-storage flip — the bar stayed
+    // on screen, draggable and tappable, for a subsystem just switched off,
+    // and nothing clears `quickBarEnabled`
+    // (`EffectsRegistry.legacyStorageBackend` only swaps the storage /
+    // play-queue backends). Same shape as the other gate readers
+    // (bg_quick_panel_host.dart, player.dart, more_menu_button.dart,
+    // tag_play_controller.dart).
+    final bool gateEnabled = useAppStore().select(
+      context,
+      (AppState s) => !s.useLegacyStoragePersistence && s.useMetadataSettings,
+    );
+    if (!gateEnabled) return const SizedBox.shrink();
 
     final t = getLocalizations(context);
     final bg = useBackgroundPlaybackStore();
@@ -252,6 +269,11 @@ class BackgroundQuickBar extends HookWidget {
     ];
 
     if (axis == Axis.vertical) {
+      // The side-panel footprint is computed from this count (see
+      // `sidewayQuickColumnWidth`), so the two must not drift.
+      assert(buttons.length == kQuickBarVerticalActionCount,
+          '副音 quick strip action count drifted from '
+          'kQuickBarVerticalActionCount');
       // Adaptive grid: the fewest columns (1..kQuickMaxColumns) that fit the
       // panel's current height, so a tall panel stays a single column and a
       // short one widens to two. Still taller than two columns? Fall back to

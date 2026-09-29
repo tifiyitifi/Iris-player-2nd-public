@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
+import 'package:iris/models/store/app_state.dart';
 
 void main() {
   group('borderEdgesForAnchor — which panel edges sit on the window border', () {
@@ -150,6 +151,24 @@ void main() {
     });
   });
 
+  group('clampExtent — drag limits survive a window smaller than the floor', () {
+    test('an inverted range clamps instead of throwing (double.clamp guards)', () {
+      // `double.clamp` throws ArgumentError whenever lower > upper, and a
+      // window narrower than the panel floor (320px wide) inverts the drag
+      // range on every pan update.
+      expect(() => clampExtent(300, 260, 256), returnsNormally);
+      expect(clampExtent(300, 260, 256), 260);
+      expect(clampExtent(0, 260, 256), 256);
+      expect(clampExtent(400, 200, 150), 200);
+    });
+
+    test('a normal range behaves exactly like clamp', () {
+      expect(clampExtent(300, 200, 400), 300);
+      expect(clampExtent(10, 200, 400), 200);
+      expect(clampExtent(999, 200, 400), 400);
+    });
+  });
+
   group('bottom button rows hug the edge facing the screen centre', () {
     test('right-anchored panel aligns its rows LEFT (toward the centre)', () {
       expect(sidewayButtonAlignForAnchor(Alignment.bottomRight),
@@ -170,6 +189,201 @@ void main() {
           WrapAlignment.center);
       expect(sidewayButtonRowAlignForAnchor(Alignment.bottomCenter),
           MainAxisAlignment.center);
+    });
+  });
+
+  group('hideTranslateForAnchor — direction-aware hide', () {
+    // A phone panel is always anchored to a bottom corner, so on a phone this
+    // function is the ONLY thing deciding which way the panel leaves — the
+    // corner modes are live there, not decoration.
+    const double w = 320;
+    const double h = 700;
+    const double m = 24;
+
+    Offset at(Alignment anchor, SidePanelCornerHideMode mode) =>
+        hideTranslateForAnchor(
+          anchor: anchor,
+          isLeftHanded: false,
+          panelW: w,
+          panelH: h,
+          cornerMode: mode,
+        );
+
+    test('bottom-left corner: vertical drops, horizontal exits left', () {
+      expect(at(Alignment.bottomLeft, SidePanelCornerHideMode.vertical),
+          const Offset(0, h + m));
+      expect(at(Alignment.bottomLeft, SidePanelCornerHideMode.horizontal),
+          const Offset(-(w + m), 0));
+      expect(at(Alignment.bottomLeft, SidePanelCornerHideMode.diagonal),
+          const Offset(-(w + m), h + m));
+    });
+
+    test('bottom-right corner mirrors horizontally, keeps the drop', () {
+      expect(at(Alignment.bottomRight, SidePanelCornerHideMode.vertical),
+          const Offset(0, h + m));
+      expect(at(Alignment.bottomRight, SidePanelCornerHideMode.horizontal),
+          const Offset(w + m, 0));
+      expect(at(Alignment.bottomRight, SidePanelCornerHideMode.diagonal),
+          const Offset(w + m, h + m));
+    });
+
+    test('top corners exit upward', () {
+      expect(at(Alignment.topLeft, SidePanelCornerHideMode.vertical),
+          const Offset(0, -(h + m)));
+      expect(at(Alignment.topRight, SidePanelCornerHideMode.horizontal),
+          const Offset(w + m, 0));
+      expect(at(Alignment.topRight, SidePanelCornerHideMode.diagonal),
+          const Offset(w + m, -(h + m)));
+    });
+
+    test('edge middles ignore cornerMode entirely', () {
+      for (final mode in SidePanelCornerHideMode.values) {
+        expect(at(Alignment.bottomCenter, mode), const Offset(0, h + m));
+        expect(at(Alignment.centerLeft, mode), const Offset(-(w + m), 0));
+        expect(at(Alignment.centerRight, mode), const Offset(w + m, 0));
+        expect(at(Alignment.topCenter, mode), const Offset(0, -(h + m)));
+      }
+    });
+
+    test('a pure centre anchor has no edge — handedness decides', () {
+      expect(
+        hideTranslateForAnchor(
+          anchor: Alignment.center,
+          isLeftHanded: false,
+          panelW: w,
+          panelH: h,
+          cornerMode: SidePanelCornerHideMode.diagonal,
+        ),
+        const Offset(w + m, 0),
+        reason: 'cornerMode must not leak into the side fallback',
+      );
+      expect(
+        hideTranslateForAnchor(
+          anchor: Alignment.center,
+          isLeftHanded: true,
+          panelW: w,
+          panelH: h,
+        ),
+        const Offset(-(w + m), 0),
+      );
+    });
+
+    test('the default is the vertical drop', () {
+      expect(
+        hideTranslateForAnchor(
+          anchor: Alignment.bottomRight,
+          isLeftHanded: false,
+          panelW: w,
+          panelH: h,
+        ),
+        at(Alignment.bottomRight, SidePanelCornerHideMode.vertical),
+      );
+    });
+  });
+
+  group('dialDiameterForHide — the layout dial, in one call', () {
+    test('a ring dial is the span share, floored at 150 and capped by width', () {
+      expect(
+        dialDiameterForHide(
+          span: 300,
+          panelW: 400,
+          scrubberKind: PhoneSideScrubberKind.dial,
+          ringDialHeightPct: 1.0,
+          classicScale: 0.5,
+        ),
+        300,
+      );
+      // Narrow panel: the ring can never outgrow it.
+      expect(
+        dialDiameterForHide(
+          span: 300,
+          panelW: 200,
+          scrubberKind: PhoneSideScrubberKind.dial,
+          ringDialHeightPct: 1.0,
+          classicScale: 0.5,
+        ),
+        200,
+      );
+      // Short span degrades to the span itself.
+      expect(
+        dialDiameterForHide(
+          span: 90,
+          panelW: 400,
+          scrubberKind: PhoneSideScrubberKind.dial,
+          ringDialHeightPct: 1.0,
+          classicScale: 0.5,
+        ),
+        90,
+      );
+    });
+
+    test('a classic circle tops out at 260 — past the phone 200 floor', () {
+      expect(
+        dialDiameterForHide(
+          span: 400,
+          panelW: 200,
+          scrubberKind: PhoneSideScrubberKind.classic,
+          ringDialHeightPct: 1.0,
+          classicScale: 1.0,
+        ),
+        260,
+      );
+    });
+
+    test('a degenerate span yields 0 rather than a negative', () {
+      expect(
+        dialDiameterForHide(
+          span: 0,
+          panelW: 400,
+          scrubberKind: PhoneSideScrubberKind.dial,
+          ringDialHeightPct: 1.0,
+          classicScale: 1.0,
+        ),
+        0,
+      );
+    });
+  });
+
+  group('renderedPanelWidthFor — the box the layout really fills', () {
+    test('agrees with the drag width when the dial is narrower', () {
+      // Desktop default 380 wide, dial 260 → the floor never lifts it.
+      expect(
+        renderedPanelWidthFor(
+          windowW: 1600, isPhone: false, widthPct: 40, widthPx: 380,
+          dialDiameter: 260),
+        380,
+      );
+    });
+
+    test('lifts a phone panel to its classic circle (260 > the 200 floor)',
+        () {
+      // The mismatch this exists for: a phone panel dragged to its 200px
+      // minimum while the classic dial is at its 260px maximum renders 260
+      // wide, so a hide computed from the raw 200 leaves a 60px sliver.
+      expect(
+        renderedPanelWidthFor(
+          windowW: 800, isPhone: true, widthPct: 25, widthPx: 380,
+          dialDiameter: 260),
+        260,
+      );
+    });
+
+    test('never exceeds the window', () {
+      expect(
+        renderedPanelWidthFor(
+          windowW: 240, isPhone: false, widthPct: 40, widthPx: 800,
+          dialDiameter: 600),
+        240,
+      );
+    });
+
+    test('a ring dial (150 min) never lifts the desktop panel', () {
+      expect(
+        renderedPanelWidthFor(
+          windowW: 1600, isPhone: false, widthPct: 40, widthPx: 260,
+          dialDiameter: 150),
+        260,
+      );
     });
   });
 

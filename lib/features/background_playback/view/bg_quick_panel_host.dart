@@ -2,13 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
-import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/background_scope_dialog.dart';
 import 'package:iris/features/background_playback/view/bg_alignment_panel.dart';
 import 'package:iris/features/background_playback/view/media_ratio_dialog.dart';
 import 'package:iris/l10n/app_localizations.dart';
+import 'package:iris/models/store/app_state.dart';
+import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/floating/draggable_floating_card.dart';
@@ -48,8 +49,23 @@ class BgQuickPanelHost extends HookWidget {
     final frac = useState<Offset?>(null);
     final host = useState<Size?>(null);
 
+    // The feature gate arrives through its OWN subscription, never off
+    // `useAppStore().state`: this host is mounted `const` in the player Stack,
+    // and `updateChild` short-circuits on an identical const instance, so an
+    // ancestor rebuild (e.g. `Player` re-rendering after the legacy-storage
+    // switch) never re-runs this build. A bare `BackgroundPlaybackGate.enabled`
+    // therefore left a 副音 card on screen — still draggable and interactive —
+    // after the subsystem was switched off, and nothing else clears
+    // `openQuickPanel`: `EffectsRegistry.legacyStorageBackend` only swaps the
+    // storage / play-queue backends. Same shape as the other gate readers
+    // (player.dart, more_menu_button.dart, tag_play_controller.dart).
+    final bool gateEnabled = useAppStore().select(
+      context,
+      (AppState s) => !s.useLegacyStoragePersistence && s.useMetadataSettings,
+    );
+
     final bool visible =
-        BackgroundPlaybackGate.enabled && enabled && panel != BgQuickPanel.none;
+        gateEnabled && enabled && panel != BgQuickPanel.none;
 
     // Measure the hosting Stack (the card must clamp to the VIDEO area, not the
     // raw screen — the playlist dock can shrink it). Re-runs on panel/size

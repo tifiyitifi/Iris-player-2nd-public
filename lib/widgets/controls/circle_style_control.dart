@@ -43,7 +43,9 @@ Future<void> showCircleStyleControlPopover(
       ro.localToGlobal(Offset.zero),
       ro.localToGlobal(ro.size.bottomRight(Offset.zero)),
     );
-    final bool isLeftSide = useAppStore().state.phoneLandscapeUseMode.isLeftSide;
+    // Card side follows the PANEL's resolved hand, not the raw mode (see
+    // resolvePanelSideIsLeft).
+    final bool isLeftSide = panelIsLeftHanded(useAppStore().state);
     final Rect card = circleStyleCardRect(
       panel: panel,
       screen: screen,

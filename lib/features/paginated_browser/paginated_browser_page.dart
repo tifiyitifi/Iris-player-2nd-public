@@ -32,6 +32,7 @@ String _listErrorMessage(StorageListErrorKind? kind, AppLocalizations t) =>
       StorageListErrorKind.unauthorized => t.browser_error_unauthorized,
       StorageListErrorKind.timeout => t.browser_error_timeout,
       StorageListErrorKind.httpBlocked => t.browser_error_http_blocked,
+      StorageListErrorKind.permissionDenied => t.browser_error_permission_denied,
       _ => t.browser_error_unknown,
     };
 

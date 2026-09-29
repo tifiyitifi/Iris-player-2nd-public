@@ -246,7 +246,7 @@ void main() {
         tester,
         const CheckFailed(
           UpdateFailure.unreadableReleasePage,
-          detail: 'https://github.com/login?return_to=%2Ftifiyiti',
+          detail: 'https://github.com/login?return_to=%2Ftifiyitifi',
         ),
       );
 

@@ -292,7 +292,7 @@ Future<Map<String, String>> fetchPublishedChecksums({
     final request = await http.getUrl(
       Uri.parse(
         url ??
-            'https://github.com/tifiyiti/Iris-player-2nd-public/releases/download/'
+            'https://github.com/tifiyitifi/Iris-player-2nd-public/releases/download/'
                 '$tag/SHA256SUMS.txt',
       ),
     );

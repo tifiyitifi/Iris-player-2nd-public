@@ -28,6 +28,11 @@ class FilesDbUsePaginatedBrowser extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final t = getLocalizations(context);
+    // Re-evaluate whenever the live permission state changes: the data source
+    // drops it back to `denied` the moment a local listing is actually refused
+    // (a stale "granted" would otherwise keep showing an empty folder), and the
+    // grant action raises it again. Both transitions must switch this surface.
+    useListenable(globals.storagePermissionStatusNotifier);
     final needPermission = Platform.isAndroid &&
         globals.storagePermissionStatus != PermissionStatus.granted &&
         storage is LocalStorage;

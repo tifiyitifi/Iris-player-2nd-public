@@ -17,6 +17,12 @@ enum StorageListErrorKind {
   /// The platform refused plaintext HTTP (Android/iOS cleartext policy).
   httpBlocked,
 
+  /// The operating system denied access to the directory (EACCES / EPERM), or
+  /// a SAF tree grant was revoked. The UI must offer the storage-permission
+  /// grant — WITHOUT this classification a denied listing looked exactly like
+  /// an empty folder, so the phone neither explained nor asked for permission.
+  permissionDenied,
+
   /// Anything not otherwise classified.
   unknown,
 }

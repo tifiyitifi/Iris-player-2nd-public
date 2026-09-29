@@ -58,13 +58,16 @@ int resolveRelativeBaseMs({
 /// burst on its own: the lock unlocks as soon as one sample lands within its
 /// ±2s tolerance (`isLandingAt`), and there are further fail-open
 /// `unlock()` paths (open error, lock timeout). Once unlocked the step base
-/// falls back to the REPORTED position — which does not advance during a
-/// burst, because `noteStepSeek` switches the engine to `hr-seek=no` and
-/// media_kit's `seek` command is a plain `absolute` (inexact) seek: mpv snaps
-/// back to the previous keyframe. On a 60fps file with `keyint=250` (GOP
-/// ≈ 4.17s) a 4s step stays inside the SAME GOP, so every press recomputes
-/// the same target — N presses advance nothing and the burst settle lands on
-/// that same plateau.
+/// falls back to the REPORTED position — which does not advance while a seek
+/// is still decoding toward its target, so consecutive presses would recompute
+/// the same target and N presses would advance one step.
+///
+/// `hr-seek=no` used to widen that window dramatically (the engine parked on
+/// the keyframe before the target, so the reported position never moved; see
+/// [kStepBurstRelaxesPreciseSeek], now off). The accumulation remains necessary
+/// either way: it is what keeps a press that [StepSeekChain] has not issued yet
+/// from being lost, and what makes a held key advance exactly one step per
+/// press.
 ///
 /// Recording the last requested target here keeps the accumulation alive for
 /// the whole burst, independent of the lock's phase and of what the engine
@@ -102,26 +105,188 @@ const Duration kUserSeekWriteDebounce = Duration(milliseconds: 350);
 /// the burst alive).
 const Duration kStepBurstWindow = Duration(milliseconds: 400);
 
-/// Minimum spacing between ENGINE seeks for a step burst.
+/// Landing tolerance for a step seek: the position stream may report a little
+/// past the target (the decoder/playback advanced before the sample was taken).
+/// The smallest step the UI can produce is 1s, so a 400ms window can never
+/// mistake the PREVIOUS step's position for the current target.
+const int kStepLandingToleranceMs = 400;
+
+/// How long a landed step frame is shown before the next queued step seek is
+/// issued. Without it the next seek freezes the picture within a frame or two,
+/// and the user never actually perceives the intermediate position.
+/// Measured on 4K: the ~330ms precise seek dwarfs this dwell; ~60ms buys
+/// roughly 10% more paints/s, raising it makes each step easier to see.
+const Duration kStepLandedDwell = Duration(milliseconds: 90);
+
+/// Escape hatch for a step seek whose landing is never observed (stalled
+/// decode, position-stream hiccup): the chain must not wedge.
+/// Never fired in the measured 205 landings (the position stream always
+/// reported the landing well inside it) — pure insurance.
+const Duration kStepSeekHardTimeout = Duration(milliseconds: 1200);
+
+/// Pending targets a [StepSeekChain] keeps while one seek is in flight. The
+/// input can outpace the painter (a held key repeats ~30/s; a precise 4K seek
+/// takes hundreds of ms), so the OLDEST pending target is dropped first and the
+/// picture keeps advancing through the freshest ones.
+/// Measured: at ~5 presses/s on 4K the queue sits at this cap and dropped 10 of
+/// 216 presses; at <=3 presses/s nothing is dropped. Raising it honours more
+/// presses and grows the post-release trailing walk by ~330ms per extra step.
+const int kStepChainMaxPending = 3;
+
+/// Whether a position report satisfies a step seek heading to [targetMs].
+/// A forward step is satisfied by anything at/past the target (playback simply
+/// continued after landing), a backward step by anything at/before it.
+bool isStepLanded({
+  required int posMs,
+  required int targetMs,
+  required bool forward,
+}) {
+  const int tol = kStepLandingToleranceMs;
+  return forward ? posMs >= targetMs - tol : posMs <= targetMs + tol;
+}
+
+/// One queued step seek.
 ///
-/// mpv presents nothing while a seek is in flight, so firing one seek per
-/// keyboard repeat (~30/s) means no seek ever finishes and the picture stays on
-/// the old frame until the repeats stop — the "frozen, then one big jump"
-/// symptom. Spacing the engine seeks out (the same ~120ms contract the scrub
-/// surfaces already use) lets each one land and paint a frame, so a press shows
-/// a frame and a hold advances step by step. The intent target still
-/// accumulates on every press; a throttled target is landed by the burst's
-/// idle settle.
-const Duration kStepSeekMinInterval = Duration(milliseconds: 120);
+/// [targetMs] is the caller's axis (virtual while a VM session is active) and
+/// is what the caller re-enters `seek()` with; [engineTargetMs] is the
+/// segment-local/absolute position the engine was actually told, which is what
+/// the landing check compares against the raw position stream.
+typedef StepSeekRequest = ({int targetMs, int engineTargetMs, bool forward});
+
+/// One-at-a-time step-seek chain for ← / → (keyboard / double-tap) bursts.
+///
+/// WHY (2026-09-29): mpv keeps only the NEWEST seek target while a seek is in
+/// flight, so a fixed-cadence burst painted nothing but the last target — the
+/// picture sat on the previous frame and then jumped straight to the final
+/// position ("+3+6+9+12 中间的没显示"). A cadence throttle cannot fix that: the
+/// next request just supersedes the one that was still decoding. Instead this
+/// chain issues exactly ONE engine seek at a time and releases the next one
+/// only after the previous target was OBSERVED in the position stream (or
+/// [hardTimeout] elapsed), so every issued step really does land — and paint —
+/// in order.
+///
+/// MEASURED (2026-09-29, local 4K H.264 `sodeno19-…-2160p.mp4`, media_kit +
+/// libmpv, `hwdec-current=d3d11va-copy`): ONE precise step seek costs ~330ms
+/// and a rapid burst arrives at ~5 presses/s, so at most ~3 steps/s can be
+/// painted. The queue therefore saturates and drops its OLDEST target: 216
+/// presses -> 206 issued -> 205 landed (95% of presses got their own frame).
+/// On lighter content the same gesture painted 5-6 steps/s and the queue never
+/// reached its cap, i.e. nothing was dropped.
+///
+/// The residual ~330ms is NOT a software-decode fallback (mpv is already on a
+/// hardware decoder): it is copy-back frame download + demux repositioning +
+/// audio-output restart + presenting the target frame on the audio clock.
+/// Recorded so this is not re-litigated:
+///  * forcing `hwdec=d3d11va` (zero-copy) for speed is not worth it — this
+///    render path consumes system-memory frames, which is why mpv's `auto`
+///    picked the copy variant; forcing it risks black/green video;
+///  * `hr-seek=no` (see [kStepBurstRelaxesPreciseSeek]) is only faster because
+///    it lands on the PREVIOUS keyframe — the 回跳重播 defect;
+///  * the remaining knobs are [kStepLandedDwell] (paint rate) and
+///    [kStepChainMaxPending] (completeness vs a longer trailing walk).
+///
+/// Pure clock-injected logic: unit-testable without a player.
+class StepSeekChain {
+  StepSeekChain({
+    this.maxPending = kStepChainMaxPending,
+    this.hardTimeout = kStepSeekHardTimeout,
+  });
+
+  /// How many targets may wait while one is in flight (see [kStepChainMaxPending]).
+  final int maxPending;
+
+  /// How long an unobserved in-flight target may block the chain.
+  final Duration hardTimeout;
+
+  final List<StepSeekRequest> _pending = <StepSeekRequest>[];
+  StepSeekRequest? _inFlight;
+  DateTime? _inFlightSince;
+
+  int? get inFlightMs => _inFlight?.targetMs;
+  bool get hasInFlight => _inFlight != null;
+  int get pendingCount => _pending.length;
+  bool get isEmpty => _inFlight == null && _pending.isEmpty;
+
+  /// Records a requested step target. When the queue is already full the OLDEST
+  /// pending target is dropped: the input is outpacing the painter, and the
+  /// freshest targets are the ones worth painting.
+  void push(int targetMs,
+      {required int engineTargetMs, required bool forward}) {
+    _pending.add(
+      (targetMs: targetMs, engineTargetMs: engineTargetMs, forward: forward),
+    );
+    while (_pending.length > maxPending) {
+      _pending.removeAt(0);
+    }
+  }
+
+  /// The request to hand to the engine now, or null while one is in flight (or
+  /// nothing is queued).
+  StepSeekRequest? takeNext(DateTime now) {
+    if (_inFlight != null || _pending.isEmpty) return null;
+    final StepSeekRequest next = _pending.removeAt(0);
+    _inFlight = next;
+    _inFlightSince = now;
+    return next;
+  }
+
+  /// Reports an observed engine position; returns true when it satisfies the
+  /// in-flight target (which is then cleared so [takeNext] can issue the next).
+  bool notePosition(int posMs) {
+    final StepSeekRequest? flight = _inFlight;
+    if (flight == null) return false;
+    if (!isStepLanded(
+      posMs: posMs,
+      targetMs: flight.engineTargetMs,
+      forward: flight.forward,
+    )) {
+      return false;
+    }
+    _inFlight = null;
+    _inFlightSince = null;
+    return true;
+  }
+
+  /// Hard-timeout escape: drops an in-flight target whose landing was never
+  /// observed. Returns true when it released one (the caller then pumps the
+  /// next target).
+  bool tickTimeout(DateTime now) {
+    final DateTime? since = _inFlightSince;
+    if (_inFlight == null || since == null) return false;
+    if (now.difference(since) < hardTimeout) return false;
+    _inFlight = null;
+    _inFlightSince = null;
+    return true;
+  }
+
+  void reset() {
+    _pending.clear();
+    _inFlight = null;
+    _inFlightSince = null;
+  }
+}
+
+/// Whether a step burst may relax mpv's seek precision (`hr-seek=no`).
+///
+/// DISABLED (2026-09-29). An inexact seek lands on the keyframe BEFORE the
+/// target, so a held / continuously re-tapped ←/→ re-showed the same GOP from
+/// its keyframe instead of advancing the progress: the picture "played a
+/// little, then jumped back" (回跳重播). [StepSeekChain] plus
+/// `hr-seek-framedrop=yes` already solve the original "frozen, then one big
+/// jump" symptom, so the toggle is kept in place — gated by this constant for
+/// an easy A/B rollback — but never fires.
+///
+/// Flip to `true` only to reproduce/measure the old keyframe-seek behaviour;
+/// doing so re-introduces the settle's "restore `hr-seek=yes` before the seek"
+/// ordering race.
+const bool kStepBurstRelaxesPreciseSeek = false;
 
 /// Rapid-step burst detector for keyboard / double-tap fast-forward & rewind.
 ///
 /// A single deliberate press stays on the default (exact) seek path. Once a
-/// SECOND step lands within [window] the burst is "rapid" and the engine is
-/// switched to cheap keyframe seeks — which mpv lands (and paints) immediately,
-/// so every press shows a frame and holding advances continuously. The caller
-/// restores exact seeking and lands the precise target when the burst goes
-/// idle.
+/// SECOND step lands within [window] the burst counts as "rapid": the caller
+/// then knows the idle settle must hand over to [StepSeekChain] (which lands
+/// every requested step in order) instead of trusting the per-press cadence.
 ///
 /// Pure clock-injected logic: unit-testable without a player.
 class StepBurst {

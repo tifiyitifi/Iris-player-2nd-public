@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -148,6 +150,35 @@ void main() {
         reason: 'the vertical drag must reach the strip, not a scroll view');
   });
 
+  testWidgets('the card drops out when the legacy-storage switch closes the gate',
+      (tester) async {
+    final bg = await enable();
+    await tester.pumpWidget(_hostHarness());
+    await tester.pumpAndSettle();
+    bg.showQuickPanel(BgQuickPanel.scope);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('bg_quick_panel')), findsOneWidget);
+
+    // The host is mounted `const` in the player Stack, so `updateChild`
+    // short-circuits on the identical const instance and an ancestor rebuild
+    // never re-runs this build: the feature gate has to arrive through its OWN
+    // subscription, or a 副音 card stays on screen — still draggable and
+    // interactive — after the subsystem was switched off. Nothing else clears
+    // `openQuickPanel` (`EffectsRegistry.legacyStorageBackend` only swaps the
+    // storage / play-queue backends).
+    await _mutate(tester, () => useAppStore().set(useAppStore().state.copyWith(
+          useLegacyStoragePersistence: true,
+        )));
+    expect(find.byKey(const ValueKey('bg_quick_panel')), findsNothing);
+
+    // Positive control: the host DOES react to the gate now. Without it a blind
+    // harness could pass the line above for the wrong reason.
+    await _mutate(tester, () => useAppStore().set(useAppStore().state.copyWith(
+          useLegacyStoragePersistence: false,
+        )));
+    expect(find.byKey(const ValueKey('bg_quick_panel')), findsOneWidget);
+  });
+
   testWidgets('no overflow on a 360x640 phone with large font + keyboard',
       (tester) async {
     await enable();
@@ -162,4 +193,25 @@ void main() {
 
     expect(tester.takeException(), isNull);
   });
+}
+
+/// Escapes the FakeAsync zone so the zustand change stream actually delivers,
+/// then lets the marked-dirty elements build. MANDATORY for an AppState write
+/// under `testWidgets`: `Store.set` -> `StoreLocator._onChange` ->
+/// `_controller.add` are async hops FakeAsync never flushes, so a plain
+/// `set()` + `pumpAndSettle()` delivers nothing and every assertion after it
+/// would be vacuous. Completes on a REAL change event rather than a guessed
+/// delay — "the write landed" must be a fact here. See the delivery note in
+/// `app_state_select_narrowing_test.dart`, which this mirrors.
+Future<void> _mutate(WidgetTester tester, void Function() write) async {
+  await tester.runAsync(() async {
+    final Completer<void> delivered = Completer<void>();
+    final StreamSubscription<dynamic> sub = StoreLocator().changes.listen((_) {
+      if (!delivered.isCompleted) delivered.complete();
+    });
+    write();
+    await delivered.future;
+    await sub.cancel();
+  });
+  await tester.pump();
 }

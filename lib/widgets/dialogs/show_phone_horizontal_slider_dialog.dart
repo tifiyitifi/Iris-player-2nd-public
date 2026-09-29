@@ -29,22 +29,13 @@ class PhoneLandscapeSliderDialog extends HookWidget {
     void update(MetaSliderTypeOption? option) {
       if (option == null) return;
       final store = useAppStore();
-      switch (option) {
-        case MetaSliderTypeOption.normal:
-          store.updatePhoneLandscapeUseMode(PhoneLandscapeUseMode.normal);
-          store.updatePhoneLandscapeSlierType(PhoneLandscapeSliderType.normal);
-          break;
-        case MetaSliderTypeOption.rightSide:
-          store.updatePhoneLandscapeUseMode(PhoneLandscapeUseMode.rightSide);
-          store
-              .updatePhoneLandscapeSlierType(PhoneLandscapeSliderType.circleRight);
-          break;
-        case MetaSliderTypeOption.leftSide:
-          store.updatePhoneLandscapeUseMode(PhoneLandscapeUseMode.leftSide);
-          store
-              .updatePhoneLandscapeSlierType(PhoneLandscapeSliderType.circleLeft);
-          break;
-      }
+      // One call: the store derives the paired legacy circle placement from the
+      // mode, so the two fields cannot drift apart here.
+      store.updatePhoneLandscapeUseMode(switch (option) {
+        MetaSliderTypeOption.normal => PhoneLandscapeUseMode.normal,
+        MetaSliderTypeOption.rightSide => PhoneLandscapeUseMode.rightSide,
+        MetaSliderTypeOption.leftSide => PhoneLandscapeUseMode.leftSide,
+      });
       Navigator.pop(context);
     }
 

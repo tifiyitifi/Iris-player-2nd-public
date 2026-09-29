@@ -54,7 +54,10 @@ Future<void> showRingDialStyleControlPopover(
       ro.localToGlobal(Offset.zero),
       ro.localToGlobal(ro.size.bottomRight(Offset.zero)),
     );
-    final bool isLeftSide = useAppStore().state.phoneLandscapeUseMode.isLeftSide;
+    // Card side follows the PANEL's resolved hand, not the raw mode: a centre
+    // anchor must not make the card jump to the other edge of a panel that
+    // stayed put.
+    final bool isLeftSide = panelIsLeftHanded(useAppStore().state);
     final Rect card = ringDialStyleCardRect(
       panel: panel,
       screen: screen,
@@ -141,7 +144,34 @@ class RingDialStyleControl extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final t = getLocalizations(context);
-    final AppState s = useAppStore().select(context, (AppState state) => state);
+    // The nine ring-dial fields this control renders, and nothing else: a
+    // whole-state read re-ran the whole knob list on every AppState write
+    // (`Store.set` emits unconditionally; Freezed's `==` is a deep compare),
+    // including the per-frame gesture writes it never displays.
+    final ({
+      RingDialPalette palette,
+      double heightPct,
+      DialSide side,
+      RingDialAssignment assignment,
+      bool hideChunkWhenUnchunked,
+      bool vmProgressLock,
+      double ringSlotT,
+      double outerRadius,
+      double innerRadius,
+    }) dial = useAppStore().select(
+      context,
+      (AppState s) => (
+        palette: s.ringDialPalette,
+        heightPct: s.ringDialHeightPct,
+        side: s.ringDialSide,
+        assignment: s.ringDialAssignment,
+        hideChunkWhenUnchunked: s.ringDialHideChunkWhenUnchunked,
+        vmProgressLock: s.ringDialVmProgressLock,
+        ringSlotT: s.ringDialRingSlotT,
+        outerRadius: s.ringDialOuterRadius,
+        innerRadius: s.ringDialInnerRadius,
+      ),
+    );
 
     // Scroll-safe: on very short panels the knobs degrade to scrolling
     // instead of overflowing.
@@ -156,7 +186,7 @@ class RingDialStyleControl extends HookWidget {
               _PaletteSwatch(
                 key: ValueKey<String>('ring-dial-palette-${p.name}'),
                 palette: p,
-                selected: s.ringDialPalette == p,
+                selected: dial.palette == p,
                 onTap: () =>
                     // ignore: discarded_futures
                     useAppStore().updateRingDialPalette(p),
@@ -167,7 +197,7 @@ class RingDialStyleControl extends HookWidget {
           showControl: showControl,
           icon: Icons.crop_portrait_rounded,
           label: t.ring_box_height,
-          value: s.ringDialHeightPct * 100,
+          value: dial.heightPct * 100,
           min: 30,
           max: 100,
           divisions: 70,
@@ -197,7 +227,7 @@ class RingDialStyleControl extends HookWidget {
                     ButtonSegment<DialSide>(
                         value: DialSide.outer, label: Text(t.ring_side_outer)),
                   ],
-                  selected: <DialSide>{s.ringDialSide},
+                  selected: <DialSide>{dial.side},
                   onSelectionChanged: (Set<DialSide> sel) =>
                       // ignore: discarded_futures
                       useAppStore().updateRingDialSide(sel.first),
@@ -225,7 +255,7 @@ class RingDialStyleControl extends HookWidget {
                         value: RingDialAssignment.outerChunk,
                         label: Text(t.ring_assign_outer)),
                   ],
-                  selected: <RingDialAssignment>{s.ringDialAssignment},
+                  selected: <RingDialAssignment>{dial.assignment},
                   onSelectionChanged: (Set<RingDialAssignment> sel) =>
                       // ignore: discarded_futures
                       useAppStore().updateRingDialAssignment(sel.first),
@@ -245,7 +275,7 @@ class RingDialStyleControl extends HookWidget {
           dense: true,
           visualDensity: VisualDensity.compact,
           title: Text(t.ring_hide_unchunked),
-          value: s.ringDialHideChunkWhenUnchunked,
+          value: dial.hideChunkWhenUnchunked,
           activeColor: color ?? Theme.of(context).colorScheme.primary,
           onChanged: (bool v) =>
               // ignore: discarded_futures
@@ -258,7 +288,7 @@ class RingDialStyleControl extends HookWidget {
           dense: true,
           visualDensity: VisualDensity.compact,
           title: Text(t.ring_lock_vm_progress),
-          value: s.ringDialVmProgressLock,
+          value: dial.vmProgressLock,
           activeColor: color ?? Theme.of(context).colorScheme.primary,
           onChanged: (bool v) =>
               // ignore: discarded_futures
@@ -268,7 +298,7 @@ class RingDialStyleControl extends HookWidget {
           showControl: showControl,
           icon: Icons.radio_button_unchecked,
           label: t.ring_position,
-          value: s.ringDialRingSlotT * 100,
+          value: dial.ringSlotT * 100,
           min: 0,
           max: 100,
           divisions: 100,
@@ -286,7 +316,7 @@ class RingDialStyleControl extends HookWidget {
           showControl: showControl,
           icon: Icons.circle_outlined,
           label: t.ring_outer_radius,
-          value: s.ringDialOuterRadius * 100,
+          value: dial.outerRadius * 100,
           min: 80,
           max: 100,
           divisions: 20,
@@ -304,7 +334,7 @@ class RingDialStyleControl extends HookWidget {
           showControl: showControl,
           icon: Icons.adjust_rounded,
           label: t.ring_inner_radius,
-          value: s.ringDialInnerRadius * 100,
+          value: dial.innerRadius * 100,
           min: 30,
           max: 81,
           divisions: 51,

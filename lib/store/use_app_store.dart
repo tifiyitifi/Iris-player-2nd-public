@@ -19,6 +19,7 @@ import 'package:iris/models/enums/breadcrumb_start_side.dart'
     show BreadcrumbStartSide;
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart' show WebDavScanMode;
+import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
 import 'package:iris/features/paginated_browser/data_source/paginated_browser_data_source.dart'
     show clampPageSize;
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
@@ -686,15 +687,41 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     _persist(state);
   }
 
+  /// Writes the legacy circle placement directly.
+  ///
+  /// The placement is no longer an independent choice: it is the persisted
+  /// shadow of [phoneLandscapeUseMode] (see [sliderTypeForUseMode]) and every
+  /// UI entry point pairs the two, so this stays for the frozen legacy path
+  /// and for tests — a one-sided write here is exactly the drift the pairing
+  /// exists to prevent.
   Future<void> updatePhoneLandscapeSlierType(
       PhoneLandscapeSliderType sliderType) async {
     set(state.copyWith(phoneLandscapeSliderType: sliderType));
     await _persist(state);
   }
 
+  /// Writes the one-handed mode AND its paired legacy circle placement in one
+  /// state transition.
+  ///
+  /// The two fields encode the same left/right decision but are persisted
+  /// separately (the mode in the legacy blob, the placement in its own blob
+  /// key). Writing one without the other is what let them drift: a stale
+  /// `circleRight` then steers [resolveControlPanelAnchor] while the settings
+  /// dialog reads `normal`. Deriving the placement here — and in the two
+  /// anchor setters above — makes the pair inseparable for every caller,
+  /// including the ones added later.
+  ///
+  /// The mode is folded through [PhoneLandscapeUseModeHelper.live] on the way
+  /// in: a deprecated member written here would be persisted verbatim and then
+  /// read back as NO side, so the hand the user is operating with silently
+  /// becomes the other one.
   Future<void> updatePhoneLandscapeUseMode(
       PhoneLandscapeUseMode useMode) async {
-    set(state.copyWith(phoneLandscapeUseMode: useMode));
+    final mode = useMode.live;
+    set(state.copyWith(
+      phoneLandscapeUseMode: mode,
+      phoneLandscapeSliderType: sliderTypeForUseMode(mode),
+    ));
     await _persist(state);
   }
 
@@ -1073,7 +1100,18 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
   Future<void> setMetadataGate(bool next) async {
     if (state.useMetadataSettings == next) return;
     EffectsRegistry.ensureRegistered();
-    final nextState = state.copyWith(useMetadataSettings: next);
+    // Enabling makes the use mode the placement authority, so fold the paired
+    // legacy slider type onto it NOW: a blob written under the gate-OFF path
+    // (where the two were picked independently) must not keep steering
+    // resolveControlPanelAnchor on the meta side. Runs before the snapshot
+    // write, so the very first seeded row already carries the folded value.
+    final nextState = next
+        ? state.copyWith(
+            useMetadataSettings: next,
+            phoneLandscapeSliderType: sliderTypeForUseMode(
+                state.phoneLandscapeUseMode),
+          )
+        : state.copyWith(useMetadataSettings: next);
     set(nextState);
 
     try {
@@ -1875,9 +1913,34 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     await MetaSettingsModule.saveSliderRow(field, encoded);
   }
 
+  /// Moves the desktop one-handed panel horizontally.
+  ///
+  /// The anchor decides the panel's POSITION; the paired use mode carries the
+  /// HANDEDNESS the scrubber mirrors by, so both are written here — a centre
+  /// anchor keeps the existing hand, and `normal` mode is never resurrected by
+  /// a mere anchor change.
+  ///
+  /// Both must also REACH STORAGE here. The anchor is `@JsonKey`-excluded, so
+  /// its only home is the `slider.posH` row; the mode is an ordinary persisted
+  /// field (`app.phoneLandscapeUseMode` under the gate, the legacy blob
+  /// otherwise) and needs the normal funnel. Writing just the anchor row left
+  /// the hand behind, so a hard restart restored the position while silently
+  /// reverting the ring mirroring — `updatePhoneLandscapeUseMode` is the
+  /// reference for this two-call shape.
   Future<void> updatePhoneSidePositionH(PhoneSidePositionH pos) async {
-    set(state.copyWith(phoneSidePositionH: pos));
+    final bool sideway = state.phoneLandscapeUseMode.usesOneHandedControls;
+    final PhoneLandscapeUseMode mode = sideway
+        ? useModeForAnchorH(pos, state.phoneLandscapeUseMode)
+        : state.phoneLandscapeUseMode;
+    set(state.copyWith(
+      phoneSidePositionH: pos,
+      phoneLandscapeUseMode: mode,
+      // The paired legacy placement follows the hand, so an anchor change can
+      // never leave a stale corner behind.
+      phoneLandscapeSliderType: sliderTypeForUseMode(mode),
+    ));
     await _saveSliderRow('posH', pos.name, SettingValueType.enumeration);
+    await _persist(state);
   }
 
   Future<void> updatePhoneSidePositionV(PhoneSidePositionV pos) async {
@@ -1885,12 +1948,27 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     await _saveSliderRow('posV', pos.name, SettingValueType.enumeration);
   }
 
+  /// Moves the phone one-handed panel horizontally. Phones expose left/right
+  /// only, so `center` collapses to `right` before it can reach the store.
+  ///
+  /// Persists the paired hand exactly like [updatePhoneSidePositionH]: the
+  /// anchor row alone does not carry `phoneLandscapeUseMode`, so a restart
+  /// would keep the side and drop the hand.
   Future<void> updateMobileSidePositionH(PhoneSidePositionH pos) async {
     final PhoneSidePositionH normalized =
         pos == PhoneSidePositionH.center ? PhoneSidePositionH.right : pos;
-    set(state.copyWith(mobileSidePositionH: normalized));
+    final bool sideway = state.phoneLandscapeUseMode.usesOneHandedControls;
+    final PhoneLandscapeUseMode mode = sideway
+        ? useModeForAnchorH(normalized, state.phoneLandscapeUseMode)
+        : state.phoneLandscapeUseMode;
+    set(state.copyWith(
+      mobileSidePositionH: normalized,
+      phoneLandscapeUseMode: mode,
+      phoneLandscapeSliderType: sliderTypeForUseMode(mode),
+    ));
     await _saveSliderRow(
         'phonePosH', normalized.name, SettingValueType.enumeration);
+    await _persist(state);
   }
 
   double _clampPanelPct(double v) => v.clamp(10.0, 100.0).toDouble();
@@ -1995,11 +2073,23 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     }
   }
 
+  /// Desktop corner-hide direction (`slider.cornerHideMode`).
   Future<void> updateSidePanelCornerHideMode(
       SidePanelCornerHideMode mode) async {
     set(state.copyWith(sidePanelCornerHideMode: mode));
     await _saveSliderRow(
         'cornerHideMode', mode.name, SettingValueType.enumeration);
+  }
+
+  /// Phone corner-hide direction (`slider.phoneCornerHideMode`).
+  ///
+  /// Separate from [updateSidePanelCornerHideMode] so the two platforms can
+  /// never overwrite one row, mirroring the `posH` / `phonePosH` split.
+  Future<void> updateMobileSidePanelCornerHideMode(
+      SidePanelCornerHideMode mode) async {
+    set(state.copyWith(mobileSidePanelCornerHideMode: mode));
+    await _saveSliderRow(
+        'phoneCornerHideMode', mode.name, SettingValueType.enumeration);
   }
 
   /// Rehydrates the sideway-panel anchor rows onto [base].
@@ -2112,6 +2202,16 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
       sidePanelCornerHideMode:
           enm(rows['cornerHideMode'], SidePanelCornerHideMode.values) ??
               base.sidePanelCornerHideMode,
+      // New phone key; falls back to the old shared row so an install that
+      // picked a direction before the split keeps hiding the way it did. All
+      // three values are legal on a phone (its anchor is always a bottom
+      // corner), so there is nothing to normalise the way `phonePosH` folds
+      // `center` away. The fallback is read-only: the next phone write stores
+      // its own row and the platforms are independent from then on.
+      mobileSidePanelCornerHideMode: enm(
+              rows['phoneCornerHideMode'], SidePanelCornerHideMode.values) ??
+          enm(rows['cornerHideMode'], SidePanelCornerHideMode.values) ??
+          base.mobileSidePanelCornerHideMode,
       sidePanelDialogOffset: (() {
         final String? raw = rows['dialogOffset'];
         if (raw == null) return base.sidePanelDialogOffset;
@@ -2496,6 +2596,10 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
       normalized = normalized.copyWith(
           landscapeGestureProfile: LandscapeGestureProfile.region);
     }
+    // Migrate legacy enum values hand → side. This is the ONLY place a
+    // deprecated one-handed mode is read: the members stay parseable so an old
+    // blob loads, and are folded to their replacements before anything else
+    // sees the state.
     if (normalized.phoneLandscapeUseMode == PhoneLandscapeUseMode.rightHanded) {
       normalized = normalized.copyWith(
           phoneLandscapeUseMode: PhoneLandscapeUseMode.rightSide);
@@ -2503,6 +2607,22 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         PhoneLandscapeUseMode.leftHanded) {
       normalized = normalized.copyWith(
           phoneLandscapeUseMode: PhoneLandscapeUseMode.leftSide);
+    }
+    // Fold a stale placement back onto the mode — GATE-ON ONLY. The two fields
+    // encode the same left/right decision, and a blob written before the
+    // pairing existed can hold a `circleLeft` next to a `rightSide` mode. Under
+    // the gate the mode is the authority, so the fold is safe and needed
+    // (otherwise a stale corner still steers resolveControlPanelAnchor). Gate
+    // OFF is the frozen legacy path where the two were chosen independently —
+    // rewriting there would change installs that work today, so it is left
+    // exactly as stored.
+    if (normalized.useMetadataSettings &&
+        normalized.phoneLandscapeSliderType !=
+            sliderTypeForUseMode(normalized.phoneLandscapeUseMode)) {
+      normalized = normalized.copyWith(
+        phoneLandscapeSliderType:
+            sliderTypeForUseMode(normalized.phoneLandscapeUseMode),
+      );
     }
 
     // Requirement #6: arc/timeLens/snake are FULLY retired — old blobs fold

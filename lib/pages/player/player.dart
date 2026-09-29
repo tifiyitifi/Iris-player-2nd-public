@@ -206,6 +206,13 @@ class Player extends HookWidget {
       PlaybackPositionSignal.instance.scenarioOwnsContext,
     );
 
+    // The queue's REAL size, as a SUBSCRIPTION. In query mode the published
+    // `playQueue` is a synthetic single item, so the total lives only on the
+    // store's notifier: a bare `store.totalCount` read left the title prefix
+    // frozen when a search/filter moved the total 1↔N, while the control bar —
+    // which subscribes — already showed the new number.
+    final int queryTotalCount = useValueListenable(store.totalCountNotifier);
+
     final String? queueLabel = useMemoized(
       () => resolveQueuePrefix(
         tagView: tagStatus,
@@ -213,7 +220,7 @@ class Player extends HookWidget {
         scenarioOwnsPlayback: scenarioOwnsPlayback,
         isQueryMode: store.isQueryMode,
         queryVirtualPos: store.currentVirtualPos,
-        queryTotalCount: store.totalCount,
+        queryTotalCount: queryTotalCount,
         queueLength: playQueue.length,
         currentQueueIndex: currentPlayIndex,
       ),
@@ -223,7 +230,7 @@ class Player extends HookWidget {
         scenarioOwnsPlayback,
         store.isQueryMode,
         store.currentVirtualPos,
-        store.totalCount,
+        queryTotalCount,
         playQueue.length,
         currentPlayIndex,
       ],
@@ -407,12 +414,17 @@ class Player extends HookWidget {
         useAppStore().select(context, (s) => s.mobileDisplayMode);
     // Scrub-drag surface freeze: the window is locked mid-drag (see
     // useResizeWindow), so the video must adapt inside it instead of
-    // following per-segment sizes.
-    final dragState =
-        useScrubDragStore().select(context, (s) => s);
-    final isDragging = shouldSkipResizeDuringDrag(
-      isScrubbing: dragState.isScrubbing,
-      isHolding: dragState.isHolding,
+    // following per-segment sizes. Subscribe to the DERIVED booleans, not the
+    // whole state: `ScrubDragState` holds only owner-id sets (it changes on
+    // gesture begin/end, never per frame), and a blanket `select((s) => s)`
+    // here re-ran the whole player Stack — LayoutBuilder, DropTarget, every
+    // overlay — on every session transition, for a two-bool answer.
+    final isDragging = useScrubDragStore().select(
+      context,
+      (s) => shouldSkipResizeDuringDrag(
+        isScrubbing: s.isScrubbing,
+        isHolding: s.isHolding,
+      ),
     );
 
     // Drag-and-drop zone state (desktop, metadata era only). The top strip of

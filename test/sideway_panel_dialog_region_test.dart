@@ -83,6 +83,186 @@ void main() {
       );
       expect(region, const Rect.fromLTRB(48, 12, 788, 328));
     });
+
+    // A strip too narrow for the card is worse than covering a sliver of the
+    // panel: the card's body is a column of 380-max form rows, so a 12px strip
+    // renders an unreadable sliver that still hides what it edits. The floor
+    // makes the function answer "no usable strip" and the caller lay out in the
+    // full safe screen instead.
+    test('a strip too narrow to host the card falls back to the full screen',
+        () {
+      // Centred 90%-wide panel on a 400px screen: 12px on each side.
+      final Rect region = regionAvoidingPanel(
+        screen: const Size(400, 800),
+        safe: EdgeInsets.zero,
+        panel: const Rect.fromLTWH(20, 0, 360, 800),
+      );
+      expect(region, const Rect.fromLTRB(8, 8, 392, 792),
+          reason: 'no strip can host the card — take the whole safe screen');
+    });
+
+    test('the narrowness floor is exact, not a rounding band', () {
+      // Left strip 8..288 = 280 exactly: usable, keep it.
+      final Rect atFloor = regionAvoidingPanel(
+        screen: const Size(800, 360),
+        safe: EdgeInsets.zero,
+        panel: const Rect.fromLTWH(288, 0, 504, 360),
+      );
+      expect(atFloor, const Rect.fromLTRB(8, 8, 288, 352));
+
+      // One pixel narrower: 8..287 = 279, already unusable.
+      final Rect belowFloor = regionAvoidingPanel(
+        screen: const Size(800, 360),
+        safe: EdgeInsets.zero,
+        panel: const Rect.fromLTWH(287, 0, 505, 360),
+      );
+      expect(belowFloor, const Rect.fromLTRB(8, 8, 792, 352));
+    });
+  });
+
+  // The 副音 quick column hangs off the panel's centre-facing side, so a
+  // "panel rect" that ignores it is not the control panel's real footprint —
+  // the settings card would still park on top of half the buttons it edits.
+  group('showsSidewayQuickColumn', () {
+    bool attached({
+      bool isPhone = false,
+      bool gateEnabled = true,
+      bool quickBarEnabled = true,
+      bool showingBackgroundGroup = false,
+      double quickAvail = 400,
+    }) =>
+        showsSidewayQuickColumn(
+          isPhone: isPhone,
+          gateEnabled: gateEnabled,
+          quickBarEnabled: quickBarEnabled,
+          showingBackgroundGroup: showingBackgroundGroup,
+          quickAvail: quickAvail,
+        );
+
+    test('desktop + switch ON + playback group attaches it', () {
+      expect(attached(), isTrue);
+    });
+
+    test('a phone never attaches it (the bottom group switch owns 副音)', () {
+      expect(attached(isPhone: true), isFalse);
+    });
+
+    test('the 副音 feature gate being off means no column at all', () {
+      expect(attached(gateEnabled: false), isFalse);
+    });
+
+    test('the quick-bar switch alone is not enough', () {
+      expect(attached(quickBarEnabled: false), isFalse);
+    });
+
+    test('group 2 REPLACES the button rows, so nothing is attached', () {
+      expect(attached(showingBackgroundGroup: true), isFalse);
+    });
+
+    test('a starved budget drops the column instead of squashing it', () {
+      expect(attached(quickAvail: kSidewayQuickMinWidth - 1), isFalse);
+      expect(attached(quickAvail: kSidewayQuickMinWidth), isTrue);
+    });
+  });
+
+  group('sidewayQuickAvailWidth', () {
+    test('mirrors the layout budget: padding margin, panel, gap', () {
+      expect(sidewayQuickAvailWidth(layoutWidth: 1600, panelW: 380), 1208);
+    });
+  });
+
+  group('sidewayQuickColumnWidth', () {
+    test('a tall panel keeps the strip in ONE column', () {
+      // 10 actions at 52px per row: 600px of height fits 11 rows.
+      expect(sidewayQuickColumnWidth(quickAvail: 400, panelH: 600), 52);
+    });
+
+    test('a short panel widens to the two-column cap', () {
+      // 420px fits 8 rows, so the 10 actions need the second column.
+      expect(sidewayQuickColumnWidth(quickAvail: 400, panelH: 420), 108);
+    });
+
+    test('a budget too narrow for two columns stays at one', () {
+      // maxCols collapses to 1 below 56px (one column + the inter-column gap).
+      expect(sidewayQuickColumnWidth(quickAvail: 50, panelH: 600), 52);
+    });
+  });
+
+  group('sidePanelRectForWindow — 副音 column included', () {
+    Rect rectFor(Alignment anchor, {double quickColumnWidth = 0}) =>
+        sidePanelRectForWindow(
+          windowSize: const Size(1600, 900),
+          anchor: anchor,
+          isPhone: false,
+          widthPct: 40,
+          heightPct: 90,
+          widthPx: 380,
+          heightPx: 420,
+          quickColumnWidth: quickColumnWidth,
+        );
+
+    test('a right-docked panel grows the rect to cover the column LEFT of it', () {
+      final Rect rect = rectFor(Alignment.bottomRight, quickColumnWidth: 108);
+      expect(rect.right, 1600);
+      expect(rect.width, 380 + kSidewayQuickGap + 108);
+      expect(rect.left, 1600 - 492);
+      expect(rect.height, 420, reason: 'the column shares the panel height');
+    });
+
+    test('a left-docked panel grows the rect to the right', () {
+      final Rect rect = rectFor(Alignment.bottomLeft, quickColumnWidth: 108);
+      expect(rect.left, 0);
+      expect(rect.width, 492);
+      expect(rect.right, 492);
+    });
+
+    test('a centre dock has no centre-facing side, so the column goes right', () {
+      // Mirrors CircleSliderLayout (`quickOnLeft = anchor.x > 0`).
+      final Rect rect = rectFor(Alignment.bottomCenter, quickColumnWidth: 108);
+      expect(rect.left, 610);
+      expect(rect.right, 1102);
+    });
+
+    test('no column (default) keeps the plain panel box', () {
+      expect(rectFor(Alignment.bottomRight),
+          const Rect.fromLTRB(1220, 480, 1600, 900));
+    });
+
+    test('a dial wider than the drag width grows the rect (phone classic)',
+        () {
+      // The panel is dragged to its 200px phone floor, but the classic circle
+      // is at its 260px maximum, so the layout FILLS 260 — a card sized by the
+      // 200 drag width would sit on the extra 60.
+      final Rect rect = sidePanelRectForWindow(
+        windowSize: const Size(800, 400),
+        anchor: Alignment.bottomRight,
+        isPhone: true,
+        widthPct: 25,
+        heightPct: 90,
+        widthPx: 380,
+        heightPx: 420,
+        dialDiameter: 260,
+      );
+      expect(rect.width, 260);
+      expect(rect.right, 800);
+    });
+
+    test('the dial floor and the column compose', () {
+      final Rect rect = sidePanelRectForWindow(
+        windowSize: const Size(800, 400),
+        anchor: Alignment.bottomRight,
+        isPhone: false,
+        widthPct: 40,
+        heightPct: 90,
+        widthPx: 300,
+        heightPx: 420,
+        dialDiameter: 420,
+        quickColumnWidth: 108,
+      );
+      // 420 (floor) + gap + 108 column, right-docked so the column is inside.
+      expect(rect.right, 800);
+      expect(rect.width, 420 + kSidewayQuickGap + 108);
+    });
   });
 
   group('phonePanelMinPct', () {

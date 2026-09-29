@@ -1805,8 +1805,9 @@ class _SideShell extends HookWidget {
     // `usePublishedGlobalKey`): a shared key would let a new editor panel
     // re-take the old one and re-activate its OverlayPortals mid-layout.
     final GlobalKey panelKey = usePublishedGlobalKey(apbEditorPanelKeyNotifier);
-    final isLeftHanded =
-        app.select(context, (s) => s.phoneLandscapeUseMode.isLeftHanded);
+    // Resolved from the panel anchor (see resolvePanelSideIsLeft) so the
+    // editor's scrubber mirrors the same way the live panel does.
+    final isLeftHanded = app.select(context, panelIsLeftHanded);
     final widthPct = app.select(context, (s) => s.sidewayPanelWidthPct);
     final heightPct = app.select(context, (s) => s.sidewayPanelHeightPct);
     final widthPx = app.select(context, (s) => s.sidewayPanelWidthPx);

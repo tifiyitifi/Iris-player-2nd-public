@@ -1,3 +1,55 @@
+## v2.0.6
+
+### Changelog
+
+* The one-handed side panel was silently off on Android. The mount predicate had drifted into two spellings, and a cleanup consolidated it onto the desktop umbrella flag, which is false on a phone -- so the panel could never mount on a real device: the ring dial / arc / line scrubbers fell back to the plain circle slider, the panel docked bottom-centre instead of by the phone's own horizontal position, and the slider-type dialog began covering the very control it edits. The gate now covers every platform IRIS ships, and a test seam pins the supported-platform decision in a test rather than in a comment
+* The legacy control bar and the More menu read the one-handed mode as "a side panel is on screen" although that bar renders a full-width linear bar, so the overlay hid it sideways (a full-width box shifted by one panel width stays on screen), squared off its corners, and reported a side panel to the sub-audio align editor; the slider-type dialog squeezed itself into a 240px strip that avoided nothing. Both now ask a layout-level authority instead of re-deriving the answer
+* Four independent defects in the side panel's drag limits, hide translation and anchor persistence: on a window smaller than the fixed panel floor the drag threw `ArgumentError` (not only in debug); the sub-audio quick column is magnetically attached outside the panel, so a horizontal hide stranded it on screen; the panel box is widened past the drag width by the dial floor, which the hide translation never applied; and the position was persisted without its paired handedness, so a hard restart kept the position and silently reverted the ring mirroring
+* A centred panel shrinks both free strips at once, so a panel dragged towards the window edge handed the settings card an unreadable sliver that still covered the control it edits. Below a usable strip the card now takes the full safe screen; the boundary is pinned exactly so the constant cannot drift into a rounding band
+* The settings card's drag base was a `useState` seed that only ever got clamped, so a 9-grid re-anchor made the next header drag snap it back -- 76px on an 800px window. It now uses the position actually drawn
+* With the legacy control bar active, a vertical position of top/middle parked the bar against the top edge while its hide slid it down, dragging a full-width bar across the whole video on every hide and publishing a top-of-screen rect to the playlist dock
+* The side-panel settings dialog reserved a strip for a panel that might not exist, ignored where the panel really is on desktop, and never rebuilt when the desktop 9-grid anchor changed. It now asks the same anchor authority the overlay aligns with, and budgets the sub-audio quick strip off the bar's real layout zone instead of the raw window width
+* Every label in the side-panel card named its subject but not its effect: the corner-hide row never said it picks the slide-out direction when the panel auto-hides, the bar-position knob had no 0%/100% semantics, and the scrubber knobs borrowed the other design's vocabulary. Longer copy overflowed the 380px card by 165px in English; the pickers now size to their field, which protects any long translation
+* A phone has its own corner-hide direction and its own entry. It was previously in force on a phone with no way to change it, and shared with the desktop, so a desktop choice could reach a phone through settings transfer and leave the panel sliding in a direction the phone could not undo
+* A rapid fast-forward / rewind burst painted nothing but the last target: mpv keeps only the newest seek target while one is in flight, so the fixed 120ms cadence let each new request supersede the one still decoding (41 presses, about half landing, `+3+6+9+12` showing only 12). Seeking is now a chain that keeps one engine seek in flight and issues the next only after the previous target was observed landing, holds a landed frame long enough to be visible, and drops the oldest pending target when a held key outpaces the painter. Measured 216 presses -> 206 issued -> 205 landed, 95% of presses painted; lighter content paints 5-6 steps/s and drops nothing
+* A held or continuously re-tapped step stopped advancing altogether: the burst had switched mpv to inexact seek, which lands on the keyframe *before* the target, so the picture played a moment at the new spot and then jumped back and re-showed the previous GOP. Every step now lands on the position it asked for
+* Stopping after a burst no longer re-seeks a position that had already landed, which cost an extra decoder discontinuity at exactly the moment the user let go
+* A whole-state `AppState` subscription is not an inert read -- any mutation re-ran the consuming widget. The controls overlay sat over the entire video with one, dragging the title bar and control bar along on every write, including the per-frame transient-rate write a speed-gesture drag makes, for a field the overlay renders nowhere. Narrowed across the overlay, the circle panel, the gesture overlay, the OSD, the ring-dial style control and the legacy dialog; a test now fails if any widget takes a whole-state AppState subscription again
+* The sub-audio feature gate was read bare in two places and its host is `const` in the player Stack, so switching legacy storage off left a still-draggable, still-tappable card on screen. Both now take their own composite subscription, matching every other gate reader
+* The bar title's `[cur/total]` prefix and the play-queue total were read as bare getters. In search mode the published state is a synthetic single item, so the total exists only on a notifier -- a search or filter moving the total between 1 and N left the title frozen while the control bar had already moved. Both now subscribe
+* The storages page could render a completely blank list even though the local disk had been enumerated and persisted. Three independent causes: the display merge cancelled every matched disk out (a scanned entry and its persisted twin share both the generated id and the volume id, so a disk present in both lists produced zero tiles); the discovery died on hook init, where any inherited-widget lookup asserts; and it could write before the store had loaded, so the write was dropped and then overwritten
+* Local-disk discovery and persistence lived only in the list widget, which the page bypasses whenever a storage is restored from the previous session -- so after the first run the discovery never executed again and no local storage was generated. It now runs from the popup root, deduplicated, idempotent, retried once after a failed run, and matching against both the database and the live store so a disk is never re-added as a duplicate
+* A refused local read was indistinguishable from an empty directory: the listing swallowed the filesystem exception, and Android scoped storage hides an unreadable directory without throwing at all. A denial is now classified as a permission problem with its own message, drops the cached permission state so the grant surface appears, and reloads once granted -- instead of showing "no items found". The Android probes are bounded by a timeout and degrade to internal storage on any error, so an unresponsive channel can never turn into an empty list
+* The release repository moved to a new account, so the address compiled into published builds began answering with a rename redirect before it ever named a tag -- and the update check read that hop as an unreadable release page, turning every check into a visible failure. The check now asks the moved probe in turn, bounded to three hops, so a build that predates the rename resolves through the redirect GitHub already left behind. A sign-in challenge and the repository root still fail loudly
+* The one-handed slider type is no longer dropped when settings move between a desktop and a phone: the transfer policy classified it as phone-only, but it also drives the desktop one-handed side panel
+* Virtual-media segment wording is now "own segment" throughout
+* Removed two dead More-menu entries that were computed and never read, along with the store subscription only they needed
+
+### 更新日志
+
+* 单手侧边面板在 Android 上一直是关闭的。挂载判定此前已经漂移成两种写法，某次清理又把它统一到了「桌面」这个总开关上——而手机不是桌面宿主，于是真机上永远挂不上：环形 / 弧形 / 直线三种单手进度条退回普通圆盘滑块，面板不再按手机的横向位置停靠而是贴底居中，滑块样式对话框开始盖住它自己要编辑的控件。现在该判定覆盖 IRIS 实际发布的全部平台，并把这个平台判定写进测试而不是注释
+* 传统控制栏和更多菜单把「单手模式」直接读成「屏幕上有侧栏」，可那条栏其实渲染的是整幅宽度的线性栏：于是覆盖层把它往侧面收（整宽的框平移一个栏宽仍在屏内）、把圆角切成侧栏样式、并向副音对齐编辑器报告「是侧栏」；滑块样式对话框则把自己挤进 240px 的一条窄缝，避让的对象并不存在。两处现在都改问一个「布局层」的判定，不再各自重新推导
+* 侧边面板的拖拽边界、隐藏位移和位置持久化存在四个独立缺陷：窗口小于面板固定下限时拖拽会抛 `ArgumentError`（不只是 debug）；副音快捷列是磁吸在面板外侧的，横向隐藏后会滞留在屏幕上；面板框会因为表盘下限而比拖拽宽度更宽，隐藏位移从未套用这个更宽的尺寸；位置被持久化时没有连同配对的左右手性一起存，硬重启后位置还在、环形镜像却悄悄退回
+* 居中面板会同时收窄左右两条可用边，把面板拖向窗口边缘时设置卡片会拿到一条读不了、却仍然盖住它要编辑的控件的碎条。低于可用宽度时卡片现在改用整块安全区域；边界值被精确钉住，常量不会漂进某个舍入区间
+* 设置卡片的拖拽基线取自一个只被夹紧过的 `useState` 种子值，所以九宫格重新定位后，下一次拖标题栏会把它弹回原处——800px 窗口上实测 76px。现在用的是真正画出来的位置
+* 传统控制栏激活时，纵向位置为上／中会把栏停在屏幕顶边，而隐藏时又向下滑，整幅宽度的栏每次隐藏都横穿整个视频，还会向播放列表坞发布一个屏幕顶部的矩形
+* 侧栏设置对话框为一个可能并不存在的面板预留边距，桌面上忽略了面板的真实位置，而且九宫格锚点变化后不会重建。现在它问的是覆盖层对齐所用的同一个锚点判定，副音快捷条也改为按控制栏真实的布局区（而非窗口原始宽度）来分配
+* 侧栏卡片里每一行文案都只说了对象、没说效果：角落隐藏行从没说它决定的是自动隐藏时的滑出方向，栏位置旋钮没有 0%／100% 的语义，两个滑块旋钮还借用了另一种设计的词汇。更长的文案在英文下超出 380px 卡片 165px；现在三个选择器都按输入框宽度定尺寸，这对任何更长的翻译同样有效
+* 手机有了自己的角落隐藏方向和自己的入口。此前它在手机上一直生效却无处可改，且与桌面共用一项，于是通过设置同步传过去的桌面选择会让手机面板朝一个手机自己无法撤销的方向滑出
+* 快速连按快进／快退只画出最后一个目标：mpv 在一次 seek 进行中只保留最新的目标，固定 120ms 的节流让每个新请求都顶掉仍在解码的那个（41 次按键约半数落地，`+3+6+9+12` 只显示 12）。现在 seek 是一条链：同时只有一次引擎 seek 在飞，上一个目标被观测到落地后才发出下一个，落地的画面会停留足够长的时间让人看见，按住不放超过绘制速度时丢弃最旧的待处理目标。实测 216 次按键 → 发出 206 → 落地 205，95% 的按键被画出；内容较轻时可画出 5–6 步/秒且不丢弃
+* 按住或连续重按的步进曾完全不再前进：连按会把 mpv 切到非精确 seek，而它落在目标之前的关键帧上，于是画面在新位置闪一下就跳回去、重新播放上一个 GOP。现在每一步都落在它请求的位置上
+* 连按后松手不再重新 seek 已经落地的位置——那会在用户恰好停下的瞬间多付一次解码器中断
+* 对整个 `AppState` 的订阅不是惰性读取：任何一次变更都会重跑消费它的控件。控制覆盖层就压在整幅视频之上，带着一个这样的订阅，于是每次写入都拖着标题栏和控制栏一起重建——包括倍速手势拖动时每帧写入的临时速率，而这个字段覆盖层根本不渲染。现已把覆盖层、圆盘面板、手势覆盖层、OSD、环形表盘样式控件和传统对话框逐个收窄；并新增测试，任何控件再次对整个 AppState 订阅都会失败
+* 副音功能开关有两处是裸读取，而它的宿主在播放器 Stack 里是 `const` 的，祖先重建不会重跑它的 build：关掉传统存储后，屏幕上会留下一张仍可拖动、仍可点击的卡片。两处现在都各自持有组合订阅，与其它所有开关读取方一致
+* 标题栏的 `[cur/total]` 前缀和播放队列总数是按裸 getter 读取的。搜索模式下发布出去的状态是合成的单条，总数只存在于一个通知器上——搜索或筛选让总数在 1 和 N 之间变化时，标题栏会冻住不动，而控制栏早已更新。两处现在都改为订阅
+* 存储页面可能整片空白，尽管本地磁盘已经被枚举并持久化。背后有三个独立原因：展示层的合并把每一个匹配上的磁盘都抵消掉了（扫描到的条目与它持久化的孪生条目同时共享生成的 id 和卷 id，于是一个同时存在于两份列表里的磁盘产出零块磁贴）；发现流程在 hook 初始化时崩溃，因为那里任何 InheritedWidget 查询都会断言；以及它可能在 store 加载完成前就写入，于是写入被丢弃、随后又被覆盖
+* 本地磁盘的发现与持久化只存在于列表组件里，而只要有存储从上次会话恢复，页面就会完全绕开它——于是首次运行之后发现流程再也不执行，永远不会生成任何本地存储。现在它从弹窗根节点运行，去重、幂等、失败后重试一次，并同时比对数据库与实时 store，磁盘不会被重复添加
+* 被拒绝的本地读取与空目录无法区分：列目录吞掉了文件系统异常，而 Android 分区存储会把读不了的目录藏起来、根本不抛错。现在权限拒绝会被归类为权限问题并给出专门文案，同时丢弃缓存的权限状态以便授权入口出现，授权后自动重载——而不是显示「没有找到项目」。Android 探测带超时上限且任何错误都退化为内部存储，一个无响应的通道再也不会变成一份空列表
+* 发布仓库迁到了新账号，因此已发布版本里编译进去的地址在给出 tag 之前会先返回一个改名重定向——而更新检查把这一跳读成了「发行页无法读取」，于是每次检查都变成一次可见的失败。现在检查会接着询问被重定向到的探测，最多三跳，因此在改名之前发布的版本也能顺着 GitHub 已经留下的重定向正常解析。登录挑战和仓库根目录仍然会明确报错
+* 设置在桌面与手机之间同步时不再丢掉单手滑块类型：传输策略把它判为仅手机，但桌面单手侧栏同样由它驱动
+* 虚拟媒体的片段文案统一改为「自有片段」
+* 移除了更多菜单里两个算了却从未被读取的死条目，以及只有它们才需要的 store 订阅
+
 ## v2.0.5
 
 ### Changelog

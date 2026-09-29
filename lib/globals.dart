@@ -11,7 +11,24 @@ String? initUri;
 /// from the Android shortcut intent; consumed exactly once by the launch
 /// router in Home.
 String? entryLaunchId;
-PermissionStatus? storagePermissionStatus;
+
+/// Live storage-permission state.
+///
+/// A `ValueNotifier` (not a bare variable) because the file browser has to
+/// SWITCH to the grant surface the moment access is discovered to be denied
+/// (see `StorageBrowserDataSource.loadFromStorage`) and back once the user
+/// grants it. Widgets listen to [storagePermissionStatusNotifier]; the
+/// [storagePermissionStatus] getter/setter keeps the historical call shape.
+final ValueNotifier<PermissionStatus?> storagePermissionStatusNotifier =
+    ValueNotifier<PermissionStatus?>(null);
+
+PermissionStatus? get storagePermissionStatus =>
+    storagePermissionStatusNotifier.value;
+
+set storagePermissionStatus(PermissionStatus? status) {
+  if (storagePermissionStatusNotifier.value == status) return;
+  storagePermissionStatusNotifier.value = status;
+}
 
 /// Live key of the MORE / rate popup-menu buttons, published by the button that
 /// is actually mounted (see [usePublishedGlobalKey] for why these are per-mount
@@ -44,6 +61,23 @@ final ValueNotifier<GlobalKey<PopupMenuButtonState>?> rateMenuKeyNotifier =
 /// mounts fresh and nothing is ever re-activated.
 final ValueNotifier<GlobalKey?> sidePanelKeyNotifier =
     ValueNotifier<GlobalKey?>(null);
+
+/// Width of the zone the one-handed control bar is ACTUALLY laid out in, as
+/// `CircleSliderLayout` sees it (its own bounded `constraints.maxWidth`).
+/// Null while no side bar is mounted.
+///
+/// WHY a width and not the panel's screen-space rect: the 副音 quick strip's
+/// cross-axis budget is derived from this, and a docked playlist shrinks the
+/// bar's zone below the window width — so a consumer that re-derives the panel
+/// footprint (the side-panel settings dialog) must read the real zone or it
+/// reserves a strip the layout dropped or sized for a wider one.
+///
+/// WHY a width and not a measured `localToGlobal` rect: the bar's hide
+/// animation slides the panel off screen but never changes the zone it is laid
+/// out in, so a width can never be fooled by a panel that is mid-hide — whereas
+/// a rect would drag the dialog's free region off with it.
+final ValueNotifier<double?> sidePanelLayoutWidthNotifier =
+    ValueNotifier<double?>(null);
 
 /// The APB align editor's own side-panel box.
 ///

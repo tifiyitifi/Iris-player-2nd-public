@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/models/store/app_state.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 
@@ -27,7 +28,26 @@ class LegacyCompatDialog extends HookWidget {
   Widget build(BuildContext context) {
     final store = useAppStore();
     final t = getLocalizations(context);
-    final s = store.select(context, (state) => state);
+    // The five switches this dialog renders. A whole-state read re-ran it on
+    // every AppState mutation (`Store.set` emits unconditionally; Freezed's
+    // `==` is a deep compare), including the per-frame gesture writes behind
+    // the modal it sits on.
+    final ({
+      bool gate,
+      bool syncLegacyBlob,
+      bool classicTitleBar,
+      bool legacyControlBar,
+      bool legacyStorage,
+    }) s = store.select(
+      context,
+      (AppState state) => (
+        gate: state.useMetadataSettings,
+        syncLegacyBlob: state.syncLegacyBlob,
+        classicTitleBar: state.useClassicTitleBar,
+        legacyControlBar: state.useLegacyControlBar,
+        legacyStorage: state.useLegacyStoragePersistence,
+      ),
+    );
 
     return AlertDialog(
       title: Text(t.legacy_title),
@@ -75,7 +95,7 @@ class LegacyCompatDialog extends HookWidget {
               contentPadding: EdgeInsets.zero,
               title: Text(t.legacy_gate_title),
               subtitle: Text(t.legacy_gate_desc),
-              value: s.useMetadataSettings,
+              value: s.gate,
               onChanged: (_) => store.toggleUseMetadataSettings(),
             ),
             SwitchListTile(
@@ -86,7 +106,7 @@ class LegacyCompatDialog extends HookWidget {
               value: s.syncLegacyBlob,
               // Without the master gate the blob is authoritative and the
               // dual-write knob is meaningless — never interactable.
-              onChanged: s.useMetadataSettings
+              onChanged: s.gate
                   ? (_) => store.toggleSyncLegacyBlob()
                   : null,
             ),
@@ -95,21 +115,21 @@ class LegacyCompatDialog extends HookWidget {
               key: const ValueKey<String>('legacy-title-bar-switch'),
               contentPadding: EdgeInsets.zero,
               title: Text(t.legacy_title_bar),
-              value: s.useClassicTitleBar,
+              value: s.classicTitleBar,
               onChanged: (_) => store.toggleUseClassicTitleBar(),
             ),
             SwitchListTile(
               key: const ValueKey<String>('legacy-control-bar-switch'),
               contentPadding: EdgeInsets.zero,
               title: Text(t.legacy_control_bar),
-              value: s.useLegacyControlBar,
+              value: s.legacyControlBar,
               onChanged: (_) => store.toggleUseLegacyControlBar(),
             ),
             SwitchListTile(
               key: const ValueKey<String>('legacy-storage-switch'),
               contentPadding: EdgeInsets.zero,
               title: Text(t.legacy_storage),
-              value: s.useLegacyStoragePersistence,
+              value: s.legacyStorage,
               onChanged: (_) => store.toggleUseLegacyStoragePersistence(),
             ),
             ],

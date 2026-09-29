@@ -64,8 +64,14 @@ abstract final class PlatformKeyPolicy {
   // Snapshot fields carrying mobile-only knobs (gestures, phone sliders,
   // orientation, title overlays, popup/breadcrumb). Mirrors the android
   // SettingDefs.
+  //
+  // `phoneLandscapeSliderType` is DELIBERATELY absent: its SettingDef declares
+  // `platforms: ['android','windows','linux','macos']` and the parity test
+  // lists it among the DESKTOP play keys — the desktop one-handed side panel
+  // (`desktopCenterZonePhoneMode`) is driven by it too, so classifying it as
+  // mobile-only dropped the slider type from every desktop↔phone transfer even
+  // though desktop is a supported place to set it.
   static const Set<String> mobileOnlySnapshotFields = {
-    'phoneLandscapeSliderType',
     'phoneLandscapeUseMode',
     'phoneOneHandedScrubberKind',
     'circleLandscapePercent',

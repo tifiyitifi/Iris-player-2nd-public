@@ -12,9 +12,28 @@ bool resolveOsdShouldShow(
   AppState state,
   bool metadataEnabled, {
   required bool isShowControl,
+}) =>
+    resolveOsdShouldShowFrom(
+      osdEnabled: state.osdEnabled,
+      visibilityMode: state.osdVisibilityMode,
+      metadataEnabled: metadataEnabled,
+      isShowControl: isShowControl,
+    );
+
+/// [resolveOsdShouldShow] over already-selected fields. The AppState overload
+/// delegates here — this stays the single authority.
+///
+/// Lets the toast subscribe to a record of fields instead of the whole state, so
+/// an AppState mutation it does not read (the per-frame gesture writes, a volume
+/// or rate change) does not rebuild it.
+bool resolveOsdShouldShowFrom({
+  required bool osdEnabled,
+  required OsdVisibilityMode visibilityMode,
+  required bool metadataEnabled,
+  required bool isShowControl,
 }) {
-  if (!resolveOsdEnabled(state, metadataEnabled)) return false;
-  if (state.osdVisibilityMode == OsdVisibilityMode.hideWhenControlVisible &&
+  if (!metadataEnabled || !osdEnabled) return false;
+  if (visibilityMode == OsdVisibilityMode.hideWhenControlVisible &&
       isShowControl) {
     return false;
   }

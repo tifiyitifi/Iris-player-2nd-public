@@ -73,6 +73,42 @@ LocalStorage makeLocalStorage({
   return storage.copyWith(id: generateStorageId(storage));
 }
 
+/// Merges the freshly enumerated local disks with the persisted entries for
+/// display, so each disk appears EXACTLY once.
+///
+/// Prefers the persisted entry when both exist — it carries the user's rename,
+/// its sub-path scope and its saved connection state — and only takes a disk
+/// from [scanned] when [stored] does not represent it yet.
+///
+/// Deduplication MUST look at BOTH the id and the stable volume id: for a local
+/// disk [generateStorageId] keys the id on the volume, and [makeLocalStorage]
+/// assigns it, so an enumeration and its persisted entry normally share BOTH.
+/// Matching on one side only cancels the pair out (the scanned entry dropped by
+/// volume id AND the persisted one dropped by id), which renders the storagedb's
+/// storage list blank.
+List<Storage> mergeScannedAndStoredStorages({
+  required List<LocalStorage> scanned,
+  required List<Storage> stored,
+}) {
+  final storedIds = stored.map((s) => s.id).toSet();
+  final storedVolumeIds = stored
+      .whereType<LocalStorage>()
+      .map((s) => s.volumeId)
+      .whereType<String>()
+      .toSet();
+
+  final scannedOnly = scanned
+      .where((l) =>
+          !storedIds.contains(l.id) &&
+          (l.volumeId == null || !storedVolumeIds.contains(l.volumeId)))
+      .toList();
+
+  return [
+    ...scannedOnly,
+    ...stored.where((s) => !scannedOnly.any((l) => l.id == s.id)),
+  ];
+}
+
 /// Reconciles the enumerated local disks with the persisted entries, then
 /// persists the result.
 ///
@@ -97,6 +133,14 @@ Future<List<LocalStorage>> persistScannedStorages({
     existing: dbStorages,
     resolveVolumeId: resolveVolumeId,
   );
+
+  // The decisive "why is nothing in the list" signal: a plan with 0 moves and 0
+  // adds means every scanned disk was matched to an entry that never reaches the
+  // UI-visible store.
+  _log.i('persistScannedStorages: scanned=${scannedStorages.length} '
+      'existing=${dbStorages.length} moves=${plan.moves.length} '
+      'adds=${plan.adds.length} '
+      '[${plan.adds.map((s) => '${s.type}/${s.basePath.join('/')}').join(', ')}]');
 
   for (final move in plan.moves) {
     final remap = remapPaths ??

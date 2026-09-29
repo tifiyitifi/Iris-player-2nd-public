@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/models/store/app_state.dart';
+import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 
@@ -20,12 +21,13 @@ class PhoneLandscapeUseModeDialog extends HookWidget {
         useAppStore().select(context, (state) => state.phoneLandscapeUseMode);
     String labelOf(PhoneLandscapeUseMode m) => switch (m) {
           PhoneLandscapeUseMode.normal => t.phone_mode_normal,
-          PhoneLandscapeUseMode.rightSide ||
-          PhoneLandscapeUseMode.rightHanded =>
-            t.phone_mode_right,
-          PhoneLandscapeUseMode.leftSide ||
-          PhoneLandscapeUseMode.leftHanded =>
-            t.phone_mode_left,
+          PhoneLandscapeUseMode.rightSide => t.phone_mode_right,
+          PhoneLandscapeUseMode.leftSide => t.phone_mode_left,
+          // Parse-only members: the loader folds them into their `*Side`
+          // replacements, so they can never reach the picker — but the switch
+          // must stay exhaustive, hence this unreachable arm.
+          PhoneLandscapeUseMode.rightHanded => t.phone_mode_right,
+          PhoneLandscapeUseMode.leftHanded => t.phone_mode_left,
         };
 
     void selectMode(PhoneLandscapeUseMode? value) {
@@ -41,7 +43,10 @@ class PhoneLandscapeUseModeDialog extends HookWidget {
         onChanged: selectMode,
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: PhoneLandscapeUseMode.values
+          // Only the live modes: listing `.values` also offered the deprecated
+          // rightHanded/leftHanded, which rendered as duplicate label pairs and
+          // let the user persist a value the loader has to migrate away.
+          children: kLivePhoneLandscapeUseModes
               .map(
                 (PhoneLandscapeUseMode value) => ListTile(
                   title: Text(labelOf(value)),

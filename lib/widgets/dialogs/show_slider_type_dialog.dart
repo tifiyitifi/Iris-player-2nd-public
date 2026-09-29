@@ -3,7 +3,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/background_playback/background_playback_gate.dart';
+import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/control_group/model/enum/player_control_group.dart';
+import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
+import 'package:iris/globals.dart' show sidePanelLayoutWidthNotifier;
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -37,32 +42,83 @@ class _DraggableSliderDialog extends HookWidget {
     final AppStore store = useAppStore();
     // Subscribe to the fields that move / resize the side panel so the free
     // region (and the card) re-adjust live: switching the panel side inside
-    // this very dialog must NOT leave the card covering it.
-    final bool oneHanded = store.select(
-        context, (s) => s.phoneLandscapeUseMode.usesOneHandedControls);
-    store.select(context, (s) => s.mobileSidePositionH);
-    store.select(context, (s) => s.sidewayPanelWidthPct);
-    store.select(context, (s) => s.sidewayPanelHeightPct);
-    store.select(context, (s) => s.sidewayPanelWidthPx);
-    store.select(context, (s) => s.sidewayPanelHeightPx);
+    // this very dialog must NOT leave the card covering it. One record instead
+    // of ten selectors — the desktop 9-grid (posH/posV) belongs here exactly
+    // as much as the phone-side one, and a per-field subscription is how it
+    // used to go missing.
+    store.select(
+      context,
+      (AppState s) => (
+        oneHanded: s.phoneLandscapeUseMode.usesOneHandedControls,
+        posH: s.phoneSidePositionH,
+        posV: s.phoneSidePositionV,
+        mobilePosH: s.mobileSidePositionH,
+        sliderType: s.phoneLandscapeSliderType,
+        orientation: s.runtimeOrientation,
+        metadataGate: s.useMetadataSettings,
+        // The legacy control bar is a full-width linear layout, so the free
+        // region must stop dodging a side panel when it is on — and the card
+        // has to re-adjust the moment the user flips it, hence the subscription.
+        legacyControlBar: s.useLegacyControlBar,
+        desktopPhoneMode: s.desktopCenterZonePhoneMode,
+        widthPct: s.sidewayPanelWidthPct,
+        heightPct: s.sidewayPanelHeightPct,
+        widthPx: s.sidewayPanelWidthPx,
+        heightPx: s.sidewayPanelHeightPx,
+        // The dial knobs: the panel box is widened by the dial, so a card
+        // dodging a rect sized by the drag width alone would sit on the extra
+        // strip the floor added.
+        ringDialHeightPct: s.ringDialHeightPct,
+        circleSliderScale: s.circleSliderScale,
+        scrubberKind: s.phoneOneHandedScrubberKind,
+      ),
+    );
+    // The 副音 quick strip is part of the panel's footprint, so its switch
+    // moves the free region too.
+    final bool quickBarEnabled = useBackgroundPlaybackStore()
+        .select(context, (s) => s.quickBarEnabled);
+    final PlayerControlGroup group =
+        useControlGroupStore().select(context, (s) => s.group);
+    // The bar's REAL layout zone, published while a side bar is mounted. The 副音
+    // strip's cross-axis budget must come from it and NOT the window width: a
+    // docked playlist shrinks the bar's zone, so budgeting off the window
+    // reserves a strip the layout dropped. Null (no bar mounted) falls back to
+    // the window, which is the zone in that case anyway.
+    useListenable(sidePanelLayoutWidthNotifier);
+    final double layoutWidth =
+        sidePanelLayoutWidthNotifier.value ?? screen.width;
+
     final AppState s = store.state;
     final bool isPhone = isMobilePlatform;
+    final bool isLandscape = isLandscapeOrientation(
+      runtimeOrientation: s.runtimeOrientation,
+      realOrientation: MediaQuery.orientationOf(context),
+    );
 
-    // Phone one-handed: confine the card to the free strip beside the side
-    // panel so the side-type control slider stays fully visible while editing.
-    // Desktop / normal mode: the whole safe screen.
+    // Confine the card to the strip beside the side panel so the control slider
+    // it edits stays fully visible — wherever the panel really is. Two phantoms
+    // are dodged here, and both cost the card a strip it does not need: a phone
+    // in portrait renders a linear bar, and so does the legacy control bar in
+    // ANY orientation (`resolveSidePanelAlignment` would report a side corner
+    // for both). `isSidePanelLayoutMounted` is the authority that knows which
+    // layouts actually have a side panel.
     final Rect region = regionAvoidingPanel(
       screen: screen,
       safe: safe,
-      panel: (isPhone && oneHanded)
-          ? sidePanelRectForWindow(
-              windowSize: screen,
-              anchor: resolveSidePanelAlignment(s),
-              isPhone: true,
-              widthPct: s.sidewayPanelWidthPct,
-              heightPct: s.sidewayPanelHeightPct,
-              widthPx: s.sidewayPanelWidthPx,
-              heightPx: s.sidewayPanelHeightPx,
+      panel: isSidePanelLayoutMounted(
+        mode: s.phoneLandscapeUseMode,
+        legacyControlBar: s.useLegacyControlBar,
+        isPhone: isPhone,
+        isLandscape: isLandscape,
+      )
+          ? _controlPanelFootprint(
+              state: s,
+              screen: screen,
+              isLandscape: isLandscape,
+              isPhone: isPhone,
+              quickBarEnabled: quickBarEnabled,
+              group: group,
+              layoutWidth: layoutWidth,
             )
           : null,
     );
@@ -106,6 +162,76 @@ class _DraggableSliderDialog extends HookWidget {
   }
 }
 
+/// On-screen footprint of the control panel: the panel box (anchored exactly
+/// where `ControlsOverlay` puts it) plus the 副音 quick strip attached to its
+/// centre-facing side.
+Rect _controlPanelFootprint({
+  required AppState state,
+  required Size screen,
+  required bool isLandscape,
+  required bool isPhone,
+  required bool quickBarEnabled,
+  required PlayerControlGroup group,
+  required double layoutWidth,
+}) {
+  final ({double panelW, double panelH}) panel = panelSizeForWindow(
+    windowW: screen.width,
+    windowH: screen.height,
+    isPhone: isPhone,
+    widthPct: state.sidewayPanelWidthPct,
+    heightPct: state.sidewayPanelHeightPct,
+    widthPx: state.sidewayPanelWidthPx,
+    heightPx: state.sidewayPanelHeightPx,
+  );
+  // The dial the layout sizes against — computed ONCE and handed to both the
+  // rect and the column budget, so the two cannot disagree about how wide the
+  // panel box really is.
+  final double dialDiameter = dialDiameterForHide(
+    span: spanForTotalHeight(panel.panelH, sidewayBarHeight.value, 8),
+    panelW: panel.panelW,
+    scrubberKind: state.phoneOneHandedScrubberKind,
+    ringDialHeightPct: state.ringDialHeightPct,
+    classicScale: state.circleSliderScale,
+  );
+  final double boxW = renderedPanelWidthFor(
+    windowW: screen.width,
+    isPhone: isPhone,
+    widthPct: state.sidewayPanelWidthPct,
+    widthPx: state.sidewayPanelWidthPx,
+    dialDiameter: dialDiameter,
+  );
+  final double quickAvail =
+      sidewayQuickAvailWidth(layoutWidth: layoutWidth, panelW: boxW);
+  final bool attached = showsSidewayQuickColumn(
+    isPhone: isPhone,
+    gateEnabled: BackgroundPlaybackGate.enabled,
+    quickBarEnabled: quickBarEnabled,
+    showingBackgroundGroup:
+        (isPhone || state.desktopCenterZonePhoneMode) &&
+            group == PlayerControlGroup.background,
+    quickAvail: quickAvail,
+  );
+  return sidePanelRectForWindow(
+    windowSize: screen,
+    // The panel box is placed by the overlay's Align, so ask the very same
+    // authority the overlay does — never the panel's *wish*.
+    anchor: resolveControlPanelAnchor(
+      state,
+      isLandscape: isLandscape,
+      width: screen.width,
+    ),
+    isPhone: isPhone,
+    widthPct: state.sidewayPanelWidthPct,
+    heightPct: state.sidewayPanelHeightPct,
+    widthPx: state.sidewayPanelWidthPx,
+    heightPx: state.sidewayPanelHeightPx,
+    dialDiameter: dialDiameter,
+    quickColumnWidth: attached
+        ? sidewayQuickColumnWidth(quickAvail: quickAvail, panelH: panel.panelH)
+        : 0,
+  );
+}
+
 class _DraggableSliderCard extends HookWidget {
   const _DraggableSliderCard({
     required this.frac,
@@ -142,10 +268,21 @@ class _DraggableSliderCard extends HookWidget {
       );
     }
 
-    // Re-clamp when the free region moves (panel side switch / resize) so the
-    // card can never stay parked over the side panel.
+    // The PARENT positions this card (`Positioned(left: initialTopLeft)`) and
+    // re-derives that from the stored fraction on every rebuild, so its copy
+    // always tracks the free region while this one is a `useState` seed nothing
+    // else touches. Clamping the stale value left the two disagreeing —
+    // invisible until the next header drag, which snapped the card back to the
+    // base it had been holding (76px on an 800px window). Adopt where the
+    // parent actually put us instead: that value is already inside the region,
+    // since `fracToTopLeft` scales by `max(0, region.width - card.width)`.
+    //
+    // The fraction is deliberately NOT written back here: it is the source the
+    // parent derives the position FROM, so it can never be the stale one, and
+    // this effect runs during the child's build — marking the parent dirty
+    // there is illegal.
     useEffect(() {
-      topLeft.value = clampToRegion(topLeft.value);
+      topLeft.value = initialTopLeft;
       return null;
     }, [region]);
 
@@ -238,8 +375,11 @@ class SliderTypeDialogBody extends HookWidget {
         store.select(context, (s) => s.phoneSidePositionV);
     final PhoneSideScrubberKind scrubberKind =
         store.select(context, (s) => s.phoneOneHandedScrubberKind);
-    final SidePanelCornerHideMode cornerMode =
-        store.select(context, (s) => s.sidePanelCornerHideMode);
+    // Each platform persists its OWN corner-hide row, so the segment shows and
+    // writes the field this device actually obeys — reading the desktop field
+    // on a phone would display a value the overlay ignores.
+    final SidePanelCornerHideMode cornerMode = store.select(
+        context, (s) => resolveSidePanelCornerHideMode(s));
     final double widthPct =
         store.select(context, (s) => s.sidewayPanelWidthPct);
     final double heightPct =
@@ -251,54 +391,30 @@ class SliderTypeDialogBody extends HookWidget {
     // Mode-agnostic: one knob drives the bar for both dial and classic circle.
     final double barPos = store.select(context, (s) => s.sidewayBarPos);
 
+    // The store owns every mode/placement pairing (the legacy circle slider
+    // type is derived from the mode, and the anchor writes carry the matching
+    // handedness), so these only translate a widget choice into one call and
+    // can never leave the two states disagreeing.
     Future<void> setMode(bool toSideway) async {
-      if (toSideway) {
-        final PhoneSidePositionH h =
-            isPhone ? store.state.mobileSidePositionH : store.state.phoneSidePositionH;
-        final bool left = h == PhoneSidePositionH.left;
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeUseMode(
-            left ? PhoneLandscapeUseMode.leftSide : PhoneLandscapeUseMode.rightSide);
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeSlierType(
-            left ? PhoneLandscapeSliderType.circleLeft : PhoneLandscapeSliderType.circleRight);
-      } else {
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeUseMode(PhoneLandscapeUseMode.normal);
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeSlierType(PhoneLandscapeSliderType.normal);
-      }
+      final PhoneSidePositionH h = isPhone
+          ? store.state.mobileSidePositionH
+          : store.state.phoneSidePositionH;
+      // ignore: discarded_futures
+      store.updatePhoneLandscapeUseMode(toSideway
+          ? useModeForAnchorH(h, store.state.phoneLandscapeUseMode)
+          : PhoneLandscapeUseMode.normal);
     }
 
     Future<void> setHPhone(PhoneSidePositionH? h) async {
       if (h == null) return;
-      final PhoneSidePositionH normalized = h == PhoneSidePositionH.center ? PhoneSidePositionH.right : h;
       // ignore: discarded_futures
-      store.updateMobileSidePositionH(normalized);
-      if (sideway) {
-        final bool left = normalized == PhoneSidePositionH.left;
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeUseMode(
-            left ? PhoneLandscapeUseMode.leftSide : PhoneLandscapeUseMode.rightSide);
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeSlierType(
-            left ? PhoneLandscapeSliderType.circleLeft : PhoneLandscapeSliderType.circleRight);
-      }
+      store.updateMobileSidePositionH(h);
     }
 
     Future<void> setHDesktop(PhoneSidePositionH? h) async {
       if (h == null) return;
       // ignore: discarded_futures
       store.updatePhoneSidePositionH(h);
-      if (sideway) {
-        final bool left = h == PhoneSidePositionH.left;
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeUseMode(
-            left ? PhoneLandscapeUseMode.leftSide : PhoneLandscapeUseMode.rightSide);
-        // ignore: discarded_futures
-        store.updatePhoneLandscapeSlierType(
-            left ? PhoneLandscapeSliderType.circleLeft : PhoneLandscapeSliderType.circleRight);
-      }
     }
 
     Future<void> setV(PhoneSidePositionV? v) async {
@@ -312,6 +428,10 @@ class SliderTypeDialogBody extends HookWidget {
     }
 
     Future<void> setCornerMode(SidePanelCornerHideMode mode) async {
+      if (isPhone) {
+        await store.updateMobileSidePanelCornerHideMode(mode);
+        return;
+      }
       // ignore: discarded_futures
       store.updateSidePanelCornerHideMode(mode);
     }
@@ -326,6 +446,11 @@ class SliderTypeDialogBody extends HookWidget {
           key: const ValueKey<String>('slider-mode-dropdown'),
           initialValue: sideway,
           decoration: InputDecoration(labelText: t.sld_mode_label),
+          // The card is 380 wide and the option labels are sentences, so the
+          // default shrink-to-fit DropdownButton overflows them (a long
+          // translation does it too). `isExpanded` bounds the button to the
+          // field and ellipsizes instead.
+          isExpanded: true,
           items: <DropdownMenuItem<bool>>[
             DropdownMenuItem<bool>(
                 value: false, child: Text(t.sld_mode_normal)),
@@ -373,6 +498,9 @@ class SliderTypeDialogBody extends HookWidget {
                           key: const ValueKey<String>('slider-posH-dropdown'),
                           initialValue: posH,
                           decoration: InputDecoration(labelText: t.sld_pos_h),
+                          // See the mode picker: bound to the field so a long
+                          // translation ellipsizes rather than overflows.
+                          isExpanded: true,
                           items: <DropdownMenuItem<PhoneSidePositionH>>[
                             DropdownMenuItem<PhoneSidePositionH>(
                                 value: PhoneSidePositionH.left,
@@ -393,6 +521,9 @@ class SliderTypeDialogBody extends HookWidget {
                           key: const ValueKey<String>('slider-posV-dropdown'),
                           initialValue: posV,
                           decoration: InputDecoration(labelText: t.sld_pos_v),
+                          // See the mode picker: bound to the field so a long
+                          // translation ellipsizes rather than overflows.
+                          isExpanded: true,
                           items: <DropdownMenuItem<PhoneSidePositionV>>[
                             DropdownMenuItem<PhoneSidePositionV>(
                                 value: PhoneSidePositionV.top,
@@ -432,31 +563,32 @@ class SliderTypeDialogBody extends HookWidget {
                       const ButtonStyle(visualDensity: VisualDensity.compact),
                 ),
                 const SizedBox(height: 12),
-                if (!isPhone) ...[
-                  Text(t.sld_corner_desc, style: const TextStyle(fontSize: 12)),
-                  const SizedBox(height: 6),
-                  SegmentedButton<SidePanelCornerHideMode>(
-                    key: const ValueKey<String>('slider-corner-hide-mode'),
-                    segments: <ButtonSegment<SidePanelCornerHideMode>>[
-                      ButtonSegment<SidePanelCornerHideMode>(
-                          value: SidePanelCornerHideMode.vertical,
-                          label: Text(t.sld_corner_vertical)),
-                      ButtonSegment<SidePanelCornerHideMode>(
-                          value: SidePanelCornerHideMode.horizontal,
-                          label: Text(t.sld_corner_horizontal)),
-                      ButtonSegment<SidePanelCornerHideMode>(
-                          value: SidePanelCornerHideMode.diagonal,
-                          label: Text(t.sld_corner_diagonal)),
-                    ],
-                    selected: <SidePanelCornerHideMode>{cornerMode},
-                    onSelectionChanged: (Set<SidePanelCornerHideMode> sel) =>
-                        setCornerMode(sel.first),
-                    showSelectedIcon: false,
-                    style:
-                        const ButtonStyle(visualDensity: VisualDensity.compact),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                // A phone panel is always anchored to a bottom corner, so the
+                // corner modes are live there too — hiding this row on a phone
+                // left the setting in force with no way to change it.
+                Text(t.sld_corner_desc, style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 6),
+                SegmentedButton<SidePanelCornerHideMode>(
+                  key: const ValueKey<String>('slider-corner-hide-mode'),
+                  segments: <ButtonSegment<SidePanelCornerHideMode>>[
+                    ButtonSegment<SidePanelCornerHideMode>(
+                        value: SidePanelCornerHideMode.vertical,
+                        label: Text(t.sld_corner_vertical)),
+                    ButtonSegment<SidePanelCornerHideMode>(
+                        value: SidePanelCornerHideMode.horizontal,
+                        label: Text(t.sld_corner_horizontal)),
+                    ButtonSegment<SidePanelCornerHideMode>(
+                        value: SidePanelCornerHideMode.diagonal,
+                        label: Text(t.sld_corner_diagonal)),
+                  ],
+                  selected: <SidePanelCornerHideMode>{cornerMode},
+                  onSelectionChanged: (Set<SidePanelCornerHideMode> sel) =>
+                      setCornerMode(sel.first),
+                  showSelectedIcon: false,
+                  style:
+                      const ButtonStyle(visualDensity: VisualDensity.compact),
+                ),
+                const SizedBox(height: 8),
                 if (isPhone)
                   _PanelSizeSlider(
                     label: t.sld_panel_width,
@@ -499,6 +631,9 @@ class SliderTypeDialogBody extends HookWidget {
                 // designs (dial ring + classic circle), so it lives here in the
                 // shared panel section rather than in either style control.
                 NormalizedSliderControl(
+                  // Keyed so tests address the knob by identity rather than
+                  // by its (deliberately descriptive) label copy.
+                  key: const ValueKey<String>('slider-bar-pos-control'),
                   showControl: _noop,
                   icon: Icons.align_horizontal_left_rounded,
                   label: t.sld_bar_position,
@@ -509,7 +644,7 @@ class SliderTypeDialogBody extends HookWidget {
                   onChanged: (v) =>
                       store.updateSidewayBarPos(v / 100.0, persist: false),
                   onChangeEnd: (v) => store.updateSidewayBarPos(v / 100.0),
-                  valueBuilder: (v) => Text('${v.round()}%'),
+                  valueBuilder: (v) => Text(t.sld_value_pct(v.round())),
                 ),
                 const SizedBox(height: 12),
                 const Divider(height: 1),
@@ -560,16 +695,37 @@ class _CircleInline extends HookWidget {
   }
 }
 
+/// Test seam: counts [_CenterActionInline] builds so a test can prove its
+/// subscriptions stayed field-scoped. A whole-state `select(context, (s) => s)`
+/// re-ran these four dropdown rows on EVERY AppState mutation. Lives at file
+/// scope because the widget it watches is private.
+@visibleForTesting
+void Function()? debugOnCenterActionBuild;
+
 class _CenterActionInline extends HookWidget {
   const _CenterActionInline();
   @override
   Widget build(BuildContext context) {
+    debugOnCenterActionBuild?.call();
     final t = getLocalizations(context);
-    final AppState state = useAppStore().select(context, (s) => s);
+    final AppStore store = useAppStore();
+    // Field-scoped, like [SliderTypeDialogBody]: a whole-state identity
+    // selector rebuilt this section on every app mutation, including the live
+    // panel drag this very dialog drives.
+    final bool desktopCenterZonePhoneMode =
+        store.select(context, (s) => s.desktopCenterZonePhoneMode);
+    final CircleSliderCenterAction centerZoneInwardAction =
+        store.select(context, (s) => s.centerZoneInwardAction);
+    final CircleSliderCenterAction centerZoneOutwardAction =
+        store.select(context, (s) => s.centerZoneOutwardAction);
+    final CircleSliderCenterAction centerZoneTopAction =
+        store.select(context, (s) => s.centerZoneTopAction);
+    final CircleSliderCenterAction centerZoneBottomAction =
+        store.select(context, (s) => s.centerZoneBottomAction);
     // The group-switch action only exists where a bottom group switch does:
     // phones, or desktop after the phone-mode opt-in.
     final bool allowSwitchGroup =
-        isMobilePlatform || state.desktopCenterZonePhoneMode;
+        isMobilePlatform || desktopCenterZonePhoneMode;
     final List<CircleSliderCenterAction> options = CircleSliderCenterAction
         .values
         .where((CircleSliderCenterAction a) =>
@@ -622,12 +778,12 @@ class _CenterActionInline extends HookWidget {
         Text(t.sld_center_action, style: const TextStyle(fontSize: 12)),
         const SizedBox(height: 6),
         zoneRow(CenterZone.inward, t.center_zone_inward,
-            state.centerZoneInwardAction),
+            centerZoneInwardAction),
         zoneRow(CenterZone.outward, t.center_zone_outward,
-            state.centerZoneOutwardAction),
-        zoneRow(CenterZone.top, t.center_zone_top, state.centerZoneTopAction),
-        zoneRow(CenterZone.bottom, t.center_zone_bottom,
-            state.centerZoneBottomAction),
+            centerZoneOutwardAction),
+        zoneRow(CenterZone.top, t.center_zone_top, centerZoneTopAction),
+        zoneRow(
+            CenterZone.bottom, t.center_zone_bottom, centerZoneBottomAction),
       ],
     );
   }

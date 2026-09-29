@@ -63,5 +63,5 @@ jobs:
           echo "Pushing $(git rev-list --count HEAD) commits to the public repository..."
           git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" \
             push --force \
-            "https://github.com/tifiyiti/Iris-player-2nd-public.git" \
+            "https://github.com/tifiyitifi/Iris-player-2nd-public.git" \
             HEAD:main

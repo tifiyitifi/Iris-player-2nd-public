@@ -27,6 +27,9 @@ bool _useScenarioMode(BuildContext context) {
 int _effectiveTotal(BuildContext context) {
   final store = usePlayQueueStore();
   final length = store.select(context, (s) => s.playQueue.length);
+  // Evaluated unconditionally (hook order must stay stable across a
+  // legacy<->query backend switch), but only USED in query mode.
+  final queryTotal = useValueListenable(store.totalCountNotifier);
   final useScenario = _useScenarioMode(context);
   final bg = useBackgroundPlaybackStore();
   // While the controls target 副音 the transport belongs to the bg LIST (a
@@ -51,7 +54,10 @@ int _effectiveTotal(BuildContext context) {
 
   if (bgIsControl) return bgLength;
   if (useScenario) return total.data ?? 0;
-  return store.isQueryMode ? store.totalCount : length;
+  // Query mode's real total is NOT `playQueue.length` (the synthetic state is
+  // pinned to one item), and a bare `store.totalCount` read is not a
+  // subscription — subscribe to the store's published mirror instead.
+  return store.isQueryMode ? queryTotal : length;
 }
 
 class PrevButton extends HookWidget {

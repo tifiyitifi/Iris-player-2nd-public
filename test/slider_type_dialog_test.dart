@@ -4,7 +4,6 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/store/use_app_store.dart';
-import 'package:iris/widgets/controls/normalized_slider_control.dart';
 import 'package:iris/widgets/dialogs/show_slider_type_dialog.dart';
 
 Widget _harness() {
@@ -86,9 +85,8 @@ void main() {
 
     // ── Bottom button-bar position: one shared knob (dial AND circle) bound
     // to the store, living in the common panel section ──
-    final Finder barPosSlider = find.ancestor(
-      of: find.text('按钮条位置（靠屏幕中心）'),
-      matching: find.byType(NormalizedSliderControl),
+    final Finder barPosSlider = find.byKey(
+      const ValueKey<String>('slider-bar-pos-control'),
     );
     expect(barPosSlider, findsOneWidget,
         reason: 'the shared bar-position knob must be present');
@@ -103,7 +101,7 @@ void main() {
 
     // ── Picking Normal resets side fields and grays group 2 ──
     await _pickDropdown(
-        tester, const ValueKey('slider-mode-dropdown'), '普通');
+        tester, const ValueKey('slider-mode-dropdown'), '普通 · 底部整条');
     expect(store.state.phoneLandscapeUseMode, PhoneLandscapeUseMode.normal);
     expect(
         store.state.phoneLandscapeSliderType, PhoneLandscapeSliderType.normal);

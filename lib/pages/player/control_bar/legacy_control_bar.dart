@@ -15,6 +15,7 @@ import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/models/storages/local.dart';
 import 'package:iris/models/store/app_state.dart';
+import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
 import 'package:iris/pages/player/control_bar/circle_slider_landscepe_percent_control.dart';
 import 'package:iris/pages/player/control_bar/control_bar_slider.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/control_bar_circle_slider.dart';
@@ -90,7 +91,12 @@ class LegacyControlBar extends HookWidget {
     final isFullScreen = usePlayerUiStore().select(context, (state) => state.isFullScreen);
     final store = usePlayQueueStore();
     final int playQueueLength = store.select(context, (state) => state.playQueue.length);
-    final int totalCount = store.totalCount;
+    // The queue total is a SEPARATE signal from the list length: in query mode
+    // the synthetic state is pinned to one item, so `playQueue.length` is
+    // always 1 and a bare `store.totalCount` read left prev/next visibility
+    // frozen when a search/filter moved the total 1↔N. Subscribing to the
+    // store's published mirror makes showTransport recompute.
+    final int totalCount = useValueListenable(store.totalCountNotifier);
 
     final bool appShuffle = useAppStore().select(context, (state) => state.shuffle);
     final Repeat appRepeat = useAppStore().select(context, (state) => state.repeat);
@@ -118,6 +124,10 @@ class LegacyControlBar extends HookWidget {
 
     final PhoneLandscapeSliderType phoneLandscapeSliderType =
         useAppStore().select(context, (state) => state.phoneLandscapeSliderType);
+    // Same gate the anchor resolver applies: the meta gate retires the legacy
+    // circle placement, so a leftover enum mounts nothing here either.
+    final bool metaSettingsOn =
+        useAppStore().select(context, (state) => state.useMetadataSettings);
     final circleSliderPanelWidthPercent =
         useAppStore().select(context, (state) => state.circleLandscapePercent);
 
@@ -136,10 +146,12 @@ class LegacyControlBar extends HookWidget {
       }
     }();
 
-    final bool useCircleSlider = isMobilePlatform &&
-        isLandscape &&
-        (phoneLandscapeSliderType == PhoneLandscapeSliderType.circleRight ||
-            phoneLandscapeSliderType == PhoneLandscapeSliderType.circleLeft);
+    final bool useCircleSlider = useLegacyCircleSliderPanel(
+      metadataEnabled: metaSettingsOn,
+      isPhone: isMobilePlatform,
+      isLandscape: isLandscape,
+      sliderType: phoneLandscapeSliderType,
+    );
 
     final playQueue = usePlayQueueStore().select(context, (state) => state.playQueue);
     final currentIndex = usePlayQueueStore().select(context, (state) => state.currentIndex);

@@ -137,7 +137,12 @@ enum PhoneSidePositionV { top, middle, bottom }
 /// - [vertical]: slide out along the vertical axis.
 /// - [horizontal]: slide out along the horizontal axis.
 /// - [diagonal]: slide out diagonally to the corner.
-/// Persisted as `slider.cornerHideMode` AUX; default [vertical].
+///
+/// Stored PER PLATFORM — `slider.cornerHideMode` (desktop) and
+/// `slider.phoneCornerHideMode` (phone) — because a phone panel is always
+/// corner-anchored and so honours all three, while sharing one row would let a
+/// desktop choice drive a phone that has no way to change it back. Default
+/// [vertical] on both.
 enum SidePanelCornerHideMode { vertical, horizontal, diagonal }
 
 /// The concrete side scrubber design used when a side mode is
@@ -397,10 +402,22 @@ abstract class AppState with _$AppState {
     @Default(100) int storageBrowserPageSize,
     //@Default(ScreenOrientation.device) ScreenOrientation orientation,
 
-    /// Controls the horizontal slider style on phones.
+    /// Legacy horizontal-slider placement for phones.
     ///
-    /// Defaults to [PhoneLandscapeSliderType.circle] to improve one-handed usability.
-    @Default(PhoneLandscapeSliderType.circleRight)
+    /// DERIVED from [phoneLandscapeUseMode] on every write
+    /// (`updatePhoneLandscapeUseMode` → `sliderTypeForUseMode`) and read only
+    /// by the frozen legacy path; gate-ON runs place the panel from the use
+    /// mode. It stays readable rather than unreadable, so the pair can be
+    /// repaired from either side — but nothing may ACT on it under the gate:
+    /// [useLegacyCircleSliderPanel] is the only thing that mounts a panel from
+    /// this field, and it refuses to while the gate is on, exactly as
+    /// `resolveControlPanelAnchorFrom` refuses to place one by it.
+    ///
+    /// The default is [PhoneLandscapeSliderType.normal], not `circleRight`:
+    /// paired with the [PhoneLandscapeUseMode.normal] default below, `circleRight`
+    /// shipped a right-docked circle slider on a brand-new install while every
+    /// settings surface read "normal" — a pair no UI choice could reach again.
+    @Default(PhoneLandscapeSliderType.normal)
     PhoneLandscapeSliderType phoneLandscapeSliderType,
     @Default(PhoneLandscapeUseMode.normal)
     PhoneLandscapeUseMode phoneLandscapeUseMode,
@@ -483,6 +500,14 @@ abstract class AppState with _$AppState {
     @Default(SidePanelCornerHideMode.vertical)
     @JsonKey(includeToJson: false, includeFromJson: false)
     SidePanelCornerHideMode sidePanelCornerHideMode,
+    // Phone-only twin of [sidePanelCornerHideMode]. Persisted as
+    // `slider.phoneCornerHideMode` — isolated from the desktop row so a
+    // desktop choice can never silently drive (and then be un-editable on) a
+    // phone, the same split `phoneSidePositionH`/`mobileSidePositionH` uses.
+    // A phone anchor is always a bottom corner, so all three modes apply there.
+    @Default(SidePanelCornerHideMode.vertical)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    SidePanelCornerHideMode mobileSidePanelCornerHideMode,
     @Default(30) int snakeFineWindowSeconds,
     @Deprecated('Replaced by sidewayPanelWidthPct/HeightPct (slider.widthPct/heightPct); kept for migration only')
     @Default(40) int circleLandscapePercent,

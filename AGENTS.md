@@ -158,6 +158,9 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
   "fix".
 - **Portable mode:** presence of `portable.flag` next to the exe redirects all data to
   `userdata/`; `AppPaths.init()` must run before any DB/store init.
+- **CHANGELOG encoding:** `CHANGELOG.md` is strict-valid UTF-8 without BOM; Chinese
+  mojibake in GBK viewers (codepage 936 console, `Get-Content` without `-Encoding utf8`,
+  legacy Notepad) is a viewer artifact, not corruption. Do NOT re-encode or add BOM.
 
 ## AI Session Conventions
 

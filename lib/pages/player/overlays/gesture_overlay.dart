@@ -212,12 +212,21 @@ class GestureOverlay extends HookWidget {
     // );
     final gestureLayouts = useAppStore().useActiveGestureLayouts(context);
 
-    final speedModeState = useAppStore().select(context, (s) => s);
-    final bool isDualAxis = resolveSpeedGestureMode(
-          speedModeState,
-          metadataEnabled: speedModeState.useMetadataSettings,
-        ) ==
-        SpeedGestureMode.dualAxis;
+    // Subscribe to the RESOLVED mode, not the state. A whole-state
+    // `select(context, (s) => s)` is not an inert read here: `Store.set` emits
+    // unconditionally and the selector's `==` is Freezed's deep compare, so this
+    // whole overlay — the gesture recognisers, the overlay stack, every value
+    // overlay — re-ran on every AppState mutation, including the
+    // `transientRate` writes the speed gesture below makes several times per
+    // pan. The resolver reads one field, so the enum IS the subscription.
+    final SpeedGestureMode speedGestureMode = useAppStore().select(
+      context,
+      (s) => resolveSpeedGestureMode(
+        s,
+        metadataEnabled: s.useMetadataSettings,
+      ),
+    );
+    final bool isDualAxis = speedGestureMode == SpeedGestureMode.dualAxis;
 
     void handleDualAxisSpeed(double speed, double dx, double dy) {
       selectedSpeed.value = speed;
@@ -345,16 +354,17 @@ class GestureOverlay extends HookWidget {
                 isTransientSpeedActive &&
                 showTransientTip.value)
               Builder(builder: (context) {
-                final appState = useAppStore().select(context, (s) => s);
-                final bool dual = resolveSpeedGestureMode(
-                      appState,
-                      metadataEnabled: appState.useMetadataSettings,
-                    ) ==
-                    SpeedGestureMode.dualAxis;
+                // Only the rate comes from the store here: the axis hint was
+                // already resolved once for the whole overlay, so this tip
+                // needs no second whole-state subscription to render.
+                final double transientRate = useAppStore().select(
+                  context,
+                  (s) => s.transientRate,
+                );
                 return TransientSpeedTip(
-                  speed: appState.transientRate,
+                  speed: transientRate,
                   fading: isFadingOut.value,
-                  showDualHint: dual,
+                  showDualHint: isDualAxis,
                 );
               }),
             // 播放速度 — dualAxis 时替换为新的双轴显眼组件，单轴保持旧组件

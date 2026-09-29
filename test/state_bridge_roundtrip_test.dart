@@ -33,7 +33,7 @@ AppState _richState() {
     folderFirst: false,
     storageBrowserPageSize: 250,
     phoneLandscapeSliderType: PhoneLandscapeSliderType.circleLeft,
-    phoneLandscapeUseMode: PhoneLandscapeUseMode.leftHanded,
+    phoneLandscapeUseMode: PhoneLandscapeUseMode.leftSide,
     phoneOneHandedScrubberKind: PhoneOneHandedScrubberKind.snake,
     snakeFineWindowSeconds: 12,
     circleLandscapePercent: 65,

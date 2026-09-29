@@ -7,7 +7,6 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/dialogs/show_slider_type_dialog.dart';
-import 'package:iris/widgets/dialogs/show_unified_gesture_profile_dialog.dart';
 import 'package:iris/widgets/dialogs/show_orientation_dialog.dart';
 import 'package:iris/widgets/dialogs/show_phone_horizontal_slider_dialog.dart';
 import 'package:iris/widgets/dialogs/show_phone_landscape_use_mode_dialog.dart';
@@ -34,8 +33,6 @@ class Play extends HookWidget {
     final phoneLandscapeUseMode = useAppStore().select(context, (state) => state.phoneLandscapeUseMode);
     final phoneOneHandedKind = useAppStore().select(context, (state) => state.phoneOneHandedScrubberKind);
     final snakeFineSec = useAppStore().select(context, (state) => state.snakeFineWindowSeconds);
-
-    final landscapeGestureProfile = useAppStore().select(context, (state) => state.landscapeGestureProfile);
 
     final screenOrientationLabels = screenOrientationLabelsMap(t);
     final phoneLandscapeSliderTypeLabels = phoneLandscapeSliderTypeLabelsMap(t);
@@ -86,6 +83,9 @@ class Play extends HookWidget {
             ListTile(
               leading: const Icon(Icons.pan_tool_alt_rounded),
               title: Text(t.play_landscape_controls),
+              // The deprecated hand members are folded away by the loader, so
+              // the arms below are unreachable; they exist only to keep the
+              // switch exhaustive over the enum.
               subtitle: Text(switch (phoneLandscapeUseMode) {
                 PhoneLandscapeUseMode.normal => t.play_mode_normal,
                 PhoneLandscapeUseMode.rightSide => t.play_mode_right,
@@ -150,18 +150,13 @@ class Play extends HookWidget {
               title: Text(t.sld_center_action),
               onTap: () => showSliderTypeDialog(context),
             ),
-          if (isMobilePlatform && useAppStore().state.useMetadataSettings)
-            ListTile(
-              leading: const Icon(Icons.touch_app_rounded),
-              title: Text(t.play_gesture_layout),
-              subtitle: Text(
-                landscapeGestureProfile == LandscapeGestureProfile.classic
-                    ? t.ed_gesture_legacy
-                    : t.ed_gesture_region(landscapeGestureProfileLabels(t)[landscapeGestureProfile] ?? landscapeGestureProfile.name),
-              ),
-              onTap: () => showUnifiedGestureProfileDialog(context),
-            ),
-
+          // NOTE: the 手势布局 (gesture_unified) tile used to live here behind
+          // `useAppStore().state.useMetadataSettings` — a BARE read, not a
+          // subscription. It was unreachable regardless: this legacy panel is
+          // only mounted when the metadata gate is OFF (`Settings` returns
+          // `MetaSettingsPage` otherwise), so the condition was always false.
+          // The live entry is the `gesture_unified` editor in the meta page
+          // (features/meta_settings/view/widgets/editor_bindings.dart).
 
           if (isMobilePlatform)
             ListTile(

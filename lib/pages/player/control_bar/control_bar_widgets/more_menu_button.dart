@@ -5,7 +5,6 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
-import 'package:iris/features/phone/one_handed_scrubber/controller/phone_scrubber_slot.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/playback_tools/view/screenshot_capture_flow.dart';
 import 'package:iris/features/playback_tools/store/playback_tools_store.dart';
@@ -41,8 +40,6 @@ import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/layout_breakpoints.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/bottom_sheets/show_open_link_bottom_sheet.dart';
-import 'package:iris/widgets/controls/circle_slider_panel_width_control.dart';
-import 'package:iris/widgets/controls/circle_slider_scale_control.dart';
 import 'package:iris/widgets/dialogs/show_open_link_dialog.dart';
 import 'package:iris/widgets/dialogs/show_control_group_floating_dialog.dart';
 import 'package:iris/widgets/dialogs/show_slider_type_dialog.dart';
@@ -106,10 +103,16 @@ class MoreMenuButton extends HookWidget {
 
     final PhoneLandscapeUseMode phoneUseMode =
         useAppStore().select(context, (s) => s.phoneLandscapeUseMode);
-    final PhoneOneHandedScrubberKind scrubberKind =
-        useAppStore().select(context, (s) => s.phoneOneHandedScrubberKind);
     final bool metaSettingsOn =
         useAppStore().select(context, (s) => s.useMetadataSettings);
+    // This button is instantiated by BOTH bars and `LegacyControlBar` builds
+    // its own, so the menu has to ask which LAYOUT it is attached to — the bar
+    // it lives in, not just the stored mode. `ControlBar.build` can read
+    // `isSidewayPanelMounted` bare because the legacy bar is not in the tree
+    // when it runs; here there is no such structural guarantee, so the veto has
+    // to be applied here.
+    final bool legacyControlBar =
+        useAppStore().select(context, (s) => s.useLegacyControlBar);
     // Menu shortcut hints follow the EFFECTIVE keyboard scheme so the labels
     // never contradict the live bindings (D10).
     final effectiveScheme = resolveKeyboardScheme(
@@ -118,16 +121,27 @@ class MoreMenuButton extends HookWidget {
     );
     final bool isPortraitHidden = isMobilePlatform && !isLandscape;
     final bool shouldShowSidePanelEntry = !isPortraitHidden;
-    final bool oneHandedActive =
-        (isDesktop || (isMobilePlatform && isLandscape)) &&
-            phoneUseMode.usesOneHandedControls;
+    final bool oneHandedActive = isSidePanelLayoutMounted(
+      mode: phoneUseMode,
+      legacyControlBar: legacyControlBar,
+      isPhone: isMobilePlatform,
+      isLandscape: isLandscape,
+    );
     // Is the rendered bar a CircleSliderLayout? Same expression as
     // `ControlBar.build` (`useOneHandedScrubber || useCircleSlider`), so the
-    // menu never disagrees with the layout it is attached to.
+    // menu never disagrees with the layout it is attached to — which is why
+    // `oneHandedActive` above goes through the legacy veto and the raw mount
+    // gate would not do. `LegacyControlBar`'s own circle column is covered by
+    // the second term, and its linear branches carry a rate button of their own.
     final PhoneLandscapeSliderType sliderType =
         useAppStore().select(context, (s) => s.phoneLandscapeSliderType);
     final bool sidewayOrCirclePanel = oneHandedActive ||
-        (isMobilePlatform && isLandscape && sliderType.isCircle);
+        useLegacyCircleSliderPanel(
+          metadataEnabled: metaSettingsOn,
+          isPhone: isMobilePlatform,
+          isLandscape: isLandscape,
+          sliderType: sliderType,
+        );
     // The speed row in More is a FALLBACK: show it exactly when the live bar
     // carries no RateButton of its own. CircleSliderLayout never renders one
     // (any width); the linear bars only get one from kMobileBreakpoint up.
@@ -135,14 +149,6 @@ class MoreMenuButton extends HookWidget {
     // a 600–640 hole where MobileControlLayout was active but the row hid.
     final bool layoutHasRateButton =
         !sidewayOrCirclePanel && width >= kMobileBreakpoint;
-    final PhoneScrubberSlot scrubberSlot = resolveScrubberSlot(
-      kind: scrubberKind,
-      metadataEnabled: metaSettingsOn,
-    );
-    // Ring dial styling only matters when the ring dial itself renders.
-    final bool showRingDialItem = oneHandedActive &&
-        scrubberSlot == PhoneScrubberSlot.oneHanded &&
-        scrubberKind == PhoneOneHandedScrubberKind.dial;
 
     // Playback-tools state must be read HERE (build phase): itemBuilder runs
     // during the tap gesture, where context.select() asserts and kills the
@@ -202,7 +208,6 @@ class MoreMenuButton extends HookWidget {
             sidewayWpx.toStringAsFixed(0), sidewayHpx.toStringAsFixed(0))
         : t.menu_side_panel(
             sidewayW.toStringAsFixed(0), sidewayH.toStringAsFixed(0));
-    final bool showSidewayPanelItems = oneHandedActive;
 
     // Scenario-driven playback only: the current workspace scenario (the
     // active independent entry's own workspace, else SystemPlaying) is the
@@ -471,19 +476,6 @@ class MoreMenuButton extends HookWidget {
     );
   }
 
-  PopupMenuItem _circleSliderPercentItem(BuildContext context, t, int percent) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.space_bar, size: kMenuTileIconSize),
-        title: Text('${t.circle_slider_landscape_percent}: $percent%'),
-      ),
-      onTap: () => showControlForHover(
-        showCircleSliderLandscapePercentControlPopover(context, showControl),
-      ),
-    );
-  }
-
   PopupMenuItem _historyItem(BuildContext context, t, PopupDirection popupDirec,
       KeyboardShortcutScheme scheme) {
     return PopupMenuItem(
@@ -646,21 +638,6 @@ class MoreMenuButton extends HookWidget {
         title: Text(t.show_gesture_overlay),
       ),
       onTap: () => usePlayerUiStore().updateIsShowGestureTips(true),
-    );
-  }
-
-  PopupMenuItem _circleSliderScaleItem(BuildContext context, t, double scale) {
-    final percent = (scale * 100).round();
-
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: Icon(Icons.expand, size: kMenuTileIconSize),
-        title: Text('${t.circle_slider_scale}: $percent%'),
-      ),
-      onTap: () => showControlForHover(
-        showCircleSliderScaleControlPopover(context, showControl),
-      ),
     );
   }
 

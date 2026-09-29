@@ -283,7 +283,11 @@ abstract final class AppSettingsContribution {
       key: 'app.phoneLandscapeSliderType',
       section: SettingsSection.play,
       valueType: SettingValueType.enumeration,
-      defaultValue: 'circleRight',
+      // Mirrors the AppState @Default (parity-guarded): `normal` so a fresh
+      // install is a self-consistent pair with the `normal` use mode. The
+      // circle values remain the enum for blobs written by older builds, and
+      // the store folds them onto the mode.
+      defaultValue: 'normal',
       enumValues: ['normal', 'circleRight', 'circleLeft'],
       widgetKind: SettingWidgetKind.custom,
       editorKey: 'phone_landscape_slider_type',

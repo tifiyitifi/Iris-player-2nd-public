@@ -35,6 +35,7 @@ import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/enums/storage_list_error.dart';
 import 'package:iris/models/storages/file_list_result.dart';
+import 'package:iris/models/storages/local.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/storages/webdav.dart';
 import 'package:iris/models/store/app_state.dart';
@@ -45,6 +46,7 @@ import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/files_sort.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
+import 'package:iris/utils/request_storage_permission.dart';
 import 'package:iris/widgets/adaptive/keyboard_form_shell.dart';
 import 'package:iris/widgets/dialogs/show_append_queue_dialog.dart';
 import 'package:iris/widgets/popups/storages/db/files_widget/file_subtitle.dart';
@@ -276,6 +278,9 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
         _isError = true;
         _errorKind = result.errorKind;
         _errorDetail = result.errorDetail;
+        if (result.errorKind == StorageListErrorKind.permissionDenied) {
+          markStoragePermissionDenied();
+        }
         useStorageStore().markDisconnected(storage.id);
       } else {
         useStorageStore().markConnected(storage.id);
@@ -286,8 +291,11 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
       }
     } catch (e) {
       _isError = true;
-      _errorKind = StorageListErrorKind.unknown;
+      _errorKind = classifyLocalListError(e);
       _errorDetail = e.toString();
+      if (_errorKind == StorageListErrorKind.permissionDenied) {
+        markStoragePermissionDenied();
+      }
       useStorageStore().markDisconnected(storage.id);
     }
 

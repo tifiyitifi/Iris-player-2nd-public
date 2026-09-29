@@ -9,7 +9,8 @@ import 'package:iris/features/control_group/model/enum/player_control_group.dart
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
-import 'package:iris/globals.dart' show sidePanelKeyNotifier;
+import 'package:iris/globals.dart'
+    show sidePanelKeyNotifier, sidePanelLayoutWidthNotifier;
 import 'package:iris/hooks/use_published_global_key.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -73,14 +74,55 @@ class CircleSliderLayout extends HookWidget {
   static const Key _kPanelSlotKey = ValueKey('side_panel_slot');
   static const Key _kQuickSlotKey = ValueKey('side_quick_slot');
 
+  /// Test seam: counts panel builds so a test can prove the subscription stayed
+  /// FIELD-scoped. This subtree re-runs a LayoutBuilder, a
+  /// CustomMultiChildLayout and the whole button wrap, so a whole-state
+  /// subscription here is the most expensive one in the player. Null in prod.
+  static void Function()? debugOnPanelBuild;
+
   @override
   Widget build(BuildContext context) {
+    debugOnPanelBuild?.call();
     final GlobalKey buttonsKey = useMemoized(GlobalKey.new, const <Object?>[]);
     // Per-mount panel-box key, published for the style popovers (see
     // `usePublishedGlobalKey`): a shared key would let a new panel element
     // re-take the old one and re-activate its OverlayPortals mid-layout.
     final GlobalKey panelKey = usePublishedGlobalKey(sidePanelKeyNotifier);
     final ValueNotifier<double> buttonsH = useState(_kButtonsEstimate);
+    // The bar's REAL layout zone, computed inside the LayoutBuilder below but
+    // needed by the settings dialog, which lives outside this subtree. A
+    // ValueNotifier (not a hook state) so publishing it never rebuilds us.
+    final ValueNotifier<double?> layoutZoneW =
+        useMemoized(() => ValueNotifier<double?>(null), const <Object?>[]);
+    useEffect(() {
+      final ValueNotifier<double?> zone = layoutZoneW;
+      // Publish AFTER the frame, never during the LayoutBuilder's build: the
+      // zone is written from that builder, and a listened ValueNotifier fires
+      // synchronously — so a direct write marked the overlay (and the
+      // settings dialog) for rebuild while the framework was still building
+      // them, which is the "setState() or markNeedsBuild() called during
+      // build" error. Deferring also matches what the value MEANS: the zone a
+      // bar was actually laid out in, only knowable once layout settled.
+      void publish() {
+        final double? next = zone.value;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          if (sidePanelLayoutWidthNotifier.value != next) {
+            sidePanelLayoutWidthNotifier.value = next;
+          }
+        });
+      }
+      publish();
+      zone.addListener(publish);
+      return () {
+        zone.removeListener(publish);
+        // Retract on unmount so a reader never budgets a strip against a bar
+        // that is gone. Safe without a token check: exactly one side bar is
+        // live at a time (the APB align editor is mutually exclusive and
+        // publishes under its own notifier).
+        sidePanelLayoutWidthNotifier.value = null;
+      };
+    }, const <Object?>[]);
 
     // No keys on purpose: re-measure on EVERY build. The buttons Wrap
     // re-wraps when the window resizes (more rows on a narrower window),
@@ -102,7 +144,54 @@ class CircleSliderLayout extends HookWidget {
     });
 
     final AppStore store = useAppStore();
-    final AppState app = store.select(context, (s) => s);
+    // FIELD-scoped subscription. A whole-state `select(context, (s) => s)` here
+    // is NOT an inert read: `Store.set` emits unconditionally and the selector's
+    // `==` is Freezed's deep compare, so ANY AppState mutation re-ran the entire
+    // panel — LayoutBuilder, CustomMultiChildLayout, the dial slot and the
+    // button wrap — including the `transientRate` write a speed-gesture drag
+    // makes, for a field this panel renders nowhere. This widget's dependency is
+    // its OWN: narrowing the control bar above cannot reach it, which is why
+    // the panel outlived the overlay fix.
+    final ({
+      double widthPct,
+      double heightPct,
+      double widthPx,
+      double heightPx,
+      double barPos,
+      double ringDialHeightPct,
+      double circleSliderScale,
+      double circlePosX,
+      double circlePosY,
+      PhoneSideScrubberKind scrubberKind,
+      bool oneHandedControls,
+      bool desktopPhoneMode,
+      bool metadataEnabled,
+      double handleRadiusH,
+      double handleRadiusV,
+      double handleInsetH,
+      double handleInsetV,
+    }) panel = store.select(
+      context,
+      (AppState s) => (
+        widthPct: s.sidewayPanelWidthPct,
+        heightPct: s.sidewayPanelHeightPct,
+        widthPx: s.sidewayPanelWidthPx,
+        heightPx: s.sidewayPanelHeightPx,
+        barPos: s.sidewayBarPos,
+        ringDialHeightPct: s.ringDialHeightPct,
+        circleSliderScale: s.circleSliderScale,
+        circlePosX: s.circlePosX,
+        circlePosY: s.circlePosY,
+        scrubberKind: s.phoneOneHandedScrubberKind,
+        oneHandedControls: s.phoneLandscapeUseMode.usesOneHandedControls,
+        desktopPhoneMode: s.desktopCenterZonePhoneMode,
+        metadataEnabled: s.useMetadataSettings,
+        handleRadiusH: s.sidewayHandleRadiusH,
+        handleRadiusV: s.sidewayHandleRadiusV,
+        handleInsetH: s.sidewayHandleInsetH,
+        handleInsetV: s.sidewayHandleInsetV,
+      ),
+    );
     // 副音 quick column visibility (第 4 轮): gated OUTSIDE the panel so a
     // disabled quick bar reserves no space and leaves no gap. Independent of
     // whether 副音 currently runs — the bar's power switch must stay reachable.
@@ -110,32 +199,51 @@ class CircleSliderLayout extends HookWidget {
       context,
       (s) => s.quickBarEnabled,
     );
+    // 副音 feature gate, subscribed through its OWN selector: the `panel` record
+    // above carries `useMetadataSettings` but not `useLegacyStoragePersistence`,
+    // while `BackgroundPlaybackGate.enabled` needs BOTH. A bare read left the
+    // column attached after the subsystem was switched off. Read here (not
+    // inside the LayoutBuilder) so the whole subtree re-resolves on the flip.
+    final bool bgGateEnabled = store.select(
+      context,
+      (AppState s) => !s.useLegacyStoragePersistence && s.useMetadataSettings,
+    );
     // Bottom control group: playback (legacy Wrap) vs 副音 quick controls.
     // Desktop ignores the stored group until the phone-mode opt-in, so a
     // desktop user who never enables it always sees the playback row.
     final PlayerControlGroup controlGroup =
         useControlGroupStore().select(context, (s) => s.group);
     final bool controlGroupSupported =
-        isMobilePlatform || app.desktopCenterZonePhoneMode;
+        isMobilePlatform || panel.desktopPhoneMode;
     final bool showingBackgroundGroup =
         controlGroupSupported &&
             controlGroup == PlayerControlGroup.background;
     // Anchor of the total panel — the caller aligns the panel box with the very
     // same value. It also decides which way the bottom button rows face: the bar
     // is built for one thumb, so its rows hug the edge that faces the screen
-    // centre instead of centring inside the panel.
-    final Alignment panelAnchor = resolveControlPanelAnchor(
-      app,
-      isLandscape: isLandscapeOrientation(
-        runtimeOrientation: app.runtimeOrientation,
-        realOrientation: MediaQuery.orientationOf(context),
-      ),
-      width: width,
+    // centre instead of centring inside the panel. Subscribed to the DERIVED
+    // value, so the six fields behind it are the only writes that can move it.
+    final bool isLandscape = isLandscapeOrientation(
+      runtimeOrientation: store.select(context, (s) => s.runtimeOrientation),
+      realOrientation: MediaQuery.orientationOf(context),
     );
-    final bool showHandles = app.phoneLandscapeUseMode.usesOneHandedControls;
-    final bool isDial = app.phoneOneHandedScrubberKind == PhoneSideScrubberKind.dial;
-    final double circlePosX = app.circlePosX;
-    final double circlePosY = app.circlePosY;
+    final Alignment panelAnchor = store.select(
+      context,
+      (AppState s) => resolveControlPanelAnchorFrom(
+        mode: s.phoneLandscapeUseMode,
+        useMetadataSettings: s.useMetadataSettings,
+        mobileSidePositionH: s.mobileSidePositionH,
+        phoneSidePositionH: s.phoneSidePositionH,
+        phoneSidePositionV: s.phoneSidePositionV,
+        sliderType: s.phoneLandscapeSliderType,
+        isLandscape: isLandscape,
+        width: width,
+      ),
+    );
+    final bool showHandles = panel.oneHandedControls;
+    final bool isDial = panel.scrubberKind == PhoneSideScrubberKind.dial;
+    final double circlePosX = panel.circlePosX;
+    final double circlePosY = panel.circlePosY;
 
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
@@ -149,16 +257,16 @@ class CircleSliderLayout extends HookWidget {
         final bool isPhone = isMobilePlatform;
         double totalW, totalH;
         if (isPhone) {
-          final double widthPct = app.sidewayPanelWidthPct.clamp(10, 100);
-          final double heightPct = app.sidewayPanelHeightPct.clamp(10, 100);
+          final double widthPct = panel.widthPct.clamp(10, 100);
+          final double heightPct = panel.heightPct.clamp(10, 100);
           totalW = pxForPercent(widthPct, windowW);
           totalH = pxForPercent(heightPct, windowH);
           totalW = totalW.clamp(200, m.max(200, windowW - 16));
           totalH = totalH.clamp(160, m.max(160, windowH - 16));
         } else {
           // Desktop absolute px — 1080p notebook habit 380×420, min 260×320, max window*0.8
-          totalW = app.sidewayPanelWidthPx.clamp(260, m.max(260, windowW * 0.8));
-          totalH = app.sidewayPanelHeightPx.clamp(320, m.max(320, windowH * 0.8));
+          totalW = panel.widthPx.clamp(260, m.max(260, windowW * 0.8));
+          totalH = panel.heightPx.clamp(320, m.max(320, windowH * 0.8));
         }
 
         final double span = spanForTotalHeight(totalH, buttonsH.value, _kGap);
@@ -168,8 +276,8 @@ class CircleSliderLayout extends HookWidget {
           span: span,
           panelW: totalW,
           isDial: isDial,
-          ringDialHeightPct: app.ringDialHeightPct,
-          classicScale: app.circleSliderScale,
+          ringDialHeightPct: panel.ringDialHeightPct,
+          classicScale: panel.circleSliderScale,
           kMinDiameter: PhoneRingDialMath.kMinDiameter,
           kClassicMin: _kClassicMin,
           kClassicMax: _kClassicMax,
@@ -206,10 +314,10 @@ class CircleSliderLayout extends HookWidget {
                 circlePosX: circlePosX,
                 circlePosY: circlePosY,
                 totalW: totalW,
-                ringDialHeightPct: app.ringDialHeightPct,
-                classicScale: app.circleSliderScale,
+                ringDialHeightPct: panel.ringDialHeightPct,
+                classicScale: panel.circleSliderScale,
                 anchor: panelAnchor,
-                barPos: app.sidewayBarPos,
+                barPos: panel.barPos,
               ),
               children: [
                 LayoutId(
@@ -309,26 +417,31 @@ class CircleSliderLayout extends HookWidget {
         // Wrapping happens AFTER the resize-handle stack below so the handle
         // geometry (which is relative to the panel box) stays untouched.
         final bool quickOnLeft = panelAnchor.x > 0;
-        const double kQuickGap = 4;
-        const double kQuickMinW = 40;
         // The combined panel (side panel + quick grid) must fit the zone the
         // bar is actually laid out in — NOT the raw screen width, which
-        // overestimates when the playlist dock shrinks the video area. These
-        // constraints already sit INSIDE the container's 8px padding, so only a
-        // small safety margin is subtracted. The grid shrink-wraps to the 1-2
-        // columns it needs, so `quickAvail` is only its upper bound.
+        // overestimates when the playlist dock shrinks the video area. The grid
+        // shrink-wraps to the 1-2 columns it needs, so `quickAvail` is only its
+        // upper bound.
         final double layoutW =
             constraints.maxWidth.isFinite ? constraints.maxWidth : windowW;
-        final double quickAvail = layoutW - 8 - panelW - kQuickGap;
+        // Publish the zone so the settings dialog budgets the 副音 strip off
+        // this and not the window width (see `sidePanelLayoutWidthNotifier`).
+        if (layoutZoneW.value != layoutW) layoutZoneW.value = layoutW;
+        final double quickAvail =
+            sidewayQuickAvailWidth(layoutWidth: layoutW, panelW: panelW);
         // 自适应: the grid widens toward two columns while space allows, and is
         // dropped entirely (rather than squashed) below its minimum.
         // Phones never show the standalone column (the bottom group switch
-        // owns 副音 there); desktop hides it while group 2 is active.
-        final bool showQuickBar =
-            bgQuickBarVisible &&
-            !isMobilePlatform &&
-            !showingBackgroundGroup &&
-            quickAvail >= kQuickMinW;
+        // owns 副音 there); desktop hides it while group 2 is active. The gate
+        // and the column width are shared with the side-panel settings dialog,
+        // so its free region can never disagree with what is rendered here.
+        final bool showQuickBar = showsSidewayQuickColumn(
+          isPhone: isMobilePlatform,
+          gateEnabled: bgGateEnabled,
+          quickBarEnabled: bgQuickBarVisible,
+          showingBackgroundGroup: showingBackgroundGroup,
+          quickAvail: quickAvail,
+        );
 
         // STRUCTURAL STABILITY (flutter/flutter #177693 / #188500, the
         // #182444 family): the tooltip-bearing [panel] lives under the
@@ -353,7 +466,7 @@ class CircleSliderLayout extends HookWidget {
                   ),
                 )
               : const SizedBox.shrink();
-          final double gapW = showQuickBar ? kQuickGap : 0;
+          final double gapW = showQuickBar ? kSidewayQuickGap : 0;
           return Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -374,12 +487,12 @@ class CircleSliderLayout extends HookWidget {
           );
         }
 
-        final Widget panel = panelCore;
+        final Widget panelBox = panelCore;
 
         if (!showHandles) {
           return withQuickBar(Stack(
             clipBehavior: Clip.none,
-            children: <Widget>[panel],
+            children: <Widget>[panelBox],
           ));
         }
 
@@ -389,6 +502,8 @@ class CircleSliderLayout extends HookWidget {
 
         // Drag-time mutual-exclusion limits (更窄/更矮即限位而非溢出)
         // Why 260×320：环150+条30+走廊6+2*inset+Wrap余量，拖至将要遮挡即停
+        // Why clampExtent：上限按窗口比例取，下限是固定地板；窗口缩到地板以下
+        // 两者会反转，而 double.clamp 反向区间会抛 ArgumentError。
         final double dragMinW = m.max(
           isPhone ? 200 : 260,
           PhoneRingDialMath.minPanelWidthForRingAndStrip(
@@ -412,7 +527,7 @@ class CircleSliderLayout extends HookWidget {
         void dragWidth(DragUpdateDetails d, {required bool fromLeft}) {
           showControl?.call();
           final double grow = fromLeft ? -d.delta.dx : d.delta.dx;
-          final double newW = (totalW + grow).clamp(dragMinW, dragMaxW);
+          final double newW = clampExtent(totalW + grow, dragMinW, dragMaxW);
           if (isPhone) {
             final double newPct = (newW / windowW * 100).clamp(10, 100);
             // ignore: discarded_futures
@@ -429,7 +544,7 @@ class CircleSliderLayout extends HookWidget {
         void dragHeight(DragUpdateDetails d, {required bool fromTop}) {
           showControl?.call();
           final double grow = fromTop ? -d.delta.dy : d.delta.dy;
-          final double newH = (totalH + grow).clamp(dragMinH, dragMaxH);
+          final double newH = clampExtent(totalH + grow, dragMinH, dragMaxH);
           if (isPhone) {
             final double newPct = (newH / windowH * 100).clamp(10, 100);
             // ignore: discarded_futures
@@ -446,14 +561,14 @@ class CircleSliderLayout extends HookWidget {
         }
 
         // Windows + meta uses visible rings instead of invisible edge strips.
-        final bool showRings = isWindows && app.useMetadataSettings && showHandles;
+        final bool showRings = isWindows && panel.metadataEnabled && showHandles;
         if (showRings) {
-          final double rawRadiusH = app.sidewayHandleRadiusH.clamp(4.0, 16.0).toDouble();
-          final double rawRadiusV = app.sidewayHandleRadiusV.clamp(4.0, 16.0).toDouble();
+          final double rawRadiusH = panel.handleRadiusH.clamp(4.0, 16.0).toDouble();
+          final double rawRadiusV = panel.handleRadiusV.clamp(4.0, 16.0).toDouble();
           final double radiusH = clampHandleRadius(rawRadiusH, panelW, totalH);
           final double radiusV = clampHandleRadius(rawRadiusV, panelW, totalH);
-          final double insetH = app.sidewayHandleInsetH;
-          final double insetV = app.sidewayHandleInsetV;
+          final double insetH = panel.handleInsetH;
+          final double insetV = panel.handleInsetV;
 
           Widget ringWidget(RingSpec spec) {
             // Visual ring + larger hit area (hot zone ≈ 24px diam).
@@ -479,8 +594,8 @@ class CircleSliderLayout extends HookWidget {
                   switch (spec.edge) {
                     case RingEdge.left:
                       final double newInsetV = applyInsetVDelta(
-                          anchor: anchor, insetV: app.sidewayHandleInsetV, deltaDy: d.delta.dy, panelH: totalH, radiusV: radiusV);
-                      if ((newInsetV - app.sidewayHandleInsetV).abs() > 0.5) {
+                          anchor: anchor, insetV: panel.handleInsetV, deltaDy: d.delta.dy, panelH: totalH, radiusV: radiusV);
+                      if ((newInsetV - panel.handleInsetV).abs() > 0.5) {
                         // ignore: discarded_futures
                         store.updateSidewayHandleInsetV(newInsetV, persist: false);
                       }
@@ -488,8 +603,8 @@ class CircleSliderLayout extends HookWidget {
                       break;
                     case RingEdge.right:
                       final double newInsetV2 = applyInsetVDelta(
-                          anchor: anchor, insetV: app.sidewayHandleInsetV, deltaDy: d.delta.dy, panelH: totalH, radiusV: radiusV);
-                      if ((newInsetV2 - app.sidewayHandleInsetV).abs() > 0.5) {
+                          anchor: anchor, insetV: panel.handleInsetV, deltaDy: d.delta.dy, panelH: totalH, radiusV: radiusV);
+                      if ((newInsetV2 - panel.handleInsetV).abs() > 0.5) {
                         // ignore: discarded_futures
                         store.updateSidewayHandleInsetV(newInsetV2, persist: false);
                       }
@@ -497,8 +612,8 @@ class CircleSliderLayout extends HookWidget {
                       break;
                     case RingEdge.top:
                       final double newInsetH = applyInsetHDelta(
-                          anchor: anchor, insetH: app.sidewayHandleInsetH, deltaDx: d.delta.dx, panelW: panelW, radiusH: radiusH);
-                      if ((newInsetH - app.sidewayHandleInsetH).abs() > 0.5) {
+                          anchor: anchor, insetH: panel.handleInsetH, deltaDx: d.delta.dx, panelW: panelW, radiusH: radiusH);
+                      if ((newInsetH - panel.handleInsetH).abs() > 0.5) {
                         // ignore: discarded_futures
                         store.updateSidewayHandleInsetH(newInsetH, persist: false);
                       }
@@ -506,8 +621,8 @@ class CircleSliderLayout extends HookWidget {
                       break;
                     case RingEdge.bottom:
                       final double newInsetH2 = applyInsetHDelta(
-                          anchor: anchor, insetH: app.sidewayHandleInsetH, deltaDx: d.delta.dx, panelW: panelW, radiusH: radiusH);
-                      if ((newInsetH2 - app.sidewayHandleInsetH).abs() > 0.5) {
+                          anchor: anchor, insetH: panel.handleInsetH, deltaDx: d.delta.dx, panelW: panelW, radiusH: radiusH);
+                      if ((newInsetH2 - panel.handleInsetH).abs() > 0.5) {
                         // ignore: discarded_futures
                         store.updateSidewayHandleInsetH(newInsetH2, persist: false);
                       }
@@ -561,7 +676,7 @@ class CircleSliderLayout extends HookWidget {
 
           return withQuickBar(Stack(
             clipBehavior: Clip.none,
-            children: <Widget>[panel, ...ringWidgets],
+            children: <Widget>[panelBox, ...ringWidgets],
           ));
         }
 
@@ -694,7 +809,7 @@ class CircleSliderLayout extends HookWidget {
 
         return withQuickBar(Stack(
           clipBehavior: Clip.none,
-          children: <Widget>[panel, ...zones],
+          children: <Widget>[panelBox, ...zones],
         ));
       },
     );

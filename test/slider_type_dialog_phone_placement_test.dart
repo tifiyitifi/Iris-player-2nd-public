@@ -8,6 +8,10 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/dialogs/show_slider_type_dialog.dart';
 
+/// Phone placement of the side-panel settings card. The desktop counterpart
+/// lives in `slider_type_dialog_desktop_placement_test.dart` (one `testWidgets`
+/// per file: `StoreScope.dispose()` disposes every store the locator manages, so
+/// a later test in the same file could only mutate a closed store).
 Widget _harness() {
   return StoreScope(
     child: MaterialApp(
@@ -26,6 +30,12 @@ Widget _harness() {
       ),
     ),
   );
+}
+
+void _sizeTo(WidgetTester tester, Size logical) {
+  tester.view.physicalSize = logical * tester.view.devicePixelRatio;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
 }
 
 void main() {
@@ -89,5 +99,33 @@ void main() {
     );
     expect(moved.overlaps(leftPanel), isFalse);
     expect(moved.left, greaterThanOrEqualTo(leftPanel.right));
+  });
+
+  // A phone in portrait renders a LINEAR bottom bar — no side panel exists
+  // there, so the stored one-handed mode must not shrink the card into a strip
+  // that avoids nothing at all.
+  testWidgets('phone portrait: no phantom strip — the card keeps its width',
+      (tester) async {
+    debugIsMobilePlatformOverride = true;
+    addTearDown(() => debugIsMobilePlatformOverride = null);
+    _sizeTo(tester, const Size(400, 800));
+
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
+    useAppStore().set(const AppState(
+      useMetadataSettings: true,
+      phoneLandscapeUseMode: PhoneLandscapeUseMode.rightSide,
+      mobileSidePositionH: PhoneSidePositionH.right,
+      sidewayPanelWidthPct: 40,
+      sidewayPanelHeightPct: 90,
+    ));
+    await tester.pump();
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    final Rect card =
+        tester.getRect(find.byKey(const Key('side-slider-panel-card')));
+    expect(card.width, 380,
+        reason: 'nothing to avoid in portrait — no strip, no squeeze');
   });
 }

@@ -12,6 +12,7 @@ import 'package:iris/features/media_library/scan/service/recursive_scan_service.
 import 'package:iris/features/media_library/scan/service/scan_preflight.dart';
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
+import 'package:iris/features/media_library/services/local_storage_discovery.dart';
 import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
@@ -139,43 +140,41 @@ class StoragesDbList extends HookWidget {
     final dbLocalStorages = useFuture(dbLocalStoragesFuture).data ?? [];
 
     final scannedLocalStoragesFuture = useMemoized(() async => await getLocalStorages(context), []);
-    final scannedLocalStorages = useFuture(scannedLocalStoragesFuture).data ?? [];
+    final scannedLocalStoragesSnapshot = useFuture(scannedLocalStoragesFuture);
+    final scannedLocalStorages = scannedLocalStoragesSnapshot.data ?? [];
 
-    // Persist scanned storages
+    // Persist scanned storages. Delegated to the shared discovery service (the
+    // popup root also runs it) so there is ONE reconciliation owner: a direct
+    // call here in parallel with the root's would race the same `addStorage`.
+    // Microtask-deferred: flutter_hooks runs effect callbacks during the build
+    // phase, where mutating stores can raise "markNeedsBuild() during build".
     useEffect(() {
-      Future.microtask(() async {
-        await persistScannedStorages(
-          scannedStorages: scannedLocalStorages,
-          dbStorages: dbLocalStorages,
-          store: store,
-        );
-      });
+      final labels = LocalStorageLabels.of(t);
+      Future.microtask(
+          () => LocalStorageDiscovery.ensure(labels: labels, store: store));
       return null;
     }, [scannedLocalStorages, dbLocalStorages]);
 
     final storagesFromStore = store.select(context, (state) => state.storages);
     final allStorages = useMemoized(
-      () {
-        // A currently-mounted disk is represented by its persisted entry once
-        // the reconciler has matched it (by stable volume id), so hide the
-        // fresh enumeration of that same volume to avoid a duplicate tile.
-        final storeLocalVolumeIds = storagesFromStore
-            .whereType<LocalStorage>()
-            .map((s) => s.volumeId)
-            .whereType<String>()
-            .toSet();
-        return [
-          ...scannedLocalStorages.where((l) =>
-              l.volumeId == null ||
-              !storeLocalVolumeIds.contains(l.volumeId)),
-          ...storagesFromStore.where(
-              (s) => !scannedLocalStorages.any((l) => l.id == s.id)),
-        ];
-      },
+      () => mergeScannedAndStoredStorages(
+        scanned: scannedLocalStorages,
+        stored: storagesFromStore,
+      ),
       [scannedLocalStorages, storagesFromStore],
     );
 
     final isHandlingTap = useState(false);
+
+    // A blank body is a bare ListView, i.e. indistinguishable from a failed or
+    // still-pending enumeration. INFO level: `log.legacy.*` is silent by default
+    // (see Log.init) and can be opened with
+    // `--dart-define=IRIS_LOG_KEYS=log.legacy.db`.
+    _log.i('StoragesDbList: scanned=${scannedLocalStorages.length} '
+        'storeLocal=${storagesFromStore.whereType<LocalStorage>().length} '
+        'dbLocal=${dbLocalStorages.length} total=${allStorages.length} '
+        'scannedState=${scannedLocalStoragesSnapshot.connectionState} '
+        'scannedError=${scannedLocalStoragesSnapshot.error}');
 
     // F-001 (D2/D32): the whole-storage scan + more tile is gated on the
     // scenario mode; legacy mode keeps the pre-existing trailing unchanged.

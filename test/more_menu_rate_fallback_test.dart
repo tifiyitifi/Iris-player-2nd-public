@@ -99,9 +99,10 @@ void main() {
   void configure({
     PhoneLandscapeUseMode useMode = PhoneLandscapeUseMode.normal,
     PhoneLandscapeSliderType sliderType = PhoneLandscapeSliderType.normal,
+    bool gate = true,
   }) {
     useAppStore().set(useAppStore().state.copyWith(
-          useMetadataSettings: true,
+          useMetadataSettings: gate,
           phoneLandscapeUseMode: useMode,
           phoneLandscapeSliderType: sliderType,
           runtimeOrientation: ScreenOrientation.device,
@@ -157,13 +158,36 @@ void main() {
   testWidgets('plain circle slider in phone landscape exposes the speed row',
       (tester) async {
     const surface = Size(1024, 600);
+    // GATE OFF: with the meta gate on, the use mode is the placement authority
+    // and `useLegacyCircleSliderPanel` mounts nothing, so a stored circleRight
+    // beside a `normal` mode is a leftover pair, not a panel.
+    configure(
+      useMode: PhoneLandscapeUseMode.normal,
+      sliderType: PhoneLandscapeSliderType.circleRight,
+      gate: false,
+    );
+    await openMoreMenu(tester, surface);
+
+    expect(find.textContaining('播放速度'), findsOneWidget);
+  });
+
+  testWidgets('gate ON: a stale circle type beside a normal mode mounts no '
+      'panel, so a wide linear bar keeps its own speed button', (tester) async {
+    const surface = Size(1400, 800);
+    // The bar/anchor disagreement this pins: the menu used to read the leftover
+    // `circleRight` as "a circle panel is on screen" and suppress the fallback
+    // row, while the bar — gated on the same bit the anchor resolver is — is a
+    // linear layout that renders `controls.rate` itself. Nothing was left to
+    // offer the action, and the panel the menu was dodging did not exist.
     configure(
       useMode: PhoneLandscapeUseMode.normal,
       sliderType: PhoneLandscapeSliderType.circleRight,
     );
     await openMoreMenu(tester, surface);
 
-    expect(find.textContaining('播放速度'), findsOneWidget);
+    expect(find.textContaining('播放速度'), findsNothing,
+        reason: 'no circle panel is mounted, so the wide linear bar owns the '
+            'speed button and the fallback row would duplicate it');
   });
 
   testWidgets('600-640 width (mobile layout) exposes the speed row',

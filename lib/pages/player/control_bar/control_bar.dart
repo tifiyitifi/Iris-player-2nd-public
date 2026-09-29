@@ -53,6 +53,11 @@ class ControlBar extends HookWidget {
         useAppStore().select(context, (state) => state.phoneLandscapeSliderType);
     final PhoneLandscapeUseMode phoneLandscapeUseMode =
         useAppStore().select(context, (state) => state.phoneLandscapeUseMode);
+    // The hand the scrubber mirrors by. Resolved from the panel's own anchor
+    // (so a centre anchor keeps the stored hand) rather than read straight off
+    // the mode, which let the dial and the button rows disagree.
+    final bool panelIsLeft =
+        useAppStore().select(context, panelIsLeftHanded);
     final circleSliderPanelWidthPercent =
         useAppStore().select(context, (state) => state.circleLandscapePercent);
 
@@ -64,17 +69,27 @@ class ControlBar extends HookWidget {
       realOrientation: realOrientation,
     );
 
-final bool useCircleSlider = isMobilePlatform &&
-        isLandscape &&
-        (phoneLandscapeSliderType == PhoneLandscapeSliderType.circleRight ||
-            phoneLandscapeSliderType == PhoneLandscapeSliderType.circleLeft);
-    final bool useOneHandedScrubber =
-        (isDesktop || (isMobilePlatform && isLandscape)) &&
-            phoneLandscapeUseMode.usesOneHandedControls;
-    final PhoneOneHandedScrubberKind scrubberKind =
-        useAppStore().select(context, (state) => state.phoneOneHandedScrubberKind);
     final bool metaSettingsOn =
         useAppStore().select(context, (state) => state.useMetadataSettings);
+
+    // The plain circle panel is LEGACY placement, so the meta gate retires it
+    // the same way the anchor resolver does: with the gate on, the one-handed
+    // use mode is the only reason a panel exists. Mounting one off a leftover
+    // enum put a panel on screen that the overlay placed bottom-centre, hid
+    // like a linear bar and left the settings dialog covering it.
+    final bool useCircleSlider = useLegacyCircleSliderPanel(
+      metadataEnabled: metaSettingsOn,
+      isPhone: isMobilePlatform,
+      isLandscape: isLandscape,
+      sliderType: phoneLandscapeSliderType,
+    );
+    final bool useOneHandedScrubber = isSidewayPanelMounted(
+      oneHanded: phoneLandscapeUseMode.usesOneHandedControls,
+      isPhone: isMobilePlatform,
+      isLandscape: isLandscape,
+    );
+    final PhoneOneHandedScrubberKind scrubberKind =
+        useAppStore().select(context, (state) => state.phoneOneHandedScrubberKind);
     // Ring dial ships metadata-driven only; under the frozen legacy path a
     // stale 'dial' selection degrades to the classic circle slider.
     final PhoneScrubberSlot scrubberSlot = resolveScrubberSlot(
@@ -186,7 +201,7 @@ final bool useCircleSlider = isMobilePlatform &&
                         ? PhoneOneHandedScrubber(
                             showControl: showControl,
                             color: color,
-                            isLeftHanded: phoneLandscapeUseMode.isLeftHanded,
+                            isLeftHanded: panelIsLeft,
                             availableSpan: availableSpan,
                             dialHeightPx: dialHeightPx,
                           )

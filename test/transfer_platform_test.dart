@@ -69,6 +69,40 @@ void main() {
       expect(PlatformKeyPolicy.isTransferableSnapshotField('autoResize', 'unknown'), isTrue);
       expect(PlatformKeyPolicy.isTransferableSnapshotField('gestureMode', 'unknown'), isTrue);
     });
+
+    test('the slider type crosses to desktop; the use mode stays phone-only', () {
+      // The one-handed SIDE PANEL runs on desktop too (opt-in via
+      // `desktopCenterZonePhoneMode`), and the slider-type dialog is exposed
+      // there — `app_settings_contribution` declares the row visible on
+      // android/windows/linux/macos, and the parity test lists it among the
+      // DESKTOP play keys. Classifying the snapshot field as mobile-only used
+      // to drop the user's slider type on every android<->desktop transfer.
+      expect(PlatformKeyPolicy.isTransferableSnapshotField('phoneLandscapeSliderType', 'windows'), isTrue);
+      expect(PlatformKeyPolicy.isTransferableSnapshotField('phoneLandscapeSliderType', 'linux'), isTrue);
+      expect(PlatformKeyPolicy.isTransferableSnapshotField('phoneLandscapeSliderType', 'android'), isTrue);
+
+      // Its sibling is genuinely phone-only (the contribution declares
+      // `app.phoneLandscapeUseMode` android-only), and stays that way.
+      expect(PlatformKeyPolicy.isTransferableSnapshotField('phoneLandscapeUseMode', 'windows'), isFalse);
+      expect(PlatformKeyPolicy.isTransferableSnapshotField('phoneLandscapeUseMode', 'android'), isTrue);
+    });
+
+    test('a desktop-configured slider type now reaches a phone import', () {
+      // The round-trip that actually regressed: a desktop user picks
+      // circleLeft, exports, imports on Android. The row must survive.
+      const snapshot = <String, dynamic>{
+        'language': 'zh',
+        'phoneLandscapeSliderType': 'circleLeft',
+        'autoResize': true,
+      };
+      final kept = snapshot.keys
+          .where((k) => PlatformKeyPolicy.isTransferableSnapshotField(k, 'android'))
+          .toSet();
+      expect(kept, contains('phoneLandscapeSliderType'));
+      expect(kept, contains('language'));
+      expect(kept, isNot(contains('autoResize')),
+          reason: 'unrelated desktop-only knobs must still be skipped');
+    });
   });
 
   group('PlatformKeyPolicy AUX rows', () {
@@ -84,6 +118,23 @@ void main() {
       expect(PlatformKeyPolicy.isTransferableAuxKey('playback.resumeOnStartup', 'android'), isTrue);
       expect(PlatformKeyPolicy.isTransferableAuxKey('slider.phonePosH', 'android'), isTrue);
       expect(PlatformKeyPolicy.isTransferableAuxKey('video.mobileDisplayMode', 'android'), isTrue);
+    });
+
+    test('both corner-hide rows cross a transfer in either direction', () {
+      // They are per-platform rows, not platform-scoped ones: moving a device
+      // should carry each device's own choice to the new one. Skipping them
+      // would silently reset the panel's hide direction on arrival.
+      for (final key in <String>[
+        'slider.cornerHideMode',
+        'slider.phoneCornerHideMode',
+      ]) {
+        expect(PlatformKeyPolicy.isTransferableAuxKey(key, 'android'), isTrue,
+            reason: '$key must reach a phone');
+        expect(PlatformKeyPolicy.isTransferableAuxKey(key, 'ios'), isTrue,
+            reason: '$key must reach a phone');
+        expect(PlatformKeyPolicy.isTransferableAuxKey(key, 'windows'), isTrue,
+            reason: '$key must reach a desktop');
+      }
     });
 
     test('mobile AUX rows skipped on windows, generic rows kept', () {

@@ -27,27 +27,52 @@ class OsdOverlay extends HookWidget {
     final OsdEntry? entry = useOsdStore().select(context, (s) => s);
     if (entry == null) return const SizedBox.shrink();
 
-    final AppState app = useAppStore().select(context, (s) => s);
+    // FIELD-scoped, like the player overlays: a whole-state read re-ran this
+    // pill on every AppState mutation — `Store.set` emits unconditionally and
+    // Freezed's `==` is a deep compare — for six fields it renders.
+    final ({
+      bool gate,
+      bool enabled,
+      OsdVisibilityMode visibilityMode,
+      OsdHAlign hAlign,
+      OsdVAlign vAlign,
+      OsdLayout layout,
+    }) osd = useAppStore().select(
+      context,
+      (AppState s) => (
+        gate: s.useMetadataSettings,
+        enabled: s.osdEnabled,
+        visibilityMode: s.osdVisibilityMode,
+        hAlign: s.osdHAlign,
+        vAlign: s.osdVAlign,
+        layout: s.osdLayout,
+      ),
+    );
     final bool isShowControl =
         usePlayerUiStore().select(context, (s) => s.isShowControl);
 
     // Gate + visibility mode — mirrors `DefVisibility('osd.')` contract but
     // per-toast so toggling the setting mid-toast hides immediately.
-    final bool osdGate = app.useMetadataSettings && MetaSettingsModule.ready;
-    if (!resolveOsdShouldShow(app, osdGate, isShowControl: isShowControl)) {
+    final bool osdGate = osd.gate && MetaSettingsModule.ready;
+    if (!resolveOsdShouldShowFrom(
+      osdEnabled: osd.enabled,
+      visibilityMode: osd.visibilityMode,
+      metadataEnabled: osdGate,
+      isShowControl: isShowControl,
+    )) {
       return const SizedBox.shrink();
     }
 
-    final alignment = resolveOsdAlignment(app.osdHAlign, app.osdVAlign);
-    final isTwoLines = app.osdLayout == OsdLayout.twoLines;
+    final alignment = resolveOsdAlignment(osd.hAlign, osd.vAlign);
+    final isTwoLines = osd.layout == OsdLayout.twoLines;
 
     // 9-grid inset: left/top mirror PotPlayer default (24/48), right/bottom
     // clear the sequence chip (48) and the bottom control bar.
     final EdgeInsets padding = EdgeInsets.only(
-      left: app.osdHAlign == OsdHAlign.left ? 24 : 0,
-      right: app.osdHAlign == OsdHAlign.right ? 24 : 0,
-      top: app.osdVAlign == OsdVAlign.top ? 48 : 0,
-      bottom: app.osdVAlign == OsdVAlign.bottom ? 140 : 0,
+      left: osd.hAlign == OsdHAlign.left ? 24 : 0,
+      right: osd.hAlign == OsdHAlign.right ? 24 : 0,
+      top: osd.vAlign == OsdVAlign.top ? 48 : 0,
+      bottom: osd.vAlign == OsdVAlign.bottom ? 140 : 0,
     );
 
     // No Positioned here — the mount point in Player already wraps this

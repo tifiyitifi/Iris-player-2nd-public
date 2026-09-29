@@ -138,7 +138,9 @@ const List<SettingDomain> kSettingDomains = <SettingDomain>[
     storagePrefix: 'slider.',
     editorKeyForm: '(AUX only — no catalog defs)',
     note: 'Sideway-panel anchor/geometry rows; edited live on the panel, so '
-        'they have no own def/editor key.',
+        'they have no own def/editor key. Some rows are split per platform '
+        '(posH/phonePosH, cornerHideMode/phoneCornerHideMode) so the two '
+        'devices never overwrite one another.',
   ),
   SettingDomain(
     defNamespace: 'speed',

@@ -172,7 +172,17 @@ sealed class Storage with _$Storage implements _Storage {
       return getFTPFilesResult(this as FTPStorage, path);
     }
     if (type != StorageType.webdav) {
-      return FileListResult(await getFiles(path));
+      // Local / SAF: classify the failure so a permission denial (or a revoked
+      // SAF grant) is surfaced as an error with a grant entry, never as an
+      // empty folder. [getFiles] keeps its legacy list-only contract.
+      if (isAndroid && path.isNotEmpty && path[0].startsWith('content://')) {
+        final containerUri = await _safContainerUri(
+          path[0],
+          path.sublist(1).where((s) => s.isNotEmpty).toList(),
+        );
+        return getContentFilesResult(containerUri, path);
+      }
+      return getLocalFilesResult(this as LocalStorage, path);
     }
 
     final s = this as WebDAVStorage;

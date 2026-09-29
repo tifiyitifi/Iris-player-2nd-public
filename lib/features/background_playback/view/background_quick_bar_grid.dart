@@ -25,6 +25,14 @@ const double kQuickSpacing = 4;
 /// whole screen width (product decision: 2).
 const int kQuickMaxColumns = 2;
 
+/// Number of actions the VERTICAL (side-panel) 副音 strip renders.
+///
+/// The widget builds its list from per-state tooltips, so the LENGTH is the
+/// contract that lets the side panel's on-screen footprint be computed without
+/// measuring the grid (see `sidewayQuickColumnWidth`). A new action must bump
+/// this, or the settings dialog reserves the wrong width.
+const int kQuickBarVerticalActionCount = 10;
+
 /// Resolved layout of the vertical strip.
 class QuickBarGrid {
   const QuickBarGrid({

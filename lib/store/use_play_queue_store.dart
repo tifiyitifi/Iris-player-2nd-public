@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:iris/store/kv/kv_store.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
@@ -388,6 +389,27 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
 
   PlayQueueBackend get activeBackend => _activeBackend;
 
+  /// Reactive mirror of [totalCount].
+  ///
+  /// Why a notifier and not `select((s) => …)`: in query mode the SYNTHETIC
+  /// state published to subscribers is pinned to a SINGLE item
+  /// ([_syncSyntheticState]), so `playQueue.length` is always 1 and carries no
+  /// information about the queue's real size — the total lives in the query
+  /// backend's own state. A widget that only subscribed to `playQueue.length`
+  /// therefore never learned that a search/filter moved the total 1↔N, and a
+  /// bare `store.totalCount` read (no subscription) left prev/next visibility
+  /// frozen. Published from [_syncSyntheticState] — the single funnel every
+  /// mutation passes through — so both backends stay covered.
+  ///
+  /// `late final` on purpose: seeding it with [totalCount] at first ACCESS
+  /// (not at construction) means a widget subscribing on the very first frame
+  /// already sees the real queue size, matching what the previous bare read
+  /// gave it. A field initializer would have pinned it to the empty-queue 0
+  /// that [_activeBackend] holds during construction and hidden prev/next for
+  /// one frame.
+  late final ValueNotifier<int> totalCountNotifier =
+      ValueNotifier<int>(totalCount);
+
   /// Lazy construction so ANY entry path (onReady, AppStore.onReady racing
   /// ahead of us, direct switchBackend calls) is safe regardless of order.
   void _ensureQueryBackend() {
@@ -420,7 +442,15 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
     final loaded = await _activePersistence.load();
     if (loaded != null) {
       set(loaded);
-      if (!_isQueryMode) _legacyBackend.state = loaded;
+      if (!_isQueryMode) {
+        _legacyBackend.state = loaded;
+      }
+      // This branch never runs `_syncSyntheticState`, so publish here or a
+      // backend switch would leave subscribers on the OLD backend's total.
+      // Unconditional on purpose: `QueryPlayQueuePersistence.load()` happens to
+      // return null today, so the query side of this branch is unreachable — a
+      // publish that costs nothing removes the question of whether it is.
+      _publishTotalCount();
     } else if (_isQueryMode) {
       final qs = await _queryBackend!.queryLoad();
       if (qs != null) _queryBackend!.set(qs);
@@ -595,11 +625,13 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
   Future<void> _syncSyntheticState() async {
     if (!_isQueryMode) {
       set(_legacyBackend.state);
+      _publishTotalCount();
       return;
     }
 
     if (_queryBackend!.state.totalCount == 0) {
       set(PlayQueueState(playQueue: [], currentIndex: 0));
+      _publishTotalCount();
       return;
     }
 
@@ -612,6 +644,13 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
     } else {
       set(PlayQueueState(playQueue: [], currentIndex: 0));
     }
+    _publishTotalCount();
+  }
+
+  /// Mirrors [totalCount] onto [totalCountNotifier] so UI can subscribe to it.
+  void _publishTotalCount() {
+    final int next = totalCount;
+    if (totalCountNotifier.value != next) totalCountNotifier.value = next;
   }
 
   // ========== Load / Save ==========

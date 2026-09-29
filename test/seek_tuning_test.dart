@@ -120,6 +120,17 @@ void main() {
     });
   });
 
+  group('burst seek precision', () {
+    test('a step burst never relaxes mpv precise seeking', () {
+      // mpv's keyframe seek (`hr-seek=no`) lands on the keyframe BEFORE the
+      // target, so a held / continuously re-tapped ←/→ replays the previous
+      // GOP in place instead of advancing the progress (the 回跳重播 defect).
+      // The 120ms engine-seek throttle + hr-seek-framedrop=yes already fix the
+      // original "frozen, then one big jump" symptom, so the toggle stays off.
+      expect(kStepBurstRelaxesPreciseSeek, isFalse);
+    });
+  });
+
   group('TrailingCoalescer', () {
     test('keeps only the newest value and clears on flush', () {
       final c = TrailingCoalescer<int>();
@@ -165,6 +176,129 @@ void main() {
       // balanced == the values the media_kit hook asserts by default.
       expect(VideoCachePreset.balanced.maxBytes, 150 * 1024 * 1024);
       expect(VideoCachePreset.balanced.backBytes, 64 * 1024 * 1024);
+    });
+  });
+
+  group('isStepLanded', () {
+    test('forward: at/past the target within tolerance counts as landed', () {
+      expect(isStepLanded(posMs: 3000, targetMs: 3000, forward: true), isTrue);
+      expect(isStepLanded(posMs: 2600, targetMs: 3000, forward: true), isTrue);
+      expect(isStepLanded(posMs: 2599, targetMs: 3000, forward: true), isFalse);
+      // Playback continued past the target after the seek landed.
+      expect(isStepLanded(posMs: 9000, targetMs: 3000, forward: true), isTrue);
+    });
+
+    test('backward: at/before the target within tolerance counts as landed', () {
+      expect(isStepLanded(posMs: 3000, targetMs: 3000, forward: false), isTrue);
+      expect(isStepLanded(posMs: 3400, targetMs: 3000, forward: false), isTrue);
+      expect(isStepLanded(posMs: 3401, targetMs: 3000, forward: false), isFalse);
+      expect(isStepLanded(posMs: 0, targetMs: 3000, forward: false), isTrue);
+    });
+  });
+
+  group('StepSeekChain', () {
+    final DateTime t0 = DateTime(2026);
+
+    test('issues one target at a time', () {
+      final c = StepSeekChain();
+      expect(c.takeNext(t0), isNull);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      final first = c.takeNext(t0);
+      expect(first?.targetMs, 1000);
+      expect(c.hasInFlight, isTrue);
+      // A queued target never goes out while one is still in flight.
+      c.push(2000, engineTargetMs: 2000, forward: true);
+      expect(c.pendingCount, 1);
+      expect(c.takeNext(t0), isNull);
+    });
+
+    test('a landed target releases the next queued one in order', () {
+      final c = StepSeekChain();
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.push(2000, engineTargetMs: 2000, forward: true);
+      expect(c.takeNext(t0)?.targetMs, 1000);
+      expect(c.notePosition(1000), isTrue);
+      expect(c.hasInFlight, isFalse);
+      expect(c.takeNext(t0)?.targetMs, 2000);
+    });
+
+    test('a pre-landing report does not count', () {
+      final c = StepSeekChain();
+      c.push(6000, engineTargetMs: 6000, forward: true);
+      c.takeNext(t0);
+      expect(c.notePosition(3000), isFalse);
+      expect(c.inFlightMs, 6000);
+      expect(c.notePosition(6000), isTrue);
+    });
+
+    test('backward steps land on the lower side', () {
+      final c = StepSeekChain();
+      c.push(4000, engineTargetMs: 4000, forward: false);
+      c.takeNext(t0);
+      expect(c.notePosition(4401), isFalse);
+      expect(c.notePosition(4000), isTrue);
+    });
+
+    test('the landing check uses the ENGINE axis, not the virtual one', () {
+      // Virtual media: the caller re-enters seek() with the VIRTUAL target
+      // while the engine lands on the segment-local position.
+      final c = StepSeekChain();
+      c.push(60000, engineTargetMs: 5000, forward: true);
+      expect(c.takeNext(t0)?.targetMs, 60000);
+      expect(c.notePosition(5000), isTrue);
+    });
+
+    test('the oldest pending target is dropped when the input outpaces', () {
+      final c = StepSeekChain(maxPending: 3);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      expect(c.takeNext(t0)?.targetMs, 1000);
+      for (int i = 2; i <= 5; i++) {
+        c.push(i * 1000, engineTargetMs: i * 1000, forward: true);
+      }
+      expect(c.pendingCount, 3);
+      c.notePosition(1000);
+      // 2000 (the oldest queue entry) was dropped; 3000 goes out next.
+      expect(c.takeNext(t0)?.targetMs, 3000);
+    });
+
+    test('a landing is only reported once', () {
+      final c = StepSeekChain();
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      expect(c.notePosition(1000), isTrue);
+      expect(c.notePosition(1200), isFalse);
+    });
+
+    test('the hard timeout releases a landing that never arrives', () {
+      final c = StepSeekChain(hardTimeout: const Duration(milliseconds: 1200));
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.push(2000, engineTargetMs: 2000, forward: true);
+      c.takeNext(t0);
+      expect(c.tickTimeout(t0.add(const Duration(milliseconds: 900))), isFalse);
+      expect(c.tickTimeout(t0.add(const Duration(milliseconds: 1200))), isTrue);
+      expect(c.hasInFlight, isFalse);
+      expect(c.takeNext(t0)?.targetMs, 2000);
+    });
+
+    test('isEmpty tracks the queue and the in-flight target', () {
+      final c = StepSeekChain();
+      expect(c.isEmpty, isTrue);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      expect(c.isEmpty, isFalse);
+      c.takeNext(t0);
+      expect(c.isEmpty, isFalse);
+      c.notePosition(1000);
+      expect(c.isEmpty, isTrue);
+    });
+
+    test('reset clears the queue and the in-flight expectation', () {
+      final c = StepSeekChain();
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.push(2000, engineTargetMs: 2000, forward: true);
+      c.takeNext(t0);
+      c.reset();
+      expect(c.isEmpty, isTrue);
+      expect(c.notePosition(1000), isFalse);
     });
   });
 
