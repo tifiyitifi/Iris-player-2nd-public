@@ -248,6 +248,21 @@ abstract final class BackgroundPlaybackSettingsContribution {
           iconKey: 'bg_exhausted_action',
           sortOrder: 98,
         ),
+        // How a live run folds a membership change of a tag its sources read
+        // from into the running queue.
+        SettingDef(
+          key: 'background_playback.queueSyncMode',
+          section: SettingsSection.play,
+          valueType: SettingValueType.enumeration,
+          defaultValue: 'rebuild',
+          enumValues: ['rebuild', 'append'],
+          widgetKind: SettingWidgetKind.custom,
+          editorKey: 'bg_queue_sync_mode',
+          titleKey: 'set_bg_queue_sync_mode',
+          subtitleKey: 'set_bg_queue_sync_mode_desc',
+          iconKey: 'bg_queue_sync_mode',
+          sortOrder: 99,
+        ),
         // Physical minimum length of an A–B mapping segment (ms).
         SettingDef(
           key: 'background_playback.minSegmentSpanMs',

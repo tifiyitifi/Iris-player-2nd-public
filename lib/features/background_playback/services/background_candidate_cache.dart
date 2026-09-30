@@ -1,6 +1,7 @@
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/model/db/repositories/bg_source_rule_repository.dart';
 import 'package:iris/features/background_playback/model/source/bg_source_rule.dart';
+import 'package:iris/features/background_playback/services/bg_source_revision.dart';
 import 'package:iris/features/background_playback/services/background_source_resolver.dart';
 import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/bg_source_prefs.dart';
@@ -17,22 +18,26 @@ import 'package:iris/models/file.dart';
 /// UNGUARDED (no double-play filter) — consumers (playback launch, the editor,
 /// the browse surface) apply the foreground guard themselves.
 ///
-/// Invalidation: the cache key folds the serialized rules + the dedupe switch,
-/// so a rule edit/enable/pin toggle or a dedupe flip re-resolves on the next
-/// read. [invalidate] forces it (explicit refresh). Tag/library content
-/// changes are NOT tracked — they surface on the next rule revision or an
-/// explicit refresh, which is the documented contract of this round (the
-/// unbounded resolver will own true reactivity).
+/// Invalidation: the cache key folds the serialized rules, the dedupe switch
+/// and [BgSourceRevision] — the coalesced signal that a tag the rules read from
+/// changed its members. A rule edit/enable/pin toggle, a dedupe flip or a
+/// relevant membership write therefore re-resolves on the next read, and
+/// [invalidate] forces it outright. Library content is still not tracked:
+/// a media row appearing/disappearing surfaces on the next rule revision, a
+/// relevant membership write, or an explicit refresh.
 class BackgroundCandidateCache {
   BackgroundCandidateCache({
     BgSourceRuleRepository? ruleRepo,
     TagPlayRepository? tagRepo,
     MediaNodeRepository? nodeRepo,
     Future<bool> Function()? dedupeOf,
+    int Function()? sourceRevisionOf,
   })  : _ruleRepo = ruleRepo ?? DbModule.bgSourceRuleRepo,
         _tagRepo = tagRepo ?? DbModule.tagPlayRepo,
         _nodeRepo = nodeRepo ?? DbModule.mediaNodeRepo,
-        _dedupeOf = dedupeOf ?? BgSourcePrefs.autoDedupe;
+        _dedupeOf = dedupeOf ?? BgSourcePrefs.autoDedupe,
+        _sourceRevisionOf =
+            sourceRevisionOf ?? (() => BgSourceRevision.shared.revision);
 
   /// Shared session instance (DbModule-backed). Tests construct their own.
   static BackgroundCandidateCache? _shared;
@@ -43,6 +48,10 @@ class BackgroundCandidateCache {
   final TagPlayRepository _tagRepo;
   final MediaNodeRepository _nodeRepo;
   final Future<bool> Function() _dedupeOf;
+
+  /// Coalesced "a tag my sources read from changed" counter, folded into the
+  /// cache key so the next read re-resolves. Injected in tests.
+  final int Function() _sourceRevisionOf;
 
   String? _key;
   List<FileItem>? _pool;
@@ -59,7 +68,12 @@ class BackgroundCandidateCache {
   }) async {
     final rules = await _ruleRepo.loadRules();
     final dedupe = await _dedupeOf();
-    final key = _fingerprint(rules, dedupe: dedupe, cap: cap);
+    final key = _fingerprint(
+      rules,
+      dedupe: dedupe,
+      cap: cap,
+      sourceRevision: _sourceRevisionOf(),
+    );
     final hit = _pool;
     if (hit != null && _key == key) return hit;
     final existing = _inflight[key];
@@ -106,8 +120,11 @@ class BackgroundCandidateCache {
     List<BgSourceRule> rules, {
     required bool dedupe,
     required int cap,
+    int sourceRevision = 0,
   }) {
-    final sb = StringBuffer('cap=$cap;dedupe=${dedupe ? 1 : 0};n=${rules.length};');
+    final sb = StringBuffer(
+      'cap=$cap;dedupe=${dedupe ? 1 : 0};src=$sourceRevision;n=${rules.length};',
+    );
     for (final r in rules) {
       sb
         ..write(r.id)

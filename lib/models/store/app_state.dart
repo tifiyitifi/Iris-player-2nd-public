@@ -413,13 +413,15 @@ abstract class AppState with _$AppState {
     /// this field, and it refuses to while the gate is on, exactly as
     /// `resolveControlPanelAnchorFrom` refuses to place one by it.
     ///
-    /// The default is [PhoneLandscapeSliderType.normal], not `circleRight`:
-    /// paired with the [PhoneLandscapeUseMode.normal] default below, `circleRight`
-    /// shipped a right-docked circle slider on a brand-new install while every
-    /// settings surface read "normal" — a pair no UI choice could reach again.
-    @Default(PhoneLandscapeSliderType.normal)
+    /// The default is [PhoneLandscapeSliderType.circleRight], paired with the
+    /// [PhoneLandscapeUseMode.rightSide] default below: a brand-new install
+    /// ships the right-side one-handed panel and every settings surface reads
+    /// the same placement. The two encode one decision and are written together
+    /// by `sliderTypeForUseMode`, so an unpaired default would be a state no UI
+    /// choice could reach.
+    @Default(PhoneLandscapeSliderType.circleRight)
     PhoneLandscapeSliderType phoneLandscapeSliderType,
-    @Default(PhoneLandscapeUseMode.normal)
+    @Default(PhoneLandscapeUseMode.rightSide)
     PhoneLandscapeUseMode phoneLandscapeUseMode,
     /// Side-panel scrubber design. The install default is the ring dial so a
     /// fresh install ships with it; existing installs keep their persisted
@@ -687,7 +689,9 @@ abstract class AppState with _$AppState {
 
     /// Which gesture engine to use
     @Default(GestureMode.classic) GestureMode gestureMode,
-    @Default(LandscapeGestureProfile.region)
+    /// Landscape profile for a brand-new install: the right-side region layout,
+    /// matching the right-side one-handed panel the slider defaults to.
+    @Default(LandscapeGestureProfile.rightSide)
     LandscapeGestureProfile landscapeGestureProfile,
     @Default(PortraitGestureProfile.region)
     PortraitGestureProfile portraitGestureProfile,
@@ -850,6 +854,24 @@ abstract class AppState with _$AppState {
     @Default(10.0)
     @JsonKey(includeToJson: false, includeFromJson: false)
     double fullscreenDockEdgeRevealPct,
+
+    /// Isolation zone of the one-handed side-type control panel for the
+    /// picture-fullscreen queue summon strip: the panel's height plus this
+    /// percentage of the playback-area height, measured up from the bottom.
+    /// Persisted as `window.sidePanelIsolationPct`; hard-clamped to 0..50 (see
+    /// clampSidePanelIsolationPct). Windows-only settings row.
+    @Default(5.0)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    double sidePanelIsolationPct,
+
+    /// Isolation zone of the normal long-strip control bar for the
+    /// picture-fullscreen queue summon strip: the bar's measured height plus
+    /// this percentage of the playback-area height. Persisted as
+    /// `window.linearBarIsolationPct`; hard-clamped to 0..100 (see
+    /// clampLinearBarIsolationPct). Windows-only settings row.
+    @Default(25.0)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    double linearBarIsolationPct,
 
     /// Desktop window-fit mode (WindowsPotPlayer parity, higher priority
     /// than the video display mode): [WindowFitMode.fitVideo] resizes the

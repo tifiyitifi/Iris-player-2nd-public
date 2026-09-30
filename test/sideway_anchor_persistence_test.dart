@@ -106,6 +106,9 @@ void main() {
     test('normal mode is not resurrected by an anchor move', () async {
       final store = AppStore();
       await store.setMetadataGate(true);
+      // The fresh-install default is rightSide now; this case is about the
+      // `normal` mode, so pin it before the anchor move.
+      await store.updatePhoneLandscapeUseMode(PhoneLandscapeUseMode.normal);
 
       await store.updateMobileSidePositionH(PhoneSidePositionH.left);
 

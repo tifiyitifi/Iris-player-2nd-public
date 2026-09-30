@@ -193,6 +193,14 @@ enum BgMasterFgAction {
   /// The target leaves the current file: roll the foreground queue (high
   /// sync only — the caller gates on [bgMasterMayTouchFg] first).
   roll,
+
+  /// The target leaves the current file and no cross-file move is warranted:
+  /// leave the foreground alone. A roll is a real queue advance (the reported
+  /// "开启副音跳到下一集"), so it must be earned by a REAL 副音 move — the
+  /// continuous 高同步 drift correction lands here too, and a drifted pair
+  /// mapping outside the file is exactly the state that must not move the
+  /// video.
+  hold,
 }
 
 /// Resolves one bg-master mirror target against the foreground file tail.
@@ -202,15 +210,22 @@ enum BgMasterFgAction {
 /// player at its end and raise a genuine completion) rolls instead, as does
 /// a negative target. An unknown duration (`<= 0`) cannot judge the tail,
 /// so it seeks and lets the player clamp.
+///
+/// [allowRoll] gates the cross-file move: with it off, a target that leaves
+/// the file becomes [BgMasterFgAction.hold] instead of rolling the queue, so a
+/// mirror sample that was not caused by a real 副音 move (the 高同步 drift
+/// correction) can never advance the foreground onto another episode.
 BgMasterFgAction resolveBgMasterFgAction({
   required int fgTarget,
   required int fgDurMs,
   int tailGuardMs = BackgroundSyncLogic.kBgMasterTailGuardMs,
+  bool allowRoll = true,
 }) {
   if (fgDurMs <= 0) return BgMasterFgAction.seek;
-  if (fgTarget < 0) return BgMasterFgAction.roll;
-  if (fgTarget <= fgDurMs - tailGuardMs) return BgMasterFgAction.seek;
-  return BgMasterFgAction.roll;
+  final bool leavesFile =
+      fgTarget < 0 || fgTarget > fgDurMs - tailGuardMs;
+  if (!leavesFile) return BgMasterFgAction.seek;
+  return allowRoll ? BgMasterFgAction.roll : BgMasterFgAction.hold;
 }
 
 /// Clamps a bg-master mirror target into the foreground's playable window

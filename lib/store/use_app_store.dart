@@ -1753,6 +1753,27 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         'fullscreenDockEdgeRevealPct', clamped, SettingValueType.double);
   }
 
+  /// Isolation zone of the one-handed side-type panel for the fullscreen queue
+  /// summon strip, as a percentage of the playback-area height (added to the
+  /// panel height). Hard-clamped through [clampSidePanelIsolationPct].
+  Future<void> updateSidePanelIsolationPct(double pct) async {
+    final double clamped = clampSidePanelIsolationPct(pct);
+    set(state.copyWith(sidePanelIsolationPct: clamped));
+    await _saveWindowRow(
+        'sidePanelIsolationPct', clamped, SettingValueType.double);
+  }
+
+  /// Isolation zone of the normal long-strip control bar for the fullscreen
+  /// queue summon strip, as a percentage of the playback-area height (added to
+  /// the bar's measured height). Hard-clamped through
+  /// [clampLinearBarIsolationPct].
+  Future<void> updateLinearBarIsolationPct(double pct) async {
+    final double clamped = clampLinearBarIsolationPct(pct);
+    set(state.copyWith(linearBarIsolationPct: clamped));
+    await _saveWindowRow(
+        'linearBarIsolationPct', clamped, SettingValueType.double);
+  }
+
   Future<void> updatePlaylistPopupTheme(PlaylistPopupTheme v) async {
     set(state.copyWith(playlistPopupTheme: v));
     await _saveWindowRow(
@@ -2262,6 +2283,8 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     final visibleRaw = rows['playlistPanelVisible'];
     final widthRaw = rows['playlistPanelWidth'];
     final edgeRaw = rows['fullscreenDockEdgeRevealPct'];
+    final sideIsolationRaw = rows['sidePanelIsolationPct'];
+    final linearIsolationRaw = rows['linearBarIsolationPct'];
 
     double? width;
     if (widthRaw != null) {
@@ -2273,6 +2296,18 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     if (edgeRaw != null) {
       final double? parsed = double.tryParse(edgeRaw);
       if (parsed != null) edgePct = clampFullscreenDockEdgePct(parsed);
+    }
+
+    double? sideIsolation;
+    if (sideIsolationRaw != null) {
+      final double? parsed = double.tryParse(sideIsolationRaw);
+      if (parsed != null) sideIsolation = clampSidePanelIsolationPct(parsed);
+    }
+
+    double? linearIsolation;
+    if (linearIsolationRaw != null) {
+      final double? parsed = double.tryParse(linearIsolationRaw);
+      if (parsed != null) linearIsolation = clampLinearBarIsolationPct(parsed);
     }
 
     bool? visible;
@@ -2315,6 +2350,8 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
       playlistPanelVisible: visible ?? base.playlistPanelVisible,
       playlistPanelWidth: width ?? base.playlistPanelWidth,
       fullscreenDockEdgeRevealPct: edgePct ?? base.fullscreenDockEdgeRevealPct,
+      sidePanelIsolationPct: sideIsolation ?? base.sidePanelIsolationPct,
+      linearBarIsolationPct: linearIsolation ?? base.linearBarIsolationPct,
       keepWindowInBounds: keepInBounds ?? base.keepWindowInBounds,
       scenarioQueueShowBreadcrumb:
           showQueueBreadcrumb ?? base.scenarioQueueShowBreadcrumb,

@@ -10,7 +10,8 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_action
 import 'package:iris/features/window/playlist_dock/fullscreen_playlist_dock_overlay.dart';
 import 'package:iris/features/window/playlist_dock/playlist_dock_panel.dart';
 import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
-import 'package:iris/globals.dart' show controlPanelKeyNotifier;
+import 'package:iris/globals.dart'
+    show controlBarIsolationHeightNotifier, controlPanelKeyNotifier;
 import 'package:iris/hooks/ui/use_immersive_rearm.dart';
 import 'package:iris/hooks/ui/use_keep_window_in_bounds.dart';
 import 'package:iris/hooks/ui/use_keyboard_state_resync.dart';
@@ -184,6 +185,11 @@ class Home extends HookWidget {
         usePlayerUiStore().select(context, (s) => s.isFullscreenDockPeeking);
     final fsDockPinned =
         usePlayerUiStore().select(context, (s) => s.isFullscreenDockPinned);
+    // Control-bar isolation zone (published by `ControlsOverlay`): the summon
+    // strip must not reveal the queue inside it, whether or not the bar is
+    // currently shown.
+    final double fsDockIsolationHeight =
+        useValueListenable(controlBarIsolationHeightNotifier) ?? 0;
 
     // Picture-fullscreen (画面全屏) right-edge overlay — strictly its own path.
     // Window fullscreen / windowed keep the side-by-side Row dock; floating
@@ -324,6 +330,10 @@ class Home extends HookWidget {
                   // The control bar is excluded from the summon strip, so
                   // hovering its slider never pulls the queue over it.
                   controlPanelKey: controlPanelKeyNotifier,
+                  // …and the control bar's isolation band stays reserved even
+                  // while the bar is hidden, so the pointer can be moved there
+                  // to operate the bar.
+                  controlBarIsolationHeight: fsDockIsolationHeight,
                   onReveal: () =>
                       usePlayerUiStore().updateIsFullscreenDockPeeking(true),
                   onConceal: () =>

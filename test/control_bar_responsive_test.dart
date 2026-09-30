@@ -12,6 +12,7 @@ import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
+import 'package:iris/models/store/app_state.dart';
 import 'package:iris/pages/player/control_bar/control_bar.dart';
 import 'package:iris/pages/player/control_bar/control_bar_layout/control_bar_controls.dart';
 import 'package:iris/pages/player/control_bar/control_bar_layout/desktop_control_layout.dart';
@@ -27,6 +28,7 @@ import 'package:iris/features/background_playback/view/background_quick_bar.dart
 import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/secure_kv.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
+import 'package:iris/store/use_app_store.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
 
@@ -157,6 +159,15 @@ void main() {
   });
 
   group('ControlBar layout follows the AVAILABLE width', () {
+    // A fresh install now defaults to the right-side one-handed panel, so
+    // ControlBar would mount the side panel instead of the responsive bar
+    // these cases exercise. Pin the normal (non-sideway) mode.
+    setUp(() {
+      useAppStore().set(const AppState(
+        phoneLandscapeUseMode: PhoneLandscapeUseMode.normal,
+      ));
+    });
+
     testWidgets('a narrow box inside a wide window degrades to tablet',
         (tester) async {
       // Window is wide (would previously select the desktop single line), but

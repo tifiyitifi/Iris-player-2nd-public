@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
+import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
 import 'package:iris/features/background_playback/services/background_candidate_cache.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
 import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.dart';
@@ -18,33 +19,52 @@ import 'package:provider/provider.dart';
 /// Launch / refresh / stop entry points of 副音播放 (control-bar menu + float
 /// panel + the auto-enable observer).
 abstract final class BackgroundPlaybackActions {
-  /// Resolves the candidate list with the double-play guard applied, or null
-  /// when nothing is playable.
+  /// The COMPLETE candidate pool, including the foreground's own file.
+  ///
+  /// This is what a bg QUEUE holds. The foreground's file is a legitimate
+  /// member: the point of the 音库 is that a video the user just watched and
+  /// liked can be tagged as a 副音 source for the videos that come AFTER it —
+  /// 「看完 A 觉得不错, 顺手打上音库, 之后 B/C/D 就用 A 的音频当副音」. Dropping
+  /// A from the list at the moment it is tagged would make that gesture
+  /// permanently invisible, and the tag would only take effect on some later
+  /// re-resolve.
+  ///
+  /// The same-file guard therefore does NOT belong here. It is a rule about
+  /// WHICH file may play RIGHT NOW, and it lives in the selection paths
+  /// ([BackgroundQueueLogic.pickStartIndex], `step`, `advanceOnCompleted`,
+  /// `jumpTo`) — never in the listing.
   ///
   /// The raw pool comes from the session candidate cache (resolved once per
-  /// source-rules revision, unguarded); the guard below is the ONLY filter
-  /// applied here, so playback launch never re-scans the library.
-  ///
-  /// When there is NO active source rule the built-in library pure-tag source
-  /// (the reserved 「副音备选」tag) is used — the zero-active fallback. Cross-rule
-  /// dedupe is applied inside the resolver, per the global auto-dedupe switch.
-  static Future<List<FileItem>?> resolveCandidates() async {
-    // The cache already folds the zero-active tag fallback in; only the
-    // foreground guard is applied here.
-    final candidates =
-        List<FileItem>.of(await BackgroundCandidateCache.shared.pool());
-    if (candidates.isEmpty) return null;
+  /// source-rules revision). When there is NO active source rule the built-in
+  /// library pure-tag source (the reserved 「副音备选」tag) is used — the
+  /// zero-active fallback. Cross-rule dedupe is applied inside the resolver.
+  static Future<List<FileItem>> resolveCandidatePool() async =>
+      List<FileItem>.of(await BackgroundCandidateCache.shared.pool());
 
-    // Double-play guard: never play the file the foreground holds right now
-    // (allowSameFgBgFile lets the user lift this guard).
+  /// Candidates that can be handed to a queue AND played right now, or null
+  /// when nothing qualifies.
+  ///
+  /// The start-time contract: a launch needs at least one candidate that is not
+  /// the foreground's own file, otherwise the "no candidates" message is the
+  /// honest answer. The returned LIST is still the full pool, so the queue the
+  /// launch builds keeps A for the next foreground — only the null case is
+  /// filtered.
+  static Future<List<FileItem>?> resolveCandidates() async {
+    final candidates = await resolveCandidatePool();
+    if (candidates.isEmpty) return null;
+    if (!hasPlayableCandidate(candidates)) return null;
+    return candidates;
+  }
+
+  /// Whether at least one entry of [candidates] may play against the current
+  /// foreground (the same-file guard, honouring `allowSameFgBgFile`).
+  static bool hasPlayableCandidate(List<FileItem> candidates) {
     final fgKey = excludedForegroundKey();
-    final filtered = <FileItem>[];
+    if (fgKey == null) return candidates.isNotEmpty;
     for (final f in candidates) {
-      final key = backgroundMediaKey(f);
-      if (fgKey != null && key == fgKey) continue;
-      filtered.add(f);
+      if (backgroundMediaKey(f) != fgKey) return true;
     }
-    return filtered.isEmpty ? null : filtered;
+    return false;
   }
 
   /// Starts 副音 from a resolved candidate list.
@@ -186,6 +206,12 @@ abstract final class BackgroundPlaybackActions {
   ///   when the feature was off, resolves candidates when the queue is empty,
   ///   then honors [BgReactivateMode] under 「仅当前」 (same bg / next bg).
   ///
+  /// The gate is scoped to the media playing NOW, so 「仅当前」 decides what a
+  /// press means: for a media the run does not apply to, a press ACTIVATES
+  /// (anchors here) instead of latching the whole run closed — otherwise a
+  /// mere media switch would leave the button offering to kill a run the user
+  /// never touched.
+  ///
   /// This is deliberately NOT the subsystem power switch: turning it off never
   /// disables the feature or releases the engine — that lives in the 副音 menu
   /// ([setFeatureEnabled] / [releaseResources]).
@@ -216,10 +242,18 @@ abstract final class BackgroundPlaybackActions {
     // bgAutoPlay from it, and a context read after an await is forbidden (the
     // transport mirror reconciles any change during the resolve).
     final bool fgPlaying = _foregroundPlaying(context);
-    // Activated → explicit deactivation (the same intent as the bg stop
-    // button), even when bg is user-paused: a pause never cancels the
+    // Activated FOR THIS MEDIA → explicit deactivation (the same intent as the
+    // bg stop button), even when bg is user-paused: a pause never cancels the
     // activation, so a second press always means "turn it off".
-    if (store.state.enabled && store.state.gateOpen) {
+    if (store.state.enabled &&
+        store.state.gateOpen &&
+        resolveApplyToCurrent(
+          enabled: store.state.enabled,
+          applyScope: store.state.applyScope,
+          anchorKey: store.state.scopeAnchorKey,
+          offMediaKeys: store.state.bgOffMediaKeys,
+          fgKey: fgKey,
+        )) {
       store.stopGate();
       return;
     }

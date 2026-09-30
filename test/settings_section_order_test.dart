@@ -106,6 +106,7 @@ void main() {
         'background_playback.alignAutoPauseRemainSec',
         'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
+        'background_playback.queueSyncMode',
       ]);
     });
 

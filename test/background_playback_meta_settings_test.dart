@@ -15,7 +15,7 @@ void main() {
       final keys = SettingsCatalog.defs
           .where((d) => d.key.startsWith('background_playback.'))
           .toList();
-      expect(keys, hasLength(32));
+      expect(keys, hasLength(33));
       expect(
         keys.map((d) => d.key),
         containsAll([
@@ -47,6 +47,8 @@ void main() {
           'background_playback.stepMode',
           'background_playback.alignAutoPauseRemainSec',
           'background_playback.exhaustedAction',
+          // A newly tagged video reaching a live queue: rebuild vs append.
+          'background_playback.queueSyncMode',
           // A/P/B editor: segment minimum length, P boundary behaviour, guide.
           'background_playback.minSegmentSpanMs',
           'background_playback.pAlignKeepMaxLength',

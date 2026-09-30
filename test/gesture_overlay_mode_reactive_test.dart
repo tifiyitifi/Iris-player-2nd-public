@@ -85,7 +85,12 @@ void main() {
     expect(captured, GestureMode.classic,
         reason: 'gate OFF (default state) must resolve classic on a phone');
 
-    useAppStore().set(useAppStore().state.copyWith(useMetadataSettings: true));
+    // Pin the region profile explicitly: this case pins the classic → region
+    // flip itself, not whatever profile a fresh install defaults to.
+    useAppStore().set(useAppStore().state.copyWith(
+          useMetadataSettings: true,
+          landscapeGestureProfile: LandscapeGestureProfile.region,
+        ));
     rebuild.value++;
     await tester.pump();
 

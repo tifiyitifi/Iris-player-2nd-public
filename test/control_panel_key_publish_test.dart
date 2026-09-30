@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/background_playback/engine/background_playback_engine.dart';
-import 'package:iris/globals.dart' show controlPanelKeyNotifier;
+import 'package:iris/globals.dart'
+    show controlBarIsolationHeightNotifier, controlPanelKeyNotifier;
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -164,6 +165,43 @@ void main() {
       final Rect rect = tester.getRect(find.byKey(key!));
       expect(rect.top, greaterThanOrEqualTo(_window.height),
           reason: 'a hidden bar is translated off-screen');
+      expect(tester.takeException(), isNull);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('the normal long-strip bar publishes its isolation zone',
+      (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      tester.view.physicalSize = _window;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      // Not one-handed: the normal long-strip bottom bar (not a side panel).
+      useAppStore().set(useAppStore().state.copyWith(
+            phoneLandscapeUseMode: PhoneLandscapeUseMode.normal,
+          ));
+
+      await tester.pumpWidget(_shell(_overlay(_video), engine));
+      await tester.pumpAndSettle();
+
+      final GlobalKey? key = controlPanelKeyNotifier.value;
+      expect(key, isNotNull);
+      final Rect rect = tester.getRect(find.byKey(key!));
+      // The bar hugs the bottom and is nowhere near the full screen — the box
+      // must not be the whole `Positioned.fill`, or the measured zone would
+      // swallow the entire summon strip.
+      expect(rect.height, lessThan(_window.height * 0.5));
+
+      // Isolation height = bar height + 25% of the area (the default setting).
+      final double expected = rect.height + _window.height * 0.25;
+      expect(
+        controlBarIsolationHeightNotifier.value,
+        closeTo(expected, 1.0),
+        reason: 'the normal bar must publish barHeight + 25% of the area',
+      );
       expect(tester.takeException(), isNull);
     } finally {
       debugDefaultTargetPlatformOverride = null;

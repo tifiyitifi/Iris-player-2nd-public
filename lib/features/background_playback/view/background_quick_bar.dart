@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
+import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
+import 'package:iris/features/background_playback/hooks/use_foreground_scope_key.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/bg_step_mode.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
@@ -98,6 +100,9 @@ class BackgroundQuickBar extends HookWidget {
     final lockLevel = bg.select(context, (s) => s.lockLevel);
     final stepMode = bg.select(context, (s) => s.stepMode);
     final mappingEnabled = bg.select(context, (s) => s.mappingEnabled);
+    final applyScope = bg.select(context, (s) => s.applyScope);
+    final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
+    final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
 
     if (!visible && !forceVisible) return const SizedBox.shrink();
 
@@ -106,16 +111,29 @@ class BackgroundQuickBar extends HookWidget {
     // air). Saved preferences (作用范围/对齐方式/同步方式/联动等级/换集行为/音量
     // 比例) stay reachable so they can be pre-configured and applied by the next
     // activation.
-    final bool live = enabled && gateOpen;
+    //
+    // 「作用于当前视频」 belongs to that definition: under 仅当前 the run is
+    // anchored to ONE media, so on any other media 副音 is simply not in play —
+    // the runtime rows grey out and the gate reads as inactive (its press then
+    // ACTIVATES here, see `toggleGateForCurrent`) rather than offering to latch
+    // the whole run closed over a media switch the user never touched.
+    final bool scopeApplied = resolveApplyToCurrent(
+      enabled: enabled,
+      applyScope: applyScope,
+      anchorKey: anchorKey,
+      offMediaKeys: offMediaKeys,
+      fgKey: useForegroundScopeKey(context),
+    );
+    final bool live = enabled && gateOpen && scopeApplied;
     final bool bgIsControl =
         live && controlTarget == ControlTarget.background;
     final bool bgIsDisplayed =
         live && displayTarget == ControlTarget.background;
-    // The gate reads the ACTIVATION (gateOpen), never the transport: a user
-    // pause does not cancel it, so the button keeps its active/stop state
-    // while bg sits paused — and the next press deactivates (it never
-    // resumes; resuming is the transport's job).
-    final bool gateActive = enabled && gateOpen;
+    // The gate reads the ACTIVATION (gateOpen + this media being in scope),
+    // never the transport: a user pause does not cancel it, so the button
+    // keeps its active/stop state while bg sits paused — and the next press
+    // deactivates (it never resumes; resuming is the transport's job).
+    final bool gateActive = live;
 
     // Frequency order: T0 (master switch, control/picture routing) → T1 (live
     // tuning) → T2 (one-off preferences / advanced). See the class doc.

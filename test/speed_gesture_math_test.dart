@@ -219,6 +219,58 @@ void main() {
     });
   });
 
+  group('shouldOpenTransientSpeedWindow', () {
+    test('stays closed for vertical travel', () {
+      expect(
+        shouldOpenTransientSpeedWindow(
+          total: const Offset(0, -240),
+          lockedAxis: Axis.vertical,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stays closed below the horizontal threshold', () {
+      expect(
+        shouldOpenTransientSpeedWindow(
+          total: const Offset(23, 0),
+          lockedAxis: Axis.horizontal,
+        ),
+        isFalse,
+      );
+    });
+
+    test('opens at the horizontal threshold', () {
+      expect(
+        shouldOpenTransientSpeedWindow(
+          total: const Offset(24, 0),
+          lockedAxis: Axis.horizontal,
+        ),
+        isTrue,
+      );
+    });
+
+    test('stays closed inside the dead zone', () {
+      expect(
+        shouldOpenTransientSpeedWindow(
+          total: const Offset(7, 7),
+          lockedAxis: null,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stays closed when no axis is locked', () {
+      expect(
+        shouldOpenTransientSpeedWindow(
+          total: const Offset(40, 0),
+          lockedAxis: null,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('resolveSpeedGestureMode', () {
     test('gate off degrades to singleAxis', () {
       expect(

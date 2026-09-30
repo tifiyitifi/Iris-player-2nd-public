@@ -1,15 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/background_quick_bar.dart';
 import 'package:iris/features/background_playback/view/background_quick_bar_grid.dart';
 import 'package:iris/features/background_playback/view/control_target_indicator.dart';
 import 'package:iris/l10n/app_localizations.dart';
+import 'package:iris/models/file.dart';
 import 'package:iris/store/use_app_store.dart';
+import 'package:iris/store/use_play_queue_store.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
+
+FileItem _media(String name) =>
+    FileItem(name: name, uri: 'file:///$name', path: [name]);
 
 /// 第 3/4 轮: the 副音 quick bar carries ONLY 副音-specific actions — transport,
 /// shuffle and repeat already live on the bottom bar and the queue page.
@@ -79,7 +85,29 @@ void main() {
     ));
   });
 
-  tearDown(() => StoreLocator().delete(BackgroundPlaybackStore));
+  // Drop the app-wide singletons so every test builds its stores inside its own
+  // fake-async zone — the play queue the per-media state resolves against would
+  // otherwise be created in an earlier test's zone and never complete `load`
+  // here.
+  tearDown(() {
+    StoreLocator().delete(BackgroundPlaybackStore);
+    StoreLocator().delete(UnifiedPlayQueueStore);
+    StoreLocator().delete(AppStore);
+  });
+
+  /// Puts [name] on screen in the play queue — the 作用范围 identity the quick
+  /// bar resolves its per-media state against.
+  Future<void> playForeground(String name) async {
+    final pq = usePlayQueueStore();
+    await pq.initialized;
+    await pq.update(
+      playQueue: [PlayQueueItem(file: _media(name), index: 0)],
+      index: 0,
+    );
+  }
+
+  Future<String> foregroundKey(String name) async =>
+      backgroundMediaKey(_media(name));
 
   Future<void> enable() async {
     final bg = useBackgroundPlaybackStore();
@@ -131,12 +159,15 @@ void main() {
       (tester) async {
     final bg = useBackgroundPlaybackStore();
     await bg.initialized;
-    // Activation (gateOpen) survives the transport pause (bgAutoPlay off).
+    await playForeground('fg.mp4');
+    // Activation (gateOpen) survives the transport pause (bgAutoPlay off) —
+    // and the run is anchored to the media on screen (仅当前).
     bg.set(bg.state.copyWith(
       enabled: true,
       quickBarEnabled: true,
       gateOpen: true,
       bgAutoPlay: false,
+      scopeAnchorKey: await foregroundKey('fg.mp4'),
     ));
     await tester.pumpWidget(_harness());
     await tester.pumpAndSettle();
@@ -144,6 +175,35 @@ void main() {
     expect(find.byIcon(Icons.stop_circle_rounded), findsOneWidget,
         reason: 'pausing bg must not cancel the activation glyph');
     expect(find.byIcon(Icons.play_circle_rounded), findsNothing);
+  });
+
+  testWidgets('仅当前: another media reads as NOT activated', (tester) async {
+    final bg = useBackgroundPlaybackStore();
+    await bg.initialized;
+    await playForeground('B.mp4');
+    // The run is anchored to A while B plays: 副音 is paused for B, so the
+    // gate must offer "play 副音 for the current video" — not "stop", which
+    // would latch the whole run closed over a media switch.
+    bg.set(bg.state.copyWith(
+      enabled: true,
+      quickBarEnabled: true,
+      gateOpen: true,
+      bgAutoPlay: false,
+      scopeAnchorKey: await foregroundKey('A.mp4'),
+    ));
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.play_circle_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.stop_circle_rounded), findsNothing);
+    // The runtime rows are inert for a media 副音 does not play.
+    final controlBtn = tester.widget<IconButton>(
+      find.ancestor(
+        of: find.byIcon(Icons.settings_input_component_rounded),
+        matching: find.byType(IconButton),
+      ),
+    );
+    expect(controlBtn.onPressed, isNull);
   });
 
   testWidgets('a closed gate greys the live-pair rows and the mapping editor',

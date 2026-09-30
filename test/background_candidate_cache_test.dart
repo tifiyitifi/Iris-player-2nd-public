@@ -7,6 +7,7 @@ import 'package:iris/features/background_playback/model/db/dao/bg_source_rules_d
 import 'package:iris/features/background_playback/model/db/repositories/bg_source_rule_repository.dart';
 import 'package:iris/features/background_playback/model/enum/bg_source_rule_kind.dart';
 import 'package:iris/features/background_playback/model/source/bg_source_rule.dart';
+import 'package:iris/features/background_playback/services/bg_source_revision.dart';
 import 'package:iris/features/background_playback/services/background_candidate_cache.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
@@ -17,6 +18,7 @@ import 'package:iris/features/tag_play/model/db/dao/video_tag_view_states_dao.da
 import 'package:iris/features/tag_play/model/db/dao/video_tags_dao.dart';
 import 'package:iris/features/tag_play/model/db/repositories/tag_play_repository.dart';
 import 'package:iris/features/tag_play/model/enum/tag_system_kind.dart';
+import 'package:iris/features/tag_play/services/tag_membership_revision.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
 
@@ -139,7 +141,10 @@ void main() {
 
       expect(namesOf(await cache.pool()), ['B.mp4', 'A.mp4']);
 
-      // A newer member lands AFTER the resolve: the cache must stay stale.
+      // A newer member lands AFTER the resolve and nothing announced it, so
+      // the pool stays on its generation. At runtime a membership write DOES
+      // announce itself (see the end-to-end case below), which is what keeps
+      // this from being the user-visible bug it used to be.
       await insertNode('s1', 'Anime/C.mp4');
       await tagRepo.addMember(
           tagId: tagId,
@@ -147,6 +152,165 @@ void main() {
           pathSegments: ['Anime', 'C.mp4'],
           at: DateTime(2026, 1, 1, 0, 2, 0));
       expect(namesOf(await cache.pool()), ['B.mp4', 'A.mp4']);
+    });
+
+    test('a membership revision re-resolves the pool', () async {
+      var revision = 0;
+      final versioned = BackgroundCandidateCache(
+        ruleRepo: ruleRepo,
+        tagRepo: tagRepo,
+        nodeRepo: nodeRepo,
+        dedupeOf: () async => false,
+        sourceRevisionOf: () => revision,
+      );
+      await insertNode('s1', 'Anime/A.mp4');
+      final tagId = await reservedBgTagId();
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'A.mp4'],
+          at: DateTime(2026, 1, 1, 0, 0, 0));
+      expect(namesOf(await versioned.pool()), ['A.mp4']);
+
+      await insertNode('s1', 'Anime/B.mp4');
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'B.mp4'],
+          at: DateTime(2026, 1, 1, 0, 1, 0));
+      expect(namesOf(await versioned.pool()), ['A.mp4'],
+          reason: 'an unannounced change must not re-resolve');
+
+      revision++;
+      expect(namesOf(await versioned.pool()), ['B.mp4', 'A.mp4']);
+    });
+
+    test('the foreground file itself can join the pool (the 音库 gesture)',
+        () async {
+      // 「看完 A 觉得不错, 顺手打上音库, 之后 B/C/D 用 A 的音频当副音」 — the
+      // video the user is watching RIGHT NOW is the one most likely to get
+      // tagged, so the pool must be able to hold it. The same-file guard then
+      // keeps it from playing simultaneously; it is not a listing rule.
+      TagMembershipRevision.shared.reset();
+      final coordinator = BgSourceRevision(
+        relevanceOf: (tagId) async => true,
+        coalesce: const Duration(milliseconds: 5),
+      );
+      addTearDown(() {
+        coordinator.dispose();
+        TagMembershipRevision.shared.reset();
+      });
+      coordinator.start();
+      final live = BackgroundCandidateCache(
+        ruleRepo: ruleRepo,
+        tagRepo: tagRepo,
+        nodeRepo: nodeRepo,
+        dedupeOf: () async => false,
+        sourceRevisionOf: () => coordinator.revision,
+      );
+
+      await insertNode('s1', 'Anime/A.mp4');
+      await insertNode('s1', 'Anime/B.mp4');
+      final tagId = await reservedBgTagId();
+      // B is tagged first and is the current pair; A (the foreground) is
+      // tagged afterwards, which is exactly the gesture that used to vanish.
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'B.mp4'],
+          at: DateTime(2026, 1, 1, 0, 1, 0));
+      expect(namesOf(await live.pool()), ['B.mp4']);
+
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'A.mp4'],
+          at: DateTime(2026, 1, 1, 0, 2, 0));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(namesOf(await live.pool()), ['A.mp4', 'B.mp4']);
+    });
+
+    test('end to end: addMember reaches the pool without any manual refresh',
+        () async {
+      TagMembershipRevision.shared.reset();
+      final coordinator = BgSourceRevision(
+        relevanceOf: (tagId) async => true,
+        coalesce: const Duration(milliseconds: 5),
+      );
+      addTearDown(() {
+        coordinator.dispose();
+        TagMembershipRevision.shared.reset();
+      });
+      coordinator.start();
+      final live = BackgroundCandidateCache(
+        ruleRepo: ruleRepo,
+        tagRepo: tagRepo,
+        nodeRepo: nodeRepo,
+        dedupeOf: () async => false,
+        sourceRevisionOf: () => coordinator.revision,
+      );
+
+      await insertNode('s1', 'Anime/A.mp4');
+      final tagId = await reservedBgTagId();
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'A.mp4'],
+          at: DateTime(2026, 1, 1, 0, 0, 0));
+      expect(namesOf(await live.pool()), ['A.mp4']);
+
+      // The user tags a second video while 副音 runs.
+      await insertNode('s1', 'Anime/B.mp4');
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'B.mp4'],
+          at: DateTime(2026, 1, 1, 0, 1, 0));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(namesOf(await live.pool()), ['B.mp4', 'A.mp4']);
+    });
+
+    test('an unrelated tag leaves the pool alone', () async {
+      TagMembershipRevision.shared.reset();
+      final coordinator = BgSourceRevision(
+        // No 副音 source reads this tag: a write must cost nothing.
+        relevanceOf: (tagId) async => false,
+        coalesce: const Duration(milliseconds: 5),
+      );
+      addTearDown(() {
+        coordinator.dispose();
+        TagMembershipRevision.shared.reset();
+      });
+      coordinator.start();
+      final live = BackgroundCandidateCache(
+        ruleRepo: ruleRepo,
+        tagRepo: tagRepo,
+        nodeRepo: nodeRepo,
+        dedupeOf: () async => false,
+        sourceRevisionOf: () => coordinator.revision,
+      );
+
+      await insertNode('s1', 'Anime/A.mp4');
+      final tagId = await reservedBgTagId();
+      await tagRepo.addMember(
+          tagId: tagId,
+          storageId: 's1',
+          pathSegments: ['Anime', 'A.mp4'],
+          at: DateTime(2026, 1, 1, 0, 0, 0));
+      expect(namesOf(await live.pool()), ['A.mp4']);
+
+      await insertNode('s1', 'Anime/B.mp4');
+      await tagRepo.addMember(
+          tagId: tagId + 1000, // a tag the rules do not read
+          storageId: 's1',
+          pathSegments: ['Anime', 'B.mp4'],
+          at: DateTime(2026, 1, 1, 0, 1, 0));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(coordinator.revision, 0);
+      expect(namesOf(await live.pool()), ['A.mp4']);
     });
 
     test('invalidate forces a fresh resolve', () async {
@@ -193,7 +357,7 @@ void main() {
       expect(namesOf(await cache.pool()), ['A.mp4']);
     });
 
-    test('pool is unguarded: consumers apply the fg filter', () async {
+    test('pool is unguarded: the same-file guard is a selection rule', () async {
       await insertNode('s1', 'Anime/A.mp4');
       final tagId = await reservedBgTagId();
       await tagRepo.addMember(
@@ -201,8 +365,11 @@ void main() {
           storageId: 's1',
           pathSegments: ['Anime', 'A.mp4'],
           at: DateTime(2026, 1, 1, 0, 0, 0));
-      // The raw pool keeps every member; the double-play guard is applied by
-      // the consumer (playback launch), never inside the cache.
+      // The raw pool keeps every member — INCLUDING the foreground's own file.
+      // The same-file guard decides what may play RIGHT NOW
+      // (`BackgroundQueueLogic.pickStartIndex` / `jumpTo`), never what the
+      // queue lists: the 音库 exists so a video the user just watched and liked
+      // becomes the 副音 source for the videos after it.
       expect(namesOf(await cache.pool()), ['A.mp4']);
     });
 

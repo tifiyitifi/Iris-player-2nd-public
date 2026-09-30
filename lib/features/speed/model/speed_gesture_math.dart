@@ -54,6 +54,18 @@ int resolveDualAxisSpeedIndex({
   return (baseIndex + v).clamp(0, 99);
 }
 
+/// Minimum horizontal travel before the transient speed window (the dual-axis
+/// wheel overlay) may appear. The top long-press gesture must stay silent
+/// (tip only) until the user makes a deliberate left/right slide; otherwise a
+/// tiny vertical jitter would pop the whole window open.
+const double kSpeedWindowOpenDx = 24.0;
+
+bool shouldOpenTransientSpeedWindow({
+  required Offset total,
+  required Axis? lockedAxis,
+}) =>
+    lockedAxis == Axis.horizontal && total.dx.abs() >= kSpeedWindowOpenDx;
+
 /// Splits a [speedStops] index into the two wheels: coarse integer 0..10
 /// and cyclic fine digit 0..9. Linear index arithmetic already carries
 /// fine overflow into coarse (1.9 +0.1 = 2.0); the wheels only visualize it.

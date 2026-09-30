@@ -7,6 +7,7 @@ import 'package:iris/features/tag_play/model/domain/tag_play_pin_preset.dart';
 import 'package:iris/features/tag_play/model/domain/tag_play_tag.dart';
 import 'package:iris/features/tag_play/model/domain/tag_play_view_state.dart';
 import 'package:iris/features/tag_play/model/enum/tag_system_kind.dart';
+import 'package:iris/features/tag_play/services/tag_membership_revision.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
@@ -152,6 +153,7 @@ class TagPlayRepository {
       await viewStatesDao.deleteByTag(tagId);
       await tagsDao.deleteTag(tagId);
     });
+    TagMembershipRevision.shared.bump(tagId);
     return true;
   }
 
@@ -181,6 +183,7 @@ class TagPlayRepository {
       canonicalPath: canonicalDbPath(pathSegments.join('/')),
       addedAt: at ?? DateTime.now(),
     );
+    TagMembershipRevision.shared.bump(tagId);
   }
 
   Future<void> removeMember({
@@ -193,6 +196,7 @@ class TagPlayRepository {
       storageId: storageId,
       canonicalPath: canonicalDbPath(pathSegments.join('/')),
     );
+    TagMembershipRevision.shared.bump(tagId);
   }
 
   /// Raw members of [tagId] (newest first), WITHOUT expiry filtering.
@@ -338,13 +342,18 @@ class TagPlayRepository {
   Future<int> purgeExpired({DateTime? now}) async {
     final reference = now ?? DateTime.now();
     var removed = 0;
+    final touched = <int>{};
     try {
       await db.transaction(() async {
         for (final tag in await tags()) {
           final retention = tag.retention;
           if (retention == null) continue;
           final cutoff = reference.subtract(retention);
-          removed += await membersDao.deleteExpiredOfTag(tag.id, cutoff);
+          final gone = await membersDao.deleteExpiredOfTag(tag.id, cutoff);
+          if (gone > 0) {
+            removed += gone;
+            touched.add(tag.id);
+          }
         }
       });
     } catch (e) {
@@ -353,6 +362,11 @@ class TagPlayRepository {
     }
     if (removed > 0) {
       _log.i('TagPlayRepository.purgeExpired removed=$removed');
+      // Each affected tag is announced separately so an unrelated tag's
+      // retention sweep never invalidates a 副音 pool that reads other tags.
+      for (final tagId in touched) {
+        TagMembershipRevision.shared.bump(tagId);
+      }
     }
     return removed;
   }

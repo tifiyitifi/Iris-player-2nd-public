@@ -29,6 +29,7 @@ class _ControlBarHarness extends StatefulWidget {
   const _ControlBarHarness({
     required this.onEvent,
     this.barOffset = Offset.zero,
+    this.isolationHeight = 0,
   });
 
   final void Function(String event) onEvent;
@@ -36,6 +37,9 @@ class _ControlBarHarness extends StatefulWidget {
   /// Translates the bar away from the pointer, mimicking the control bar being
   /// hidden (the real one slides off-screen).
   final Offset barOffset;
+
+  /// Control-bar isolation zone height, passed straight through.
+  final double isolationHeight;
 
   @override
   State<_ControlBarHarness> createState() => _ControlBarHarnessState();
@@ -88,6 +92,7 @@ class _ControlBarHarnessState extends State<_ControlBarHarness> {
                 width: _panelW,
                 edgeWidth: _edgeW,
                 controlPanelKey: barKeyNotifier,
+                controlBarIsolationHeight: widget.isolationHeight,
                 onReveal: () {
                   widget.onEvent('reveal');
                   setState(() => shown = true);
@@ -218,6 +223,93 @@ void main() {
       await gesture.moveTo(_onBar);
       await tester.pumpAndSettle();
       expect(events, contains('reveal'));
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('fullscreen dock summon strip honours the control-bar isolation zone',
+      () {
+    const double isolation = 30; // bottom 30 of the 300px area
+    // Above the band (y < 270) and inside it (y >= 270) on the right edge.
+    const Offset aboveBand = Offset(_w - 2, 250);
+    const Offset inBand = Offset(_w - 2, 285);
+
+    testWidgets('the band does not summon while hidden; above it does',
+        (tester) async {
+      final events = <String>[];
+      await tester.pumpWidget(
+        _ControlBarHarness(
+          onEvent: events.add,
+          // Bar off-screen so only the isolation zone can block.
+          barOffset: const Offset(0, 400),
+          isolationHeight: isolation,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: const Offset(0, 0));
+      await tester.pump();
+
+      await gesture.moveTo(inBand);
+      await tester.pumpAndSettle();
+      expect(events, isEmpty);
+      expect(_panelRight(tester), greaterThan(_w));
+
+      await gesture.moveTo(aboveBand);
+      await tester.pumpAndSettle();
+      expect(events, contains('reveal'));
+      expect(_panelRight(tester), _w);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a shown panel over the band is not concealed', (tester) async {
+      final events = <String>[];
+      await tester.pumpWidget(
+        _ControlBarHarness(
+          onEvent: events.add,
+          barOffset: const Offset(0, 400),
+          isolationHeight: isolation,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: const Offset(0, 0));
+      await tester.pump();
+
+      await gesture.moveTo(aboveBand);
+      await tester.pumpAndSettle();
+      expect(events, contains('reveal'));
+
+      // Into the band while shown: it shares the region, so it must stay.
+      await gesture.moveTo(inBand);
+      await tester.pumpAndSettle();
+      expect(events, isNot(contains('conceal')));
+      expect(_panelRight(tester), _w);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a zero isolation zone leaves the bottom band summonable',
+        (tester) async {
+      final events = <String>[];
+      await tester.pumpWidget(
+        _ControlBarHarness(
+          onEvent: events.add,
+          barOffset: const Offset(0, 400),
+          isolationHeight: 0,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await gesture.addPointer(location: const Offset(0, 0));
+      await tester.pump();
+
+      await gesture.moveTo(inBand);
+      await tester.pumpAndSettle();
+      expect(events, contains('reveal'));
+      expect(_panelRight(tester), _w);
       expect(tester.takeException(), isNull);
     });
   });

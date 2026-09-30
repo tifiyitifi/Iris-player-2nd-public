@@ -100,6 +100,21 @@ final ValueNotifier<GlobalKey?> apbEditorPanelKeyNotifier =
 final ValueNotifier<GlobalKey?> controlPanelKeyNotifier =
     ValueNotifier<GlobalKey?>(null);
 
+/// Bottom isolation height (logical px) of the current CONTROL BAR, published
+/// by `ControlsOverlay` while a bar is in play (null otherwise).
+///
+/// The picture-fullscreen playlist dock's right-edge summon strip suppresses
+/// reveal inside this band whether or not the bar is currently shown: the bar's
+/// LIVE rect slides off-screen when it auto-hides, so the live-rect exclusion
+/// alone let a pointer moved toward the bar pop the queue before the user could
+/// reach its control. The zone applies only while the queue is HIDDEN — once it
+/// is shown, the pointer over the list behaves as before. Value = the bar's
+/// height + a settings percentage of the area height; see
+/// `resolveControlBarIsolationHeight` (`sidePanelIsolationPct` /
+/// `linearBarIsolationPct`).
+final ValueNotifier<double?> controlBarIsolationHeightNotifier =
+    ValueNotifier<double?>(null);
+
 const double speedSelectorItemWidth = 64.0;
 const List<double> speedStops = [
   0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, //

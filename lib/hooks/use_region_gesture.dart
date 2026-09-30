@@ -308,7 +308,12 @@ Gesture useRegionGesture({
       } else {
         updateSelectedSpeed(speed, total.dx);
       }
-      if (!ctx.state.isTransientSelector && selectorVisible) {
+      if (!ctx.state.isTransientSelector &&
+          selectorVisible &&
+          shouldOpenTransientSpeedWindow(
+            total: total,
+            lockedAxis: ctx.state.speedLiveAxis,
+          )) {
         ctx.state.isTransientSelector = true;
         showTransientSpeedSelector(pos);
       }

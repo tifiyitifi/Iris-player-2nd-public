@@ -1,3 +1,23 @@
+## v2.0.7
+
+### Changelog
+
+1. Sub Audio picks up videos tagged while it is running: tag membership is announced from one funnel and folded into the candidate cache key, so the open queue panel reconciles instead of showing a launch-time snapshot. A new `bg.queueSyncMode` setting chooses between rebuilding the list and appending new items only
+2. The video you are watching stays in the Sub Audio queue: the queue is now the complete candidate pool and the "cannot play the same file twice" rule lives only in the selection paths, so tagging the video on screen finally reaches the list. A refusal is explained in the panel instead of silently doing nothing
+3. Sub Audio stays inside its activation scope: pausing or resuming on scope changes was read as a transport disagreement, so the video would be paused whenever Sub Audio was. The mirrors now stand down whenever Sub Audio is not applied to the media on screen, and a runtime with no loaded file is no longer treated as the master
+4. Fullscreen queue isolation zones are adjustable on Windows: both control-bar shapes share one formula (bar height + a percentage of the playback-area height), so the picture-fullscreen right-edge summon strip stays reserved whether or not the bar is shown. Two new `window.*` settings cover the side-type panel (default 5%) and the normal long-strip bar (default 25%), and the summon strip no longer pops the queue over a mounted side panel
+5. Fresh installs default to the right-side one-handed layout instead of a neutral bottom-centre bar; existing installs keep their persisted values
+6. The transient speed window opens only on a deliberate horizontal slide, so finger jitter during a top-region long press no longer makes it indistinguishable from the bottom-region long press
+
+### 更新日志
+
+1. 副音可以接住运行期间新标记的视频：标签归属变更由单一入口播报并计入候选缓存键，已打开的队列面板会自行调和，而不是显示启动时的快照。新增 `bg.queueSyncMode` 设置，可在「重建列表」与「仅追加」之间选择
+2. 正在观看的视频会留在副音队列里：队列现在是完整的候选池，「同一文件不能同时播放」的规则只存在于选择路径中，给正在看的视频打标签终于能进入列表。拒绝播放时会在面板里说明原因，而不是静默无反应
+3. 副音守住自己的作用范围：作用范围变化时的暂停／恢复此前被读成「传输状态分歧」，于是副音在播时反而会暂停视频。现在只要副音未作用于屏幕上的媒体，监视器就会退让；没有载入文件的运行时不再算作主控
+4. Windows 上全屏队列隔离区域可调：两种控制栏形态共用一套公式（栏高 + 播放区高度的百分比），画中画全屏的右侧召唤条无论控制栏是否显示都保持预留。新增两个 `window.*` 设置，分别对应侧型面板（默认 5%）与普通长条控制栏（默认 25%）；召唤条也不会再越过已挂载的侧型面板弹出队列
+5. 全新安装默认使用右侧单手布局，不再是居中的底部横条；已有安装保持其已持久化的取值
+6. 临时速度窗口仅在刻意的横向滑动时开启，顶部区域长按时的手指抖动不再让它与底部区域长按（打开常驻倍速窗口）无法区分
+
 ## v2.0.6
 
 ### Changelog

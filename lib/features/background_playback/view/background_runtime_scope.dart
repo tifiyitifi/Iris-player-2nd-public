@@ -21,6 +21,7 @@ import 'package:iris/features/background_playback/view/bg_continuation_dialog.da
 import 'package:iris/features/virtual_media/interaction/controller/foreground_window_resolver.dart';
 import 'package:iris/features/background_playback/services/background_sync_logic.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/background_playback/view/bg_queue_sync_observer.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -313,6 +314,23 @@ class BackgroundRuntimeScope extends HookWidget {
     // The player the shared controls drive is the MASTER; the other side is
     // pulled to its state — never the reverse — so the pair follows whichever
     // player the panel is on and the mirror cannot oscillate.
+    //
+    // TWO guards below are what keep the mirror from overreaching, and both
+    // existed only implicitly before:
+    // - [scopeApplied]: 副音 is not applied to the media playing now, so the
+    //   two runtimes are NOT a pair. The scope observer (effect 1) has already
+    //   paused 副音; mirroring "fg plays / bg paused" back into a play is what
+    //   kept a 仅当前 run 激活 after the foreground moved on.
+    // - [bgAuthoritative]: a secondary runtime with nothing loaded cannot be a
+    //   master. It has no transport to copy, so its silence must not become a
+    //   pause command for the video.
+    final scopeApplied = resolveApplyToCurrent(
+      enabled: enabled,
+      applyScope: applyScope,
+      anchorKey: anchorKey,
+      offMediaKeys: offMediaKeys,
+      fgKey: fgKey,
+    );
     final controlTarget = bg.select(context, (s) => s.controlTarget);
     // An E-节 mapping timeline owns 副音 transport with its own mirror (see
     // MappingScope), so the generic transport mirror must stand down while it
@@ -325,6 +343,15 @@ class BackgroundRuntimeScope extends HookWidget {
       // A closed gate stops the pair: the fg must never mirror its play state
       // onto a stopped 副音 (that would silently undo an explicit gate stop).
       if (!enabled || !gateOpen || !shouldSyncTransport(seekLink)) return null;
+      // Out of 作用范围: the run is not for this media. Effect 1 has paused
+      // 副音 and the user gate is still open, so without this the mirror read
+      // that pause as a transport disagreement and resumed it (仅当前 + fg A→B
+      // left the run 激活), or — with 副音 as master — paused the video.
+      if (!scopeApplied) {
+        transportRetry.value?.cancel();
+        transportRetry.value = null;
+        return null;
+      }
       // The align editor owns the pair's transport (its audition driver joins
       // 副音 only inside [A,B]): never mirror over it.
       if (editing) return null;
@@ -404,6 +431,19 @@ class BackgroundRuntimeScope extends HookWidget {
         'fgPlaying=$fgPlaying bgPlaying=$bgPlaying',
       );
       if (bgIsMaster) {
+        // Nothing loaded (empty/unreachable queue, an unloaded gate stop) or a
+        // refused/failed open: the secondary runtime is DEAD, not authoritative.
+        // It has no transport of its own, so its silence must not become a
+        // pause command for the video — the "点开副音后播放被暂停" report, which
+        // only ever fired when the candidate could not be opened.
+        final bool bgAuthoritative =
+            engine.file != null && engine.errorText == null;
+        if (!bgAuthoritative) {
+          _mirrorLog.d('bg dead runtime is not a master (fg keeps playing)');
+          transportRetry.value?.cancel();
+          transportRetry.value = null;
+          return null;
+        }
         // 副音 controls the panel → the foreground follows it.
         //
         // The slave's autoplay flag must follow too: both hooks re-play
@@ -439,6 +479,7 @@ class BackgroundRuntimeScope extends HookWidget {
       editing,
       controlTarget,
       mappedOwnsBg,
+      scopeApplied,
       fgPlaying,
       engine.isPlaying,
       engine.isInitializing,
@@ -553,8 +594,15 @@ class BackgroundRuntimeScope extends HookWidget {
       // (the alignment plan is re-applied, never the remembered one). The same
       // stand-down applies to a terminal stopRestoreFg run: it is stopped, so
       // no mirror may move either side (and no window may clamp fg seeks).
+      //
+      // Out of 作用范围 counts as a stand-down too: the two timelines belong to
+      // different media, so a background offset derived for the previous file
+      // must never be pushed onto this one.
       if (bgMirrorStandsDown(
-          enabled: enabled, gateOpen: gateOpen, exhausted: bgExhausted)) {
+        enabled: enabled && scopeApplied,
+        gateOpen: gateOpen,
+        exhausted: bgExhausted,
+      )) {
         lastFgMs.value = null;
         lastBgMs.value = null;
         lockOffsetReady.value = false;
@@ -783,6 +831,13 @@ class BackgroundRuntimeScope extends HookWidget {
           final int windowStart = virtual ? fgWindow.virtualOffsetMs : 0;
           final int windowDur =
               virtual ? fgWindow.durationMs : fgPlayer.duration.inMilliseconds;
+          // An unknown window length cannot be clamped INTO: a raw seek would
+          // park the player past its end and raise a genuine completion, i.e.
+          // skip the episode. Leave the foreground alone until it reports one.
+          if (windowDur <= 0) {
+            _mirrorLog.d('bg-master scoped hold target=$fgTarget (no window)');
+            return null;
+          }
           bg.noteFgSystemSeek();
           unawaited(fgPlayer.seek(Duration(
             milliseconds: clampFgTargetToWindow(
@@ -796,7 +851,15 @@ class BackgroundRuntimeScope extends HookWidget {
         switch (resolveBgMasterFgAction(
           fgTarget: fgTarget,
           fgDurMs: fgPlayer.duration.inMilliseconds,
+          // A cross-file roll is a real queue advance, so it must be EARNED by
+          // a real 副音 move (a user seek/step landing). The 高同步 continuous
+          // drift correction also lands here, and a drifted pair mapping
+          // outside the current file must not move the video — that was the
+          // "开启副音就跳到下一集" report.
+          allowRoll: bgJump,
         )) {
+          case BgMasterFgAction.hold:
+            _mirrorLog.d('bg-master hold target=$fgTarget drift=in-window');
           case BgMasterFgAction.seek:
             bg.noteFgSystemSeek();
             unawaited(fgPlayer.seek(Duration(milliseconds: fgTarget)));
@@ -894,6 +957,7 @@ class BackgroundRuntimeScope extends HookWidget {
       bgRunSeq,
       applyScope,
       controlTarget,
+      scopeApplied,
       engine.isInitializing,
       mappedOwnsBg,
       fg.posMs,
@@ -918,8 +982,14 @@ class BackgroundRuntimeScope extends HookWidget {
       // A closed gate drops the lock window too: with no published window the
       // sliders/dial cannot clamp fg seeks into a dead bg axis, and the
       // boundary stopBelow can never pause the video (完全独立 at runtime).
+      // Out of 作用范围 is the same situation: the [A,B] window belongs to the
+      // anchored media, so publishing it for another one — and letting the
+      // strict-lockstep boundary pause THAT video — would be wrong.
       if (bgMirrorStandsDown(
-          enabled: enabled, gateOpen: gateOpen, exhausted: bgExhausted)) {
+        enabled: enabled && scopeApplied,
+        gateOpen: gateOpen,
+        exhausted: bgExhausted,
+      )) {
         store.publishSeekWindow();
         return null;
       }
@@ -993,6 +1063,7 @@ class BackgroundRuntimeScope extends HookWidget {
       gateOpen,
       bgExhausted,
       applyScope,
+      scopeApplied,
       editing,
       seekLink,
       lockLevel,
@@ -1331,6 +1402,20 @@ class BackgroundRuntimeScope extends HookWidget {
       return null;
     }, [vmAlignResetSeq]);
 
-    return child;
+    return Stack(
+      // passthrough keeps [child]'s constraints byte-for-byte what it received
+      // before, so hosting an observer can never resize the player.
+      fit: StackFit.passthrough,
+      children: [
+        child,
+        const Positioned(
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          child: BgQueueSyncObserver(),
+        ),
+      ],
+    );
   }
 }

@@ -157,3 +157,61 @@ double resolveFullscreenDockEdgeWidth({
   if (!maxWidth.isFinite || maxWidth <= 0) return 0;
   return clampFullscreenDockEdgePct(pct) / 100.0 * maxWidth;
 }
+
+// ── Control-bar isolation zone (picture-fullscreen queue summon) ───────────
+//
+// The control bar hugs an edge or grows from the bottom, and the right-edge
+// queue summon strip overlaps it. The LIVE control-bar rect
+// (`isPointerOverControlPanel`) stops blocking the moment the bar auto-hides:
+// it is translated off-screen, so a pointer moved toward the bar popped the
+// queue before the user could reach it. This isolation zone is derived from the
+// bar's own HEIGHT (its render-box size, which does NOT move when the bar is
+// translated) plus a percentage of the area height, so it blocks whether or not
+// the bar is currently shown.
+//
+// Both control-bar shapes share one formula, `height = barHeight + pct% of area`:
+//  - the one-handed side-type panel: `barHeight` = the settings-derived panel
+//    height (`panelSizeForWindow().panelH`);
+//  - the normal long-strip bar: `barHeight` = the bar's measured render height.
+// The percentage is user-adjustable (Windows-only rows; see
+// `sidePanelIsolationPct` / `linearBarIsolationPct`).
+
+/// Default isolation percentage for the one-handed side-type panel
+/// ("side type 隔离不显 5%").
+const double kSidePanelIsolationDefaultPct = 5.0;
+
+/// Default isolation percentage for the normal long-strip control bar
+/// ("normal 隔离不显 25%").
+const double kLinearBarIsolationDefaultPct = 25.0;
+
+/// Hard bounds for the side-panel isolation percentage (0..50).
+double clampSidePanelIsolationPct(double raw) => raw.isNaN
+    ? kSidePanelIsolationDefaultPct
+    : raw.clamp(0.0, 50.0).toDouble();
+
+/// Hard bounds for the normal-bar isolation percentage (0..100).
+double clampLinearBarIsolationPct(double raw) => raw.isNaN
+    ? kLinearBarIsolationDefaultPct
+    : raw.clamp(0.0, 100.0).toDouble();
+
+/// Bottom isolation height for the queue summon strip: the control bar's height
+/// plus [pct] of the area height, clamped to `[0, areaHeight]`. A value of 0
+/// (or less) disables the isolation zone.
+double resolveControlBarIsolationHeight({
+  required double controlBarHeight,
+  required double areaHeight,
+  required double pct,
+}) {
+  if (!areaHeight.isFinite || areaHeight <= 0) return 0;
+  final double height = controlBarHeight + areaHeight * pct / 100.0;
+  return height.clamp(0.0, areaHeight).toDouble();
+}
+
+/// Whether a pointer at [localY] (0 = top of the playback area) falls in the
+/// bottom isolation zone. A non-positive [isolationHeight] never blocks.
+bool isPointerInControlBarIsolationZone({
+  required double localY,
+  required double areaHeight,
+  required double isolationHeight,
+}) =>
+    isolationHeight > 0 && localY >= areaHeight - isolationHeight;

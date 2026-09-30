@@ -6,6 +6,7 @@ import 'package:iris/features/background_playback/model/enum/bg_cross_action.dar
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
 import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_vm_scope_mode.dart';
+import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
@@ -63,7 +64,17 @@ class BackgroundScopePanelContent extends HookWidget {
                 ),
               ],
               selected: {scope},
-              onSelectionChanged: (s) => bg.setApplyScope(s.first),
+              onSelectionChanged: (s) {
+                final next = s.first;
+                bg.setApplyScope(next);
+                // 「仅当前」anchors the run to the media playing NOW, so
+                // switching out of 「全部」 (which carries no anchor) must
+                // re-anchor a live run — otherwise it reads as out of scope
+                // until the gate is opened again.
+                if (next == BgApplyScope.currentOnly) {
+                  bg.setScopeAnchor(currentScopeKey());
+                }
+              },
             ),
           ),
           const SizedBox(height: 12),

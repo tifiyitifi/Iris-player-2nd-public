@@ -1,13 +1,16 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/bg_source_manage_page.dart';
 import 'package:iris/features/background_playback/view/control_target_indicator.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/widgets/dialogs/show_message_dialog.dart';
 
 /// Fixed row extent of a queue row (dense ListTile 48 + 2 separation). Using an
 /// explicit extent keeps the list LAZY: `shrinkWrap: true` forced the viewport
@@ -115,8 +118,9 @@ class BackgroundQueuePanel extends HookWidget {
                         child: _QueueTile(
                           file: file,
                           isCurrent: isCurrent,
-                          onTap: () =>
-                              bg.jumpTo(index, userInitiated: true),
+                          onTap: () => unawaited(
+                            _jumpTo(bg, index, context),
+                          ),
                         ),
                       );
                     },
@@ -127,6 +131,26 @@ class BackgroundQueuePanel extends HookWidget {
           },
         ),
       ),
+    );
+  }
+
+  /// Row tap. A refused jump (the row is the foreground's own file) explains
+  /// itself instead of silently ignoring the tap — the row is legitimately in
+  /// the list, it just cannot play at the same time as the video it came from.
+  static Future<void> _jumpTo(
+    BackgroundPlaybackStore bg,
+    int index,
+    BuildContext context,
+  ) async {
+    final outcome = await bg.jumpTo(index, userInitiated: true);
+    if (outcome != BgJumpOutcome.refusedForegroundFile) return;
+    if (!context.mounted) return;
+    final t = getLocalizations(context);
+    await showMessageDialog(
+      Navigator.of(context, rootNavigator: true),
+      title: t.bg_queue_same_file_title,
+      message: t.bg_queue_same_file_body,
+      type: MessageDialogType.info,
     );
   }
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
+import 'package:iris/features/background_playback/engine/bg_tag_sync_logic.dart';
 import 'package:iris/features/background_playback/model/background_playback_state.dart';
 import 'package:iris/features/background_playback/model/domain/media_ratio.dart';
 import 'package:iris/features/background_playback/model/domain/segment_edit_draft.dart';
@@ -14,6 +15,7 @@ import 'package:iris/features/background_playback/model/enum/bg_exhausted_action
 import 'package:iris/features/background_playback/model/enum/bg_gate_stop_behavior.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_bar_align.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
+import 'package:iris/features/background_playback/model/enum/bg_queue_sync_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/bg_step_mode.dart';
@@ -82,6 +84,12 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     final ordered = state.shuffle
         ? BackgroundQueueLogic.shuffled(files)
         : List<FileItem>.of(files);
+    // The queue keeps the foreground's own file (it is the 音库 source for the
+    // NEXT foreground); the same-file guard only decides where playback STARTS.
+    final startIndex = BackgroundQueueLogic.pickStartIndex(
+      queue: ordered,
+      excludedKey: excludedForegroundKey(),
+    );
     final bool focus = focusControl ?? state.autoFocusControl;
     final scope = applyScope ?? state.applyScope;
     set(state.copyWith(
@@ -95,7 +103,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           scope == BgApplyScope.all ? null : (anchorKey ?? currentScopeKey()),
       bgOffMediaKeys: const <String>{},
       queue: ordered,
-      currentIndex: 0,
+      currentIndex: startIndex,
       bgAutoPlay: autoplay,
       alignMode: modeForAlignDefault(state.alignDefault),
       bgExhausted: false,
@@ -224,7 +232,14 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     if (state.queue.isEmpty) {
       nextIndex = -1;
     } else if (state.currentIndex < 0) {
-      nextIndex = 0;
+      // A queue that never started (a fresh enable, or one whose only member
+      // is the foreground file) still has to land somewhere playable — the
+      // queue itself is the complete pool, so the head is NOT automatically
+      // safe to open.
+      nextIndex = BackgroundQueueLogic.pickStartIndex(
+        queue: state.queue,
+        excludedKey: excludedForegroundKey(),
+      );
     } else if (stepForward) {
       // 下一首 re-activation walks the queue through the SAME step math as a
       // manual step, so the foreground double-play guard ([excludedForegroundKey])
@@ -1161,9 +1176,22 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// User taps a queue row in the 副音 queue panel: start from [index] and
   /// autoplay. Only touches the background runtime; the foreground is never
   /// affected. [userInitiated] marks a MANUAL switch (see [step]).
-  Future<void> jumpTo(int index, {bool userInitiated = false}) async {
-    if (!state.enabled) return;
-    if (index < 0 || index >= state.queue.length) return;
+  ///
+  /// A row holding the foreground's own file is REFUSED ([BgJumpOutcome
+  /// .refusedForegroundFile]) rather than opened on a second engine. It is
+  /// still listed — it is the 音库 source for the next foreground — it simply
+  /// cannot play at the same time as the video it came from. Lifting the guard
+  /// is the user's call (`allowSameFgBgFile`).
+  Future<BgJumpOutcome> jumpTo(int index, {bool userInitiated = false}) async {
+    if (!state.enabled) return BgJumpOutcome.ignored;
+    if (index < 0 || index >= state.queue.length) {
+      return BgJumpOutcome.ignored;
+    }
+    final excluded = excludedForegroundKey();
+    if (excluded != null && backgroundMediaKey(state.queue[index]) == excluded) {
+      _log.i('jumpTo: refused — that file is the foreground right now');
+      return BgJumpOutcome.refusedForegroundFile;
+    }
     // Same abandon-latch as [step]: a jump during a mapped segment swaps the
     // 副音 track without a second advance on segment exit.
     if (state.mappedFile != null) _abandonMappedForUserStep();
@@ -1178,6 +1206,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
       userBgSwitchIndex: userInitiated ? index : state.userBgSwitchIndex,
     ));
+    return BgJumpOutcome.jumped;
   }
 
   /// Tiled entrance: selects the queue entry for a VM segment and queues a
@@ -1368,14 +1397,39 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
         ? BackgroundQueueLogic.shuffled(candidates)
         : List<FileItem>.of(candidates);
     final cur = currentFile;
-    final keepKey = cur == null ? null : backgroundMediaKey(cur);
-    var index = 0;
-    if (keepKey != null) {
-      final found = ordered.indexWhere((f) => backgroundMediaKey(f) == keepKey);
-      if (found >= 0) index = found;
-    }
+    // Keep playing what was playing; otherwise open something that is not the
+    // foreground's own file (the pool legitimately contains it).
+    final index = BackgroundQueueLogic.pickStartIndex(
+      queue: ordered,
+      preferredKey: cur == null ? null : backgroundMediaKey(cur),
+      excludedKey: excludedForegroundKey(),
+    );
     set(state.copyWith(queue: ordered, currentIndex: index));
     await save(state);
+  }
+
+  /// Appends the candidates a live run is missing, keeping everything already
+  /// queued in place (see [BgQueueSyncMode.append]).
+  ///
+  /// The [BgQueueSyncMode.append] counterpart of [replaceQueue]: no reorder, no
+  /// re-shuffle, and therefore no risk of moving the file that is playing. A
+  /// resolve that adds nothing returns without touching the store, so an
+  /// unrelated tag write costs no `set` and no persist.
+  Future<void> appendCandidates(List<FileItem> candidates) async {
+    if (!state.enabled) return;
+    if (candidates.isEmpty) return;
+    final next = appendedBgQueue(queue: state.queue, candidates: candidates);
+    if (next.length == state.queue.length) return;
+    set(state.copyWith(queue: next));
+    await save(state);
+  }
+
+  /// How a live run folds a tag-membership change into its queue
+  /// (`bg.queueSyncMode`).
+  Future<void> setQueueSyncMode(BgQueueSyncMode value) async {
+    if (state.queueSyncMode == value) return;
+    set(state.copyWith(queueSyncMode: value));
+    await _writeAux(_kAuxQueueSyncMode, value.name);
   }
 
   FileItem? get currentFile {
@@ -1405,6 +1459,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   static const String _kAuxStepMode = 'stepMode';
   static const String _kAuxAlignAutoPauseSec = 'alignAutoPauseRemainSec';
   static const String _kAuxExhaustedAction = 'exhaustedAction';
+
+  /// How a live run folds a tag-membership change into its running queue.
+  static const String _kAuxQueueSyncMode = 'queueSyncMode';
   static const String _kAuxMinSegmentSpanMs = 'minSegmentSpanMs';
   static const String _kAuxPAlignKeepMaxLength = 'pAlignKeepMaxLength';
   static const String _kAuxStickyConsume = 'stickyConsume';
@@ -1519,6 +1576,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       bgExhaustedAction:
           BgExhaustedAction.values.asNameMap()[rows[_kAuxExhaustedAction]] ??
               base.bgExhaustedAction,
+      queueSyncMode:
+          BgQueueSyncMode.values.asNameMap()[rows[_kAuxQueueSyncMode]] ??
+              base.queueSyncMode,
       minSegmentSpanMs: ValueCodec.decodeInt(
         rows[_kAuxMinSegmentSpanMs],
         fallback: base.minSegmentSpanMs,

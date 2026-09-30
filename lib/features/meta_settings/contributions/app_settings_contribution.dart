@@ -119,6 +119,45 @@ abstract final class AppSettingsContribution {
       platforms: ['windows', 'linux', 'macos'],
       sortOrder: 21,
     ),
+    // Isolation-zone percentages for the picture-fullscreen queue summon strip.
+    // Both control-bar shapes share one formula — isolation height = bar height
+    // + pct% of the playback-area height — so these rows only adjust the
+    // percentage (side-type panel vs normal long-strip bar). Windows-only.
+    SettingDef(
+      key: 'window.sidePanelIsolationPct',
+      section: SettingsSection.play,
+      valueType: SettingValueType.double,
+      defaultValue: '5.0', // == AppState @Default
+      writable: true,
+      clampMin: 0, // == clampSidePanelIsolationPct hard bounds
+      clampMax: 50,
+      // custom + editorKey: out-of-domain rows must not use the generic
+      // slider kind (see settings_domain_guard_test); the hand-written
+      // `_sliderTile` binding below renders the same inline slider.
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'side_panel_isolation',
+      titleKey: 'set_fs_isolation_side',
+      subtitleKey: 'set_fs_isolation_side_desc',
+      iconKey: 'fullscreen',
+      platforms: ['windows'],
+      sortOrder: 22,
+    ),
+    SettingDef(
+      key: 'window.linearBarIsolationPct',
+      section: SettingsSection.play,
+      valueType: SettingValueType.double,
+      defaultValue: '25.0', // == AppState @Default
+      writable: true,
+      clampMin: 0, // == clampLinearBarIsolationPct hard bounds
+      clampMax: 100,
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'linear_bar_isolation',
+      titleKey: 'set_fs_isolation_linear',
+      subtitleKey: 'set_fs_isolation_linear_desc',
+      iconKey: 'fullscreen',
+      platforms: ['windows'],
+      sortOrder: 23,
+    ),
     SettingDef(
       key: 'window.playlistPopupTheme',
       section: SettingsSection.play,
@@ -129,7 +168,7 @@ abstract final class AppSettingsContribution {
       subtitleKey: 'playlist_popup_theme_desc',
       iconKey: 'theme_mode',
       platforms: ['windows', 'linux', 'macos'],
-      sortOrder: 22,
+      sortOrder: 24,
     ),
     SettingDef(
       key: 'window.playlistDockTheme',
@@ -141,7 +180,7 @@ abstract final class AppSettingsContribution {
       subtitleKey: 'playlist_dock_theme_desc',
       iconKey: 'theme_mode',
       platforms: ['windows', 'linux', 'macos'],
-      sortOrder: 24,
+      sortOrder: 25,
     ),
     // Video display mode (metadata era): per-platform enums persisted as
     // `video.` AUX rows. Gate-OFF keeps the legacy `fit` cycle — rows hidden
@@ -283,11 +322,11 @@ abstract final class AppSettingsContribution {
       key: 'app.phoneLandscapeSliderType',
       section: SettingsSection.play,
       valueType: SettingValueType.enumeration,
-      // Mirrors the AppState @Default (parity-guarded): `normal` so a fresh
-      // install is a self-consistent pair with the `normal` use mode. The
-      // circle values remain the enum for blobs written by older builds, and
-      // the store folds them onto the mode.
-      defaultValue: 'normal',
+      // Mirrors the AppState @Default (parity-guarded): `circleRight`, so a
+      // fresh install is a self-consistent pair with the `rightSide` use mode
+      // below. The store folds the two together, so a stored value that
+      // disagrees is repaired on load.
+      defaultValue: 'circleRight',
       enumValues: ['normal', 'circleRight', 'circleLeft'],
       widgetKind: SettingWidgetKind.custom,
       editorKey: 'phone_landscape_slider_type',

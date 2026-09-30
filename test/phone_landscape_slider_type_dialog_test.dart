@@ -35,7 +35,7 @@ void main() {
   testWidgets(
       'slider-type picker folds circle placement into the one-handed sides',
       (tester) async {
-    // Start from normal / normal (AppState defaults).
+    // Start from the AppState defaults (right side / circle right).
     await tester.pumpWidget(_harness());
     // Deferred l10n delegates load async — settle before opening.
     await tester.pumpAndSettle();

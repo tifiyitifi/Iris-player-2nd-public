@@ -12,8 +12,13 @@ import 'package:iris/features/background_playback/view/segment_align_edit_panel.
 import 'package:iris/features/control_group/model/enum/player_control_group.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
+import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart'
+    show resolveControlBarIsolationHeight;
 import 'package:iris/globals.dart'
-    show controlPanelKeyNotifier, sidePanelLayoutWidthNotifier;
+    show
+      controlBarIsolationHeightNotifier,
+      controlPanelKeyNotifier,
+      sidePanelLayoutWidthNotifier;
 import 'package:iris/hooks/use_published_global_key.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
@@ -127,6 +132,10 @@ class ControlsOverlay extends HookWidget {
         appStore.select(context, (s) => s.sidePanelCornerHideMode);
     final SidePanelCornerHideMode mobileSidePanelCornerHideMode =
         appStore.select(context, (s) => s.mobileSidePanelCornerHideMode);
+    final double sidePanelIsolationPct =
+        appStore.select(context, (s) => s.sidePanelIsolationPct);
+    final double linearBarIsolationPct =
+        appStore.select(context, (s) => s.linearBarIsolationPct);
 
     final bool isLandscape = isLandscapeOrientation(
       runtimeOrientation: runtimeOrientation,
@@ -301,6 +310,9 @@ class ControlsOverlay extends HookWidget {
             ? sidePanelAnchor
             : Alignment.bottomCenter;
     late final Offset hideTranslate;
+    // The settings-derived panel height, hoisted so the dead-zone publish below
+    // can reuse it without re-deriving (and re-clamping) the size chain.
+    double sidePanelPanelH = 0;
     if (isSideLayout) {
       final bool isPhone = isMobilePlatform;
       final ({double panelW, double panelH}) panel = panelSizeForWindow(
@@ -312,6 +324,7 @@ class ControlsOverlay extends HookWidget {
         widthPx: sidewayPanelWidthPx,
         heightPx: sidewayPanelHeightPx,
       );
+      sidePanelPanelH = panel.panelH;
       // The panel box the layout really fills: the dial-width floor can widen
       // it past the drag width (a classic circle on a phone panel), and a hide
       // computed from the drag width would strand that strip on screen.
@@ -369,6 +382,53 @@ class ControlsOverlay extends HookWidget {
       // Linear bars (desktop single/stacked, tablet, phone portrait) slide down.
       hideTranslate = Offset(0, windowSize.height + 24);
     }
+
+    // Publish the control-bar isolation zone for the picture-fullscreen
+    // playlist-dock summon strip (see `controlBarIsolationHeightNotifier`). One
+    // formula for both control-bar shapes: `height = barHeight + pct% of area`.
+    // Measured in a post-frame callback because the normal long-strip bar's
+    // height is only known once it is laid out — and its SIZE survives the
+    // auto-hide translation, so the zone stays reserved while it is hidden. The
+    // side panel's height is settings-derived. Runs every build so a wrap/resize
+    // that changes the bar height re-publishes; the notifier's equality guard
+    // keeps it cheap. Zero (→ null) when no bar is in play.
+    useEffect(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        double height = 0;
+        if (isSideLayout) {
+          height = resolveControlBarIsolationHeight(
+            controlBarHeight: sidePanelPanelH,
+            areaHeight: windowSize.height,
+            pct: sidePanelIsolationPct,
+          );
+        } else if (!legacyCircleColumn) {
+          final RenderObject? barBox =
+              controlPanelKey.currentContext?.findRenderObject();
+          final double barH =
+              barBox is RenderBox && barBox.hasSize ? barBox.size.height : 0;
+          if (barH > 0) {
+            height = resolveControlBarIsolationHeight(
+              controlBarHeight: barH,
+              areaHeight: windowSize.height,
+              pct: linearBarIsolationPct,
+            );
+          }
+        }
+        final double? publish = height > 0 ? height : null;
+        if (controlBarIsolationHeightNotifier.value != publish) {
+          controlBarIsolationHeightNotifier.value = publish;
+        }
+      });
+      return null;
+    });
+    // Retract on unmount so the summon strip never reserves a band for a bar
+    // that is gone (mirrors `sidePanelLayoutWidthNotifier`).
+    useEffect(() {
+      return () {
+        controlBarIsolationHeightNotifier.value = null;
+      };
+    }, const <Object?>[]);
 
     return Stack(
       children: [

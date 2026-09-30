@@ -14,6 +14,7 @@ import 'package:iris/features/playback_tools/services/screenshot_service.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/controller/background_playback_bootstrap.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
+import 'package:iris/features/background_playback/services/bg_source_revision.dart';
 import 'package:iris/features/background_playback/store/bg_source_bootstrap.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
@@ -128,6 +129,9 @@ Future<void> completeStartupInitialization() async {
   // JSON rules into the table (meta-driven era only).
   if (BackgroundPlaybackGate.enabled) {
     await BgSourceBootstrap.ensure(DbModule.bgSourceRuleRepo);
+    // Membership writes of the tags the rules read from must reach the
+    // candidate pool (and a live queue) without waiting for a rule edit.
+    BgSourceRevision.shared.start();
   }
 
   // tag_play global session prefs (pin order, active view, view stack).

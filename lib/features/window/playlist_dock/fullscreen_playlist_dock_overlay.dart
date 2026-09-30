@@ -49,6 +49,7 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
     required this.onReveal,
     required this.onConceal,
     this.controlPanelKey,
+    this.controlBarIsolationHeight = 0,
   });
 
   /// Panel visible (pinned or transient peek). Off-screen right otherwise.
@@ -75,6 +76,12 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
   /// Live control-bar box (see `controlPanelKeyNotifier`), or null when the
   /// caller publishes none — then the whole strip is summonable, as before.
   final ValueNotifier<GlobalKey?>? controlPanelKey;
+
+  /// Bottom isolation zone (logical px) reserved for the current control bar,
+  /// whether or not it is currently shown. Hover inside the bottom band does
+  /// not reveal the queue while it is hidden; `0` disables the zone. See
+  /// `controlBarIsolationHeightNotifier`.
+  final double controlBarIsolationHeight;
 
   @override
   Widget build(BuildContext context) {
@@ -130,12 +137,31 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
     /// revealed panel is drawn OVER the bar and shares its rect — excluding it
     /// there would conceal the panel the moment it appeared.
     void onPointerActivity(Offset globalPosition) {
-      if (!shown &&
-          isPointerOverControlPanel(
-            panelRect: controlBarRect(),
-            pointer: globalPosition,
-          )) {
-        return;
+      if (!shown) {
+        if (isPointerOverControlPanel(
+          panelRect: controlBarRect(),
+          pointer: globalPosition,
+        )) {
+          return;
+        }
+        // Control-bar isolation zone: the band stays reserved even while the
+        // bar is translated off-screen, so the pointer can be moved there to
+        // operate the bar instead of popping the queue. Only while HIDDEN —
+        // once shown, the pointer over the list (which overlaps this band)
+        // behaves exactly as before.
+        if (controlBarIsolationHeight > 0) {
+          final RenderObject? region =
+              regionKey.value.currentContext?.findRenderObject();
+          if (region is RenderBox && region.attached && region.hasSize) {
+            if (isPointerInControlBarIsolationZone(
+              localY: region.globalToLocal(globalPosition).dy,
+              areaHeight: region.size.height,
+              isolationHeight: controlBarIsolationHeight,
+            )) {
+              return;
+            }
+          }
+        }
       }
       reveal();
     }

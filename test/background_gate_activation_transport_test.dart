@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
+import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/file.dart';
@@ -120,5 +121,32 @@ void main() {
     expect(bg.state.gateOpen, isTrue);
     expect(bg.state.bgAutoPlay, isTrue,
         reason: 'activation follows a playing foreground');
+  });
+
+  testWidgets('仅当前: a press on a media outside the anchor ACTIVATES here '
+      'instead of latching the run closed', (tester) async {
+    final bg = useBackgroundPlaybackStore();
+    // The gate is open but anchored to a DIFFERENT media (fg switched away):
+    // 副音 is paused for this one, so the button is offering "play 副音 for the
+    // current video". Turning it off here would kill the run over a media
+    // switch the user never asked for.
+    bg.set(bg.state.copyWith(
+      gateOpen: true,
+      bgAutoPlay: false,
+      scopeAnchorKey: 'some-other-media',
+    ));
+
+    await tester.pumpWidget(_harness(_player(playing: true)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('gate'));
+    await tester.pumpAndSettle();
+
+    expect(bg.state.gateOpen, isTrue, reason: 'the press re-anchors, not stops');
+    expect(
+      bg.state.scopeAnchorKey,
+      currentScopeKey(),
+      reason: '仅当前 activation anchors the run to the media on screen',
+    );
   });
 }

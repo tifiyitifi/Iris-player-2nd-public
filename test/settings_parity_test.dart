@@ -35,6 +35,10 @@ void main() {
         // Picture-fullscreen edge hover-strip width, as a percentage of the
         // playback area (slider, sortOrder 21).
         'window.fullscreenDockEdgeRevealPct',
+        // Control-bar isolation-zone percentages for the same strip
+        // (Windows-only sliders): side-type panel and normal long-strip bar.
+        'window.sidePanelIsolationPct',
+        'window.linearBarIsolationPct',
         'window.playlistPopupTheme',
         'window.playlistDockTheme',
         'video.desktopDisplayMode',
@@ -107,6 +111,7 @@ void main() {
         'background_playback.alignAutoPauseRemainSec',
         'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
+        'background_playback.queueSyncMode',
         // PotPlayer-style stacked bar (features/windows/desktop_control_bar)
         'app.keyboardShortcutScheme',
         'app.desktopControlBarLayout',
@@ -249,6 +254,7 @@ void main() {
         'background_playback.alignAutoPauseRemainSec',
         'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
+        'background_playback.queueSyncMode',
         // Screenshot save dir (mobile custom dir; platform default
         // Pictures/IRIS when empty).
         'screenshot.mobileDir',

@@ -11,6 +11,7 @@ import 'package:iris/features/background_playback/model/enum/bg_align_default.da
 import 'package:iris/features/background_playback/model/enum/bg_cross_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_gate_stop_behavior.dart';
+import 'package:iris/features/background_playback/model/enum/bg_queue_sync_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_bar_align.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/bg_step_mode.dart';
@@ -554,6 +555,30 @@ abstract final class EditorBindings {
         format: (v) => '${v.round()}%',
         apply: (store, v) => store.updateFullscreenDockEdgeRevealPct(v),
       ),
+      'side_panel_isolation': _sliderTile(
+        icon: Icons.vertical_align_top_rounded,
+        titleKey: 'set_fs_isolation_side',
+        subtitleKey: 'set_fs_isolation_side_desc',
+        valueOf: (s) => s.sidePanelIsolationPct,
+        min: 0,
+        max: 50,
+        // 1% steps across the range.
+        divisions: 50,
+        format: (v) => '${v.round()}%',
+        apply: (store, v) => store.updateSidePanelIsolationPct(v),
+      ),
+      'linear_bar_isolation': _sliderTile(
+        icon: Icons.vertical_align_bottom_rounded,
+        titleKey: 'set_fs_isolation_linear',
+        subtitleKey: 'set_fs_isolation_linear_desc',
+        valueOf: (s) => s.linearBarIsolationPct,
+        min: 0,
+        max: 100,
+        // 1% steps across the range.
+        divisions: 100,
+        format: (v) => '${v.round()}%',
+        apply: (store, v) => store.updateLinearBarIsolationPct(v),
+      ),
       'playlist_popup_theme': _tile(
         icon: Icons.contrast_rounded,
         titleKey: 'playlist_popup_theme',
@@ -697,6 +722,15 @@ abstract final class EditorBindings {
         values: BgExhaustedAction.values,
         valueOf: (s) => s.bgExhaustedAction,
         apply: (bg, v) => bg.setBgExhaustedAction(v),
+      ),
+      'bg_queue_sync_mode': _bgEnumTile<BgQueueSyncMode>(
+        icon: Icons.sync_alt_rounded,
+        titleKey: 'set_bg_queue_sync_mode',
+        subtitleKey: 'set_bg_queue_sync_mode_desc',
+        defKey: 'background_playback.queueSyncMode',
+        values: BgQueueSyncMode.values,
+        valueOf: (s) => s.queueSyncMode,
+        apply: (bg, v) => bg.setQueueSyncMode(v),
       ),
       'bg_align_ring': _bgEnumTile<AlignRingAssignment>(
         icon: Icons.album_rounded,

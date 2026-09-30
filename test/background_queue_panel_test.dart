@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/background_queue_panel.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/file.dart';
+import 'package:iris/store/use_play_queue_store.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
 
@@ -161,10 +163,12 @@ void main() {
 
   group('BackgroundPlaybackStore.jumpTo', () {
     late BackgroundPlaybackStore store;
+    late UnifiedPlayQueueStore playQueueStore;
 
     setUp(() async {
       store = BackgroundPlaybackStore();
       await store.initialized;
+      playQueueStore = usePlayQueueStore();
     });
 
     tearDown(() => store.dispose());
@@ -187,13 +191,59 @@ void main() {
         queue: [_f('a'), _f('b')],
         currentIndex: 0,
       ));
-      await store.jumpTo(-1);
+      expect(await store.jumpTo(-1), BgJumpOutcome.ignored);
       expect(store.state.currentIndex, 0);
-      await store.jumpTo(99);
+      expect(await store.jumpTo(99), BgJumpOutcome.ignored);
       expect(store.state.currentIndex, 0);
 
       store.set(store.state.copyWith(enabled: false));
-      await store.jumpTo(0);
+      expect(await store.jumpTo(0), BgJumpOutcome.ignored);
+      expect(store.state.currentIndex, 0);
+    });
+
+    test('refuses the foreground file but keeps it listed', () async {
+      // The row is the video the foreground holds right now. It must not open
+      // on a second engine, and it must NOT be pruned from the queue — it is
+      // the 音库 source for the next foreground.
+      await playQueueStore.update(
+        playQueue: [PlayQueueItem(file: _f('a'), index: 0)],
+        index: 0,
+      );
+      addTearDown(playQueueStore.clear);
+
+      store.set(store.state.copyWith(
+        enabled: true,
+        queue: [_f('a'), _f('b')],
+        currentIndex: 1,
+      ));
+
+      expect(await store.jumpTo(0), BgJumpOutcome.refusedForegroundFile);
+      expect(store.state.currentIndex, 1, reason: 'no move on refusal');
+      expect(store.state.queue, hasLength(2),
+          reason: 'the row stays in the list');
+    });
+
+    test('allowSameFgBgFile lifts the jump refusal', () async {
+      await playQueueStore.update(
+        playQueue: [PlayQueueItem(file: _f('a'), index: 0)],
+        index: 0,
+      );
+      addTearDown(playQueueStore.clear);
+
+      // The guard is read from the LIVE store (`excludedForegroundKey`), so the
+      // preference has to be lifted there — not only on this test's instance.
+      final live = useBackgroundPlaybackStore();
+      await live.initialized;
+      live.set(live.state.copyWith(allowSameFgBgFile: true));
+      addTearDown(() => live.set(live.state.copyWith(allowSameFgBgFile: false)));
+
+      store.set(store.state.copyWith(
+        enabled: true,
+        queue: [_f('a'), _f('b')],
+        currentIndex: 1,
+      ));
+
+      expect(await store.jumpTo(0), BgJumpOutcome.jumped);
       expect(store.state.currentIndex, 0);
     });
 

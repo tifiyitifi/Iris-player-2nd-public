@@ -10,6 +10,7 @@ import 'package:iris/features/background_playback/model/enum/bg_exhausted_action
 import 'package:iris/features/background_playback/model/enum/bg_gate_stop_behavior.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_bar_align.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
+import 'package:iris/features/background_playback/model/enum/bg_queue_sync_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/bg_step_mode.dart';
@@ -628,6 +629,17 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(true) bool shuffle,
     @Default(Repeat.all) Repeat bgRepeat,
     @Default(<FileItem>[]) List<FileItem> queue,
+
+    /// How a live run absorbs a membership change of a tag its sources read
+    /// from (`bg.queueSyncMode` AUX row). [queue] is a snapshot resolved at
+    /// start time, so a newly tagged media only reaches the open queue panel
+    /// once something reconciles it; this picks HOW the running queue is
+    /// rewritten — [BgQueueSyncMode.rebuild] re-resolves and keeps the playing
+    /// file, [BgQueueSyncMode.append] only adds what is missing. Default
+    /// [BgQueueSyncMode.rebuild].
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(BgQueueSyncMode.rebuild)
+    BgQueueSyncMode queueSyncMode,
   }) = _BackgroundPlaybackState;
 
   factory BackgroundPlaybackState.fromJson(Map<String, dynamic> json) =>

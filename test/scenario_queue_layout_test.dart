@@ -322,4 +322,49 @@ void main() {
           reason: 'the pre-split row is a read-only migration seed');
     });
   });
+
+  group('window.*IsolationPct AUX rows', () {
+    AppState base() => const AppState(useMetadataSettings: true);
+
+    tearDown(() async {
+      useAppStore().set(const AppState());
+    });
+
+    test('prefetched rows override the defaults', () async {
+      final state = await useAppStore().applyWindowRows(base(), prefetched: {
+        'sidePanelIsolationPct': '12.5',
+        'linearBarIsolationPct': '40',
+      });
+      expect(state.sidePanelIsolationPct, 12.5);
+      expect(state.linearBarIsolationPct, 40);
+    });
+
+    test('stored values are clamped to their hard bounds', () async {
+      final state = await useAppStore().applyWindowRows(base(), prefetched: {
+        'sidePanelIsolationPct': '999',
+        'linearBarIsolationPct': '-5',
+      });
+      expect(state.sidePanelIsolationPct, 50);
+      expect(state.linearBarIsolationPct, 0);
+    });
+
+    test('absent rows keep the AppState defaults', () async {
+      final state = await useAppStore().applyWindowRows(base(), prefetched: {});
+      expect(state.sidePanelIsolationPct, 5.0);
+      expect(state.linearBarIsolationPct, 25.0);
+    });
+
+    test('the store updaters persist and clamp', () async {
+      final store = useAppStore();
+      await store.setMetadataGate(true);
+      await store.updateSidePanelIsolationPct(80);
+      await store.updateLinearBarIsolationPct(-1);
+      expect(store.state.sidePanelIsolationPct, 50);
+      expect(store.state.linearBarIsolationPct, 0);
+
+      final raw = await MetaSettingsModule.repo.loadRawValues();
+      expect(double.tryParse(raw['window.sidePanelIsolationPct'] ?? ''), 50);
+      expect(double.tryParse(raw['window.linearBarIsolationPct'] ?? ''), 0);
+    });
+  });
 }
