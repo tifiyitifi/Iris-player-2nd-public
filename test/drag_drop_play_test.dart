@@ -133,6 +133,8 @@ void main() {
         path: 'D:/Movies/a.mkv',
         relative: ['Movies', 'a.mkv'],
         contentType: ContentType.video,
+        size: 0,
+        modifiedAt: null,
       );
       const sibling = DragDropResolvedFile(
         rawPath: '/x/Other/b.mp4',
@@ -140,6 +142,8 @@ void main() {
         path: 'D:/Other/b.mp4',
         relative: ['Other', 'b.mp4'],
         contentType: ContentType.video,
+        size: 0,
+        modifiedAt: null,
       );
       final kept = dropFilesNotCoveredByDirs(
         files: [covered, sibling],
@@ -158,11 +162,65 @@ void main() {
         path: 'D:/Movies/a.mkv',
         relative: ['Movies', 'a.mkv'],
         contentType: ContentType.video,
+        size: 0,
+        modifiedAt: null,
       );
       expect(
         dropFilesNotCoveredByDirs(files: [file], dirs: [dir]),
         hasLength(1),
       );
+    });
+
+    test('Windows drive-letter paths fold case when deciding coverage', () {
+      const dir = DragDropResolvedDir(
+          storageId: 'st', path: 'D:/Movies', relative: ['Movies']);
+      const file = DragDropResolvedFile(
+        rawPath: r'd:\movies\a.mkv',
+        storageId: 'st',
+        path: 'D:/movies/a.mkv',
+        relative: ['movies', 'a.mkv'],
+        contentType: ContentType.video,
+        size: 0,
+        modifiedAt: null,
+      );
+      expect(
+        dropFilesNotCoveredByDirs(files: [file], dirs: [dir]),
+        isEmpty,
+      );
+    });
+
+    test('POSIX paths stay byte-exact: a/A is not coverage', () {
+      const dir = DragDropResolvedDir(
+          storageId: 'st', path: '/sdcard/a', relative: ['a']);
+      const file = DragDropResolvedFile(
+        rawPath: '/sdcard/A.mkv',
+        storageId: 'st',
+        path: '/sdcard/A.mkv',
+        relative: ['A.mkv'],
+        contentType: ContentType.video,
+        size: 0,
+        modifiedAt: null,
+      );
+      expect(
+        dropFilesNotCoveredByDirs(files: [file], dirs: [dir]),
+        hasLength(1),
+      );
+    });
+
+    test('Windows de-dupe folds a case-only variant to one row', () {
+      const a = DragDropResolvedDir(
+          storageId: 'st', path: 'D:/Movies', relative: ['Movies']);
+      const b = DragDropResolvedDir(
+          storageId: 'st', path: 'D:/movies', relative: ['movies']);
+      expect(dedupeDropDirs([a, b]), hasLength(1));
+    });
+
+    test('POSIX de-dupe keeps case-only variants distinct', () {
+      const a = DragDropResolvedDir(
+          storageId: 'st', path: '/sdcard/Movies', relative: ['Movies']);
+      const b = DragDropResolvedDir(
+          storageId: 'st', path: '/sdcard/movies', relative: ['movies']);
+      expect(dedupeDropDirs([a, b]), hasLength(2));
     });
   });
 

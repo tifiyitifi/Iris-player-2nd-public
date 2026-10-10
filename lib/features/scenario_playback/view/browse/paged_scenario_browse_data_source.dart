@@ -7,6 +7,7 @@ import 'package:iris/features/media_library/model/db/dao/for_page/media_node_pag
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
 import 'package:iris/features/media_library/model/enum/media_node.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/features/media_library/search/model/search_context.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseScopeMediaTypes;
@@ -25,7 +26,9 @@ import 'package:iris/features/scenario_playback/store/use_playback_scenario_stor
 import 'package:iris/features/scenario_playback/view/coordinator/scenario_browser_store.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/file.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/path_conv.dart';
@@ -524,11 +527,11 @@ class PagedScenarioBrowseDataSource
         SearchSource(
           storageId: s.storageId,
           path: s.path.isEmpty ? null : s.path,
-          kind: s.path.isEmpty
-              ? MediaSourceKind.storage
-              : s.sourceKind == ScenarioSourceKind.file
-                  ? MediaSourceKind.file
-                  : MediaSourceKind.directory,
+          // See paged_scenario_media_data_source: an empty-path folder source
+          // must keep its recursion flag, not collapse to whole-storage.
+          kind: s.sourceKind == ScenarioSourceKind.file
+              ? MediaSourceKind.file
+              : MediaSourceKind.directory,
           recursive: s.recursive,
           scenarioSourceId: s.id,
         ),
@@ -652,6 +655,13 @@ class PagedScenarioBrowseDataSource
           },
         ),
       ],
+      // Windows desktop: reveal the row's location in Explorer. Storage rows
+      // resolve to the mount root; remote storages return nothing.
+      ...buildExplorerRevealActions<ScenarioBrowseItem>(
+        context: scenario,
+        item: item,
+        fileOf: _revealFileFor,
+      ),
     ];
   }
 
@@ -712,6 +722,27 @@ class PagedScenarioBrowseDataSource
       ),
     );
     await _signalDefinitionChanged();
+  }
+
+  /// Projects a browse row to the [FileItem] the "Open in Explorer" action
+  /// needs. Directory/file rows carry their full DB path; a storage row has an
+  /// empty path and resolves to the mount root.
+  FileItem? _revealFileFor(ScenarioBrowseItem item) {
+    final storage = useStorageStore().findById(item.storageId);
+    if (storage == null) return null;
+    final segments =
+        item.path.isEmpty ? storage.basePath : pathConv(item.path);
+    if (segments.isEmpty) return null;
+    final isDir = item.kind != ScenarioBrowseItemKind.file;
+    return FileItem(
+      storageId: item.storageId,
+      storageType: storage.type,
+      name: item.name,
+      uri: mediaNodePlayableUri(storage, segments),
+      path: segments,
+      isDir: isDir,
+      type: isDir ? ContentType.other : ContentType.video,
+    );
   }
 
   /// A definition edit changes the effective queue: re-validate the current

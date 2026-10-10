@@ -217,23 +217,29 @@ class ScenarioOverrideActions {
     // v5-D7/D30: mirror `_replaceSources` — an override also clears temporary
     // excludes so a forced install never leaks a stale workspace blacklist.
     await store.clearTemporaryExcludes(ws.id);
-    for (final dir in directories) {
-      await store.addSource(
-        storageId: dir.storageId,
-        path: dir.path,
-        // v2-D1/D8: honor the spec's own recursion flag (F-007 may install a
-        // non-recursive source from a saved scenario).
-        recursive: dir.recursive,
-      );
-    }
-    for (final f in files) {
-      if (f.path.isEmpty) continue;
-      await store.addExplicitItemFor(
-        scenarioId: ws.id,
-        storageId: f.storageId,
-        path: canonicalOccurrencePath(f.path.join('/')),
-      );
-    }
+    await store.addSources(
+      specs: [
+        for (final dir in directories)
+          (
+            storageId: dir.storageId,
+            path: dir.path,
+            // v2-D1/D8: honor the spec's own recursion flag (F-007 may install
+            // a non-recursive source from a saved scenario).
+            recursive: dir.recursive,
+          ),
+      ],
+    );
+    await store.addExplicitItemsFor(
+      scenarioId: ws.id,
+      items: [
+        for (final f in files)
+          if (f.path.isNotEmpty)
+            (
+              storageId: f.storageId,
+              path: canonicalOccurrencePath(f.path.join('/')),
+            ),
+      ],
+    );
     await store.applyQueueGenerationRule(
       sortField: sortField,
       sortDirection: sortDirection,
@@ -308,13 +314,16 @@ class ScenarioOverrideActions {
     await store.clearSources(scenarioId);
     await store.clearExplicitItems(scenarioId);
     await store.clearTemporaryExcludes(scenarioId);
-    for (final spec in specs) {
-      await store.addSource(
-        storageId: spec.storageId,
-        path: spec.path,
-        recursive: spec.recursive,
-      );
-    }
+    await store.addSources(
+      specs: [
+        for (final spec in specs)
+          (
+            storageId: spec.storageId,
+            path: spec.path,
+            recursive: spec.recursive,
+          ),
+      ],
+    );
   }
 
   /// v15-D6 playability pre-check: throws [PlaybackUnavailableException] when

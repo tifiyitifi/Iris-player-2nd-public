@@ -332,6 +332,20 @@ String nodePlayableUri(List<String> path, {String? uri}) {
 /// Whether a persisted media URI is an Android SAF `content://` document URI.
 bool isSafMediaUri(String uri) => uri.startsWith('content://');
 
+/// Whether a storage path rides a case-insensitive filesystem: Windows
+/// drive-letter (`E:/…`) and UNC (`//server/share/…` or `\\server\share\…`)
+/// forms ride NTFS/SMB.
+///
+/// POSIX paths, Android SAF tree prefixes (`content://…`) and remote-server
+/// paths are case-sensitive. Folding them would collapse two genuinely distinct
+/// entries differing only by case — the "one dropped folder is never scanned"
+/// and "stale node after a case-only rename" hazards.
+bool pathRidesCaseInsensitiveFs(String path) {
+  if (path.isEmpty) return false;
+  if (path.startsWith('//') || path.startsWith(r'\\')) return true; // UNC share
+  return RegExp(r'^[A-Za-z]:([/\\]|$)').hasMatch(path);
+}
+
 /// Replaces the leading [oldSegments] of [segments] with [newSegments] when
 /// they match; returns null when the prefix does not match.
 ///

@@ -12,6 +12,7 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.
 import 'package:iris/features/scenario_playback/scan/model/scenario_source_refresh_state.dart';
 import 'package:iris/features/scenario_playback/scan/service/scenario_source_refresh_service.dart';
 import 'package:iris/models/db/app_database.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/storages/storage.dart';
 
 import 'helpers/sqlite3_loader.dart';
@@ -141,6 +142,30 @@ void main() {
         nodeWeightByStorage: const {},
       );
       expect(plan.units.first.rootPaths, ['root/dir']);
+    });
+
+    test('absolutizes a storage-relative source root (scan-service form)', () {
+      StoragePathCodec.baseResolver =
+          (id) => id == 's1' ? const ['D:', 'media'] : null;
+      try {
+        final plan = planSourceRefresh(
+          sources: [_source('s1', 'movies', id: 1)],
+          explicitItems: const [],
+          storageById: {'s1': _storage('s1', base: 'D:/media')},
+          nodeWeightByStorage: const {},
+        );
+        expect(plan.units.single.rootPaths, ['D:/media/movies']);
+        // A base-inclusive row stays idempotent.
+        final plan2 = planSourceRefresh(
+          sources: [_source('s1', 'D:/media/movies', id: 1)],
+          explicitItems: const [],
+          storageById: {'s1': _storage('s1', base: 'D:/media')},
+          nodeWeightByStorage: const {},
+        );
+        expect(plan2.units.single.rootPaths, ['D:/media/movies']);
+      } finally {
+        StoragePathCodec.baseResolver = (_) => null;
+      }
     });
 
     test('file sources contribute their parent directory root', () {

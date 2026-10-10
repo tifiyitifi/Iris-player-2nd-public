@@ -2,6 +2,7 @@ import 'package:flutter/material.dart' hide Chip;
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/tag_play/model/domain/tag_play_tag.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/progress.dart';
@@ -202,6 +203,12 @@ class PlayQueue extends HookWidget {
                           direction: popupDirection,
                         );
                         break;
+                      case FileOptions.openInExplorer:
+                        await revealFileInExplorer(
+                          context,
+                          playQueue[index].file,
+                        );
+                        break;
                       default:
                         break;
                     }
@@ -215,6 +222,11 @@ class PlayQueue extends HookWidget {
                       PopupMenuItem(
                         value: FileOptions.openInFolder,
                         child: Text(t.open_in_folder),
+                      ),
+                    if (canRevealFileInExplorer(playQueue[index].file))
+                      PopupMenuItem(
+                        value: FileOptions.openInExplorer,
+                        child: Text(t.open_in_explorer),
                       ),
                   ],
                 ),

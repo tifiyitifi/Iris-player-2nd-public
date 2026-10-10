@@ -12,7 +12,8 @@
        CURRENT tip of X - never reuse a stale/diverged record branch.
    R2  android/version.properties is reset to X's value right after the pop
        so the pre-commit hook increments the TRUE mainline base; the file is
-       excluded from the return trip in both directions.
+       excluded from the return trip in both directions. pubspec.yaml's build
+       number is re-synced to that base afterwards (step 10).
    R3  the return trip restores ONLY the per-file list captured before
        stashing. Whole-tree restore across branches is forbidden.
    R4  end-state verification: the working-tree path set must equal the
@@ -159,7 +160,18 @@ if ($deleted.Count -gt 0) {
 Invoke-Git 'reset' '--mixed' | Out-Null
 
 # ---------------------------------------------------------------------------
-# 10. [R4] End-state verification: path set must equal the snapshot.
+# 10. Re-sync pubspec.yaml's build number to X's versionCode. The record-branch
+#     commit above ran the pre-commit hook (which bumps versionCode and writes
+#     the matching `+N` into pubspec), and the return trip may have brought that
+#     bumped pubspec back. Normalize it so X's working tree is never left with
+#     pubspec and version.properties disagreeing. No-op when already in sync.
+# ---------------------------------------------------------------------------
+Step 'R2b: sync pubspec build number to versionCode'
+$repoRoot = (Invoke-Git 'rev-parse' '--show-toplevel') | Select-Object -First 1
+& (Join-Path $repoRoot 'scripts/sync-version-code.ps1')
+
+# ---------------------------------------------------------------------------
+# 11. [R4] End-state verification: path set must equal the snapshot.
 # ---------------------------------------------------------------------------
 $after = @(git status --porcelain |
     ForEach-Object { $_.Substring(3) } |

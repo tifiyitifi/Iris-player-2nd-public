@@ -47,7 +47,7 @@ abstract final class VirtualMediaSettingsContribution {
       iconKey: 'virtual_media',
       sortOrder: 56,
     ),
-    // NOTE: markTickExtent (0-10px, default 3) persists as a
+    // NOTE: markTickExtent (0-15px, default 7) persists as a
     // `virtualmedia.markTickExtent` AUX row via AppStore.updateVmMarkTickExtent
     // and is edited inside the shared `vm_mark_tick_color` dialog — no second
     // def (mirrors hideChunkWhenSingleSegment; keeps parity-test key lists).

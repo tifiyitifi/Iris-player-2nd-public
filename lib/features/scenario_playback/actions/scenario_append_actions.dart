@@ -27,21 +27,27 @@ class ScenarioAppendActions {
     if (files.isEmpty && directories.isEmpty) return;
     final store = usePlaybackScenarioStore();
     final sys = await ensurePlaybackWorkspace();
-    for (final f in files) {
-      if (f.path.isEmpty) continue;
-      await store.addExplicitItemFor(
-        scenarioId: sys.id,
-        storageId: f.storageId,
-        path: canonicalOccurrencePath(f.path.join('/')),
-      );
-    }
-    for (final dir in directories) {
-      await store.addSource(
-        storageId: dir.storageId,
-        path: dir.path,
-        recursive: dir.recursive,
-      );
-    }
+    await store.addExplicitItemsFor(
+      scenarioId: sys.id,
+      items: [
+        for (final f in files)
+          if (f.path.isNotEmpty)
+            (
+              storageId: f.storageId,
+              path: canonicalOccurrencePath(f.path.join('/')),
+            ),
+      ],
+    );
+    await store.addSources(
+      specs: [
+        for (final dir in directories)
+          (
+            storageId: dir.storageId,
+            path: dir.path,
+            recursive: dir.recursive,
+          ),
+      ],
+    );
     await store.bumpPlaybackVersion();
     // Appends change the active scenario's resolved queue, so an OPEN queue
     // view must re-fetch in place (sourceScanRevision is the queue's single
@@ -60,16 +66,23 @@ class ScenarioAppendActions {
   /// D16: this variant does NOT early-return on an empty append — the No Media
   /// confirm path relies on the "added 0 items" feedback even when nothing was
   /// appended (the plain variant keeps its early-return).
+  ///
+  /// [skipGate] is true only on the post-scan resume: the user already chose to
+  /// scan, so the append must proceed instead of re-opening the gate.
   static Future<void> appendToDefaultScenarioWithFeedback(
     BuildContext context,
     List<FileItem> files, {
     List<ScenarioSourceSpec> directories = const [],
+    bool skipGate = false,
   }) async {
     // Scan gate (files-page / storages-list / lib-tile / lib-content only):
     // a recursive dir that was never fully scanned asks before appending.
     // When the user picks 立即完整扫描, record the pending intent so the append
     // is resumed (same parameters) once the scan completes.
-    if (directories.isNotEmpty) {
+    if (shouldRunScanGate(
+      skipGate: skipGate,
+      hasRecursiveDirs: directories.isNotEmpty,
+    )) {
       final proceed = await ensureDirsScannedWithPendingPlay(
         context,
         directories,
@@ -77,6 +90,7 @@ class ScenarioAppendActions {
           context,
           files,
           directories: directories,
+          skipGate: true,
         ),
       );
       if (!proceed) return;

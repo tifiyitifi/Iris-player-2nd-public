@@ -336,4 +336,175 @@ void main() {
       expect(def.editorKey, isNotNull);
     });
   });
+
+  group('saneStepBurstPos', () {
+    test('seeds from raw when nothing was shown yet', () {
+      expect(
+        saneStepBurstPos(
+            raw: 1000, lastShown: null, forward: true, durationMs: 10000),
+        1000,
+      );
+    });
+
+    test('a forward burst never moves the shown position backwards', () {
+      // Engine reports the previous frame while decoding toward the target.
+      expect(
+        saneStepBurstPos(
+            raw: 2000, lastShown: 5000, forward: true, durationMs: 20000),
+        5000,
+      );
+    });
+
+    test('a forward burst accepts forward progress (playback past target)', () {
+      expect(
+        saneStepBurstPos(
+            raw: 8000, lastShown: 5000, forward: true, durationMs: 20000),
+        8000,
+      );
+    });
+
+    test('a backward burst never moves the shown position forwards', () {
+      expect(
+        saneStepBurstPos(
+            raw: 9000, lastShown: 5000, forward: false, durationMs: 20000),
+        5000,
+      );
+      expect(
+        saneStepBurstPos(
+            raw: 2000, lastShown: 5000, forward: false, durationMs: 20000),
+        2000,
+      );
+    });
+
+    test('clamps into the media when the duration is known', () {
+      expect(
+        saneStepBurstPos(
+            raw: 30000, lastShown: 5000, forward: true, durationMs: 20000),
+        20000,
+      );
+    });
+  });
+
+  group('stepLandingDwell', () {
+    test('keeps the landed-frame dwell while nothing is queued', () {
+      expect(stepLandingDwell(0), kStepLandedDwell);
+    });
+
+    test('drops the dwell the moment a backlog is waiting', () {
+      expect(stepLandingDwell(1), Duration.zero);
+      expect(stepLandingDwell(3), Duration.zero);
+    });
+  });
+
+  group('StepSeekChain no-drop mode', () {
+    final DateTime t0 = DateTime(2026);
+
+    test('adaptive (dropOldest=false) swallows no press', () {
+      final c = StepSeekChain(maxPending: 3)..dropOldest = false;
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      expect(c.takeNext(t0)?.targetMs, 1000);
+      for (int i = 2; i <= 8; i++) {
+        c.push(i * 1000, engineTargetMs: i * 1000, forward: true);
+      }
+      expect(c.pendingCount, 7, reason: 'nothing dropped');
+      // Drain in order: 2000 first.
+      expect(c.takeNext(t0), isNull, reason: 'one in flight');
+      c.notePosition(1000);
+      expect(c.takeNext(t0)?.targetMs, 2000);
+    });
+
+    test('serialized (dropOldest=true) still drops the oldest', () {
+      final c = StepSeekChain(maxPending: 3);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      for (int i = 2; i <= 5; i++) {
+        c.push(i * 1000, engineTargetMs: i * 1000, forward: true);
+      }
+      expect(c.pendingCount, 3);
+      c.notePosition(1000);
+      expect(c.takeNext(t0)?.targetMs, 3000);
+    });
+
+    test('exposes inFlightSince for issue->landed latency', () {
+      final c = StepSeekChain();
+      expect(c.inFlightSince, isNull);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      expect(c.inFlightSince, t0);
+      c.notePosition(1000);
+      expect(c.inFlightSince, isNull);
+    });
+  });
+
+  group('StepSeekChain release collapse', () {
+    final DateTime t0 = DateTime(2026);
+
+    test('collapses a held burst to its newest target', () {
+      final c = StepSeekChain(maxPending: 3)..dropOldest = false;
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      for (int i = 2; i <= 8; i++) {
+        c.push(i * 1000, engineTargetMs: i * 1000, forward: true);
+      }
+      final collapsed = c.collapseOnRelease();
+      // The returned target is the LAST press on the caller axis — the exact
+      // value noteStepSeek armed and the OSD reads. This is the OSD invariant.
+      expect(collapsed?.targetMs, 8000);
+      expect(collapsed?.engineTargetMs, 8000);
+      expect(c.pendingCount, 1, reason: 'only the final target survives');
+      expect(c.isEmpty, isFalse);
+    });
+
+    test('the collapsed target is handed out once so the walk ends', () {
+      final c = StepSeekChain()..dropOldest = false;
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      c.push(2000, engineTargetMs: 2000, forward: true);
+      c.push(3000, engineTargetMs: 3000, forward: true);
+      expect(c.collapseOnRelease()?.targetMs, 3000);
+      // Re-issued immediately (supersedes the in-flight older target).
+      expect(c.takeNext(t0)?.targetMs, 3000);
+      expect(c.pendingCount, 0);
+      // Landing clears the chain -> normal playback resumes.
+      expect(c.notePosition(3000), isTrue);
+      expect(c.isEmpty, isTrue);
+    });
+
+    test('null when the in-flight target already is the newest', () {
+      final c = StepSeekChain();
+      expect(c.collapseOnRelease(), isNull, reason: 'empty chain');
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      expect(c.collapseOnRelease(), isNull,
+          reason: 'nothing newer queued than the in-flight target');
+      // The in-flight seek is left alone to land.
+      expect(c.inFlightMs, 1000);
+      expect(c.notePosition(1000), isTrue);
+    });
+
+    test('works in serialized (dropOldest=true) mode too', () {
+      final c = StepSeekChain(maxPending: 3);
+      c.push(1000, engineTargetMs: 1000, forward: true);
+      c.takeNext(t0);
+      for (int i = 2; i <= 5; i++) {
+        c.push(i * 1000, engineTargetMs: i * 1000, forward: true);
+      }
+      expect(c.pendingCount, 3);
+      expect(c.collapseOnRelease()?.targetMs, 5000);
+      expect(c.pendingCount, 1);
+      expect(c.takeNext(t0)?.targetMs, 5000);
+    });
+
+    test('keeps the final VIRTUAL target while the engine axis stays local', () {
+      // Virtual media: the collapse re-issues the caller (virtual) target so
+      // seek() re-decomposes it; the landing check keeps the engine axis.
+      final c = StepSeekChain()..dropOldest = false;
+      c.push(60000, engineTargetMs: 5000, forward: true);
+      c.takeNext(t0);
+      c.push(70000, engineTargetMs: 6000, forward: true);
+      expect(c.collapseOnRelease()?.targetMs, 70000);
+      expect(c.takeNext(t0)?.engineTargetMs, 6000);
+      expect(c.notePosition(6000), isTrue);
+    });
+  });
 }

@@ -4,6 +4,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sort_by.dart';
 import 'package:iris/features/media_library/view/tab/store/libs/use_media_libs_page_store.dart';
+import 'package:iris/utils/get_localizations.dart';
 
 class MediaLibSortMenu extends HookWidget {
   const MediaLibSortMenu({super.key});
@@ -11,6 +12,7 @@ class MediaLibSortMenu extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final store = useMediaLibsStore();
+    final t = getLocalizations(context);
 
     final sortBy = store.select(
       context,
@@ -39,21 +41,21 @@ class MediaLibSortMenu extends HookWidget {
       },
       itemBuilder: (_) => [
         _item(
-          label: 'Name',
+          label: t.lib_sort_name,
           target: MediaLibsListSortBy.name,
           current: sortBy,
           order: sortDirection,
           context: context,
         ),
         _item(
-          label: 'Created',
+          label: t.lib_sort_created,
           target: MediaLibsListSortBy.createdAt,
           current: sortBy,
           order: sortDirection,
           context: context,
         ),
         _item(
-          label: 'Updated',
+          label: t.lib_sort_updated,
           target: MediaLibsListSortBy.updatedAt,
           current: sortBy,
           order: sortDirection,

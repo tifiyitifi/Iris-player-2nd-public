@@ -4,8 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:iris/features/media_library/scan/model/scan_rescan_reminder.dart';
 import 'package:iris/features/media_library/scan/probe/media_probe.dart';
 import 'package:iris/features/media_library/scan/service/recursive_scan_service.dart';
-import 'package:iris/features/media_library/scan/model/recursive_scan_state.dart'
-    show ScanPhase;
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/pending_play_intent.dart';
@@ -14,8 +12,11 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_common
 import 'package:iris/features/scenario_playback/actions/scenario_playback_error.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
+import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 
 /// Per-directory scan gate status (decision output of [classifyDirScanStatus]).
@@ -85,39 +86,154 @@ DirScanGateStatus resolveLiveScanStatus(
   return DirScanGateStatus.unscanned;
 }
 
-/// True while the shared scan store is actually scanning [storageId].
-bool _scanIsLiveFor(String storageId) {
+/// True while the shared scan store is actually scanning [dir]'s root.
+///
+/// Liveness is ROOT-scoped, not storage-scoped: the store is single-flight but a
+/// run scans one specific root set (`depthPaths`), so scanning `D:/A` must not
+/// mark a sibling `D:/B` on the same storage as live — that would skip `D:/B`'s
+/// scan-now and silently abort the play (the same-storage multi-root hazard).
+bool _scanIsLiveFor(ScenarioSourceSpec dir) {
   final store = useRecursiveScanStore();
-  if (!store.isScanning) return false;
-  final running = store.state.storageId;
-  return running == null || running == storageId;
+  return isScanLiveForState(
+    isScanning: store.isScanning,
+    runningStorageId: store.state.storageId,
+    runningRoots: store.state.depthPaths[0] ?? const <String>[],
+    storageId: dir.storageId,
+    root: _effectiveScanRoot(dir),
+  );
 }
+
+/// The absolute domain root a gate dir scans: its own path, or the storage base
+/// for the whole-storage (`''`) marker.
+///
+/// A spec path may be storage-relative (media-library sources) or
+/// base-inclusive (drag-drop / node selections); both are normalized to the
+/// absolute form the scan service and the running-root comparison expect.
+String _effectiveScanRoot(ScenarioSourceSpec dir) {
+  final storage = useStorageStore().findById(dir.storageId);
+  if (dir.path.isEmpty) {
+    return storage == null ? '' : storage.basePath.join('/');
+  }
+  return StoragePathCodec.absolutize(dir.storageId, canonicalDbPath(dir.path));
+}
+
+/// Pure liveness check: [root] is live only when [runningStorageId] matches AND
+/// one of the [runningRoots] actually COVERS it.
+///
+/// Covers = ancestor-or-equal: a running `D:/A` covers `D:/A` and `D:/A/sub`
+/// but not a sibling `D:/B`. A null running id (transient inside `startScan`)
+/// and an empty root set are never live.
+@visibleForTesting
+bool isScanLiveForState({
+  required bool isScanning,
+  required String? runningStorageId,
+  required List<String> runningRoots,
+  required String storageId,
+  required String root,
+}) {
+  if (!isScanning) return false;
+  if (runningStorageId == null || runningStorageId != storageId) return false;
+  if (runningRoots.isEmpty) return false;
+  return runningRoots.any((r) => _gatePathCovers(r, root));
+}
+
+/// Roots that are NOT backed by a live scan (i.e. safe to start now).
+///
+/// Pure and `@visibleForTesting`. The shared scan store is single-flight, so
+/// re-scanning a root already covered by the running scan would reset its
+/// progress and interleave DB writes; the gate dialog still counts live roots,
+/// but execution must skip them.
+@visibleForTesting
+List<ScenarioSourceSpec> filterLiveScanRoots(
+  List<ScenarioSourceSpec> dirs,
+  bool Function(ScenarioSourceSpec dir) isLive,
+) {
+  return dirs.where((d) => !isLive(d)).toList(growable: false);
+}
+
+/// Ancestor-collapses the gate scopes per storage so one recursive scan can
+/// cover several dropped folders (a parent marks every descendant `scanDone`).
+///
+/// Pure and `@visibleForTesting`. Non-recursive scopes never gate and are
+/// dropped from the result. The storage root (`''`) covers its whole storage.
+List<ScenarioSourceSpec> collapseGateDirs(List<ScenarioSourceSpec> dirs) {
+  final byStorage = <String, List<String>>{};
+  for (final dir in dirs) {
+    if (!dir.recursive) continue;
+    byStorage.putIfAbsent(dir.storageId, () => []).add(dir.path);
+  }
+  final out = <ScenarioSourceSpec>[];
+  for (final entry in byStorage.entries) {
+    final sorted = [...entry.value]
+      ..sort((a, b) => a.length.compareTo(b.length));
+    final kept = <String>[];
+    for (final path in sorted) {
+      if (kept.any((k) => _gatePathCovers(k, path))) continue;
+      kept.add(path);
+    }
+    for (final path in kept) {
+      out.add((storageId: entry.key, path: path, recursive: true));
+    }
+  }
+  return out;
+}
+
+/// Whether [path] rides a case-insensitive filesystem, so its gate scopes must
+/// fold case when deciding ancestor coverage.
+///
+/// Only Windows volume paths fold: drive-letter (`C:/...`) and UNC
+/// (`//server/share/...`) forms ride NTFS/SMB. POSIX paths, Android SAF tree
+/// prefixes (`content://...`) and remote-server paths are case-sensitive —
+/// folding them would collapse two genuinely distinct folders differing only by
+/// case and silently drop one from the chained scan batch (the "one dropped
+/// folder is never scanned" hazard). Shared with the rescan presence check
+/// ([pathRidesCaseInsensitiveFs]).
+bool _gatePathFoldsCase(String path) => pathRidesCaseInsensitiveFs(path);
+
+bool _gatePathCovers(String ancestor, String path) {
+  if (ancestor.isEmpty) return true; // storage root covers everything
+  final fold = _gatePathFoldsCase(ancestor);
+  final a = fold ? ancestor.toLowerCase() : ancestor;
+  final p = fold ? path.toLowerCase() : path;
+  return p == a || p.startsWith('$a/');
+}
+
+/// Whether a top-level play action should run the scan gate.
+///
+/// The resume path ([skipGate] true) re-runs an action's tail AFTER its chained
+/// scan batch finished. The user already chose 立即完整扫描, so the gate must not
+/// run again: a root whose scan failed would otherwise re-open the same dialog
+/// on every resume (the "scan never seems to take effect" loop).
+bool shouldRunScanGate({
+  required bool skipGate,
+  required bool hasRecursiveDirs,
+}) =>
+    !skipGate && hasRecursiveDirs;
 
 /// Playback gate: checks every recursive directory against its scan status.
 ///
 /// Returns true when playback may proceed; false when it was aborted (user
 /// chose to scan now / cancelled). Fresh (`done`) directories pass silently.
-/// The first non-pass directory shows a status dialog offering scan-now
-/// (via [showScanOptionsDialog] with probe default ON) or play-anyway.
+/// ONE dialog covers the whole gated set, and its scan-now scans every gated
+/// root (chained), so a drop of many unscanned folders never stacks dialogs.
 ///
-/// When the user picks scan-now, [onScanNow] (if provided) is invoked right
-/// after the background scan starts — the natural place for a caller to record
-/// a [PendingPlayIntent] so the interrupted playback can be resumed when the
-/// scan completes (plan: fix override-play lost after scan).
+/// When the user picks scan-now, [onScanNow] (if provided) is invoked with the
+/// future that completes once ALL chained scans finish — the natural place for
+/// a caller to record a [PendingPlayIntent] so the interrupted playback can be
+/// resumed after the batch (plan: fix override-play lost after scan).
 Future<bool> ensureDirsScanned(
   BuildContext context,
   List<ScenarioSourceSpec> dirs, {
-  VoidCallback? onScanNow,
+  ValueChanged<Future<void>>? onScanNow,
 }) async {
   final reminder = await scanReminderMinutes();
   final now = DateTime.now();
   final gated = <ScenarioSourceSpec, DirScanGateStatus>{};
 
-  for (final dir in dirs) {
-    if (!dir.recursive) continue; // non-recursive scopes need no full scan
+  for (final dir in collapseGateDirs(dirs)) {
     final status = resolveLiveScanStatus(
       await _statusOf(dir, now, reminder),
-      scanLive: _scanIsLiveFor(dir.storageId),
+      scanLive: _scanIsLiveFor(dir),
     );
     if (status == DirScanGateStatus.done) continue;
     gated[dir] = status;
@@ -125,11 +241,23 @@ Future<bool> ensureDirsScanned(
   if (gated.isEmpty) return true;
   if (!context.mounted) return false;
 
-  // Gate the FIRST non-pass directory (one dialog at a time).
-  final entry = gated.entries.first;
-  final dir = entry.key;
-  final status = entry.value;
-  return _showGateDialog(context, dir, status, onScanNow: onScanNow);
+  // One dialog for the whole batch: prefer an actionable status (unscanned /
+  // error / stale) so scan-now can cover every not-yet-scanned root; only when
+  // a live scan already owns every root do we show the non-actionable
+  // `scanning` dialog (which hides scan-now).
+  final actionable =
+      gated.entries.where((e) => e.value != DirScanGateStatus.scanning);
+  final entry = actionable.isNotEmpty ? actionable.first : gated.entries.first;
+  final liveCount =
+      gated.values.where((s) => s == DirScanGateStatus.scanning).length;
+  return _showGateDialog(
+    context,
+    entry.key,
+    entry.value,
+    roots: gated.keys.toList(growable: false),
+    liveCount: liveCount,
+    onScanNow: onScanNow,
+  );
 }
 
 Future<DirScanGateStatus> _statusOf(
@@ -151,29 +279,46 @@ Future<bool> _showGateDialog(
   BuildContext context,
   ScenarioSourceSpec dir,
   DirScanGateStatus status, {
-  VoidCallback? onScanNow,
+  required List<ScenarioSourceSpec> roots,
+  int liveCount = 0,
+  ValueChanged<Future<void>>? onScanNow,
 }) async {
   final t = getLocalizations(context);
   final label = _dirLabel(dir, t);
-  final (title, body) = switch (status) {
-    DirScanGateStatus.unscanned => (
-        t.gate_unscanned_title,
-        t.gate_unscanned_body(label),
-      ),
-    DirScanGateStatus.scanning => (
-        t.gate_scanning_title,
-        t.gate_scanning_body(label),
-      ),
-    DirScanGateStatus.error => (
-        t.gate_error_title,
-        t.gate_error_body(label),
-      ),
-    DirScanGateStatus.stale => (
-        t.gate_stale_title,
-        t.gate_stale_body(label, formatStaleness(await _stalenessOf(dir), t)),
-      ),
-    DirScanGateStatus.done => ('', ''),
-  };
+  // A drop of several unscanned folders shows ONE dialog: a generic count
+  // message when more than one root is gated (scan-now scans them all).
+  // Mixed batches (actionable + live) keep scan-now but warn that starting
+  // now interrupts the live scan — the store is single-flight, so the live
+  // roots are skipped by execution yet still aborted by the reset.
+  final (title, body) = roots.length > 1 &&
+          status != DirScanGateStatus.scanning
+      ? (
+          t.gate_multi_title,
+          liveCount > 0
+              ? '${t.gate_multi_body(roots.length)}\n\n'
+                  '${t.gate_multi_interrupt_warn(liveCount)}'
+              : t.gate_multi_body(roots.length),
+        )
+      : switch (status) {
+          DirScanGateStatus.unscanned => (
+              t.gate_unscanned_title,
+              t.gate_unscanned_body(label),
+            ),
+          DirScanGateStatus.scanning => (
+              t.gate_scanning_title,
+              t.gate_scanning_body(label),
+            ),
+          DirScanGateStatus.error => (
+              t.gate_error_title,
+              t.gate_error_body(label),
+            ),
+          DirScanGateStatus.stale => (
+              t.gate_stale_title,
+              t.gate_stale_body(
+                  label, formatStaleness(await _stalenessOf(dir), t)),
+            ),
+          DirScanGateStatus.done => ('', ''),
+        };
   if (!context.mounted) return false;
 
   final choice = await showDialog<DirScanGateChoice>(
@@ -194,13 +339,12 @@ Future<bool> _showGateDialog(
       return true;
     case DirScanGateChoice.scanNow:
       if (context.mounted) {
-        final started = await _startScanFor(context, dir);
-        // Only record the pending intent when a scan ACTUALLY started. If the
-        // user cancelled the options dialog (or the storage could not be
-        // resolved), no scan took over, so arming a resume would silently drop
-        // this play and later pop a spurious resume dialog after an unrelated
-        // scan completes.
-        if (started) onScanNow?.call();
+        final done = await _startScansFor(context, roots);
+        // Only arm the pending intent when a scan ACTUALLY started. If the
+        // user cancelled the options dialog (or no storage could be resolved),
+        // no scan took over, so arming a resume would silently drop this play
+        // and later pop a spurious resume dialog after an unrelated scan.
+        if (done != null) onScanNow?.call(done);
       }
       return false; // scan overlay takes over; playback aborted
     case DirScanGateChoice.cancel:
@@ -255,31 +399,62 @@ Future<Duration> _stalenessOf(ScenarioSourceSpec dir) async {
   return DateTime.now().difference(last);
 }
 
-/// Starts a background recursive scan for [dir] and returns whether it actually
-/// started. False when the storage cannot be resolved or the user cancelled the
-/// scan-options dialog — callers must then NOT record a pending play intent.
-Future<bool> _startScanFor(BuildContext context, ScenarioSourceSpec dir) async {
-  final storage = useStorageStore().findById(dir.storageId);
-  if (storage == null) return false; // cannot scan without a storage
+/// Starts background recursive scans for every gated [dirs] root, chained so
+/// the shared scan store stays single-flight.
+///
+/// Live roots (backed by the running scan) are skipped — re-scanning one
+/// would reset its progress and interleave DB writes. The dialog still counts
+/// them; starting the remaining roots still interrupts the live scan (the
+/// store holds one scan at a time), which the dialog warns about.
+///
+/// Returns the future that completes once ALL scans finish, or null when
+/// nothing started (every root live, no resolvable storage, or the user
+/// cancelled the scan-options dialog) — callers must then NOT record a
+/// pending play intent.
+///
+/// One options dialog covers the whole batch (probe default ON). The scan
+/// mutates `media_nodes`; each storage is announced as its scan finishes so the
+/// derived queue index and any open queue view pick up the new content.
+Future<Future<void>?> _startScansFor(
+  BuildContext context,
+  List<ScenarioSourceSpec> dirs,
+) async {
+  final pending = filterLiveScanRoots(dirs, _scanIsLiveFor);
+  if (pending.isEmpty) return null; // every root already has a live scan
+  final resolvable = <(Storage, ScenarioSourceSpec)>[];
+  for (final dir in pending) {
+    final storage = useStorageStore().findById(dir.storageId);
+    if (storage != null) resolvable.add((storage, dir));
+  }
+  if (resolvable.isEmpty) return null; // cannot scan without a storage
+
   // Same options dialog as manual scans, probe default ON (see dialog).
-  final probe = await showScanOptionsDialog(context, storageType: storage.type);
-  if (probe == null || !context.mounted) return false; // cancelled → no scan
+  final probe = await showScanOptionsDialog(
+    context,
+    storageType: resolvable.first.$1.type,
+  );
+  if (probe == null || !context.mounted) return null; // cancelled → no scan
 
   final scanStore = useRecursiveScanStore();
-  final service = RecursiveScanService(
-    storage: storage,
-    scanStore: scanStore,
-    nodesDao: DbModule.mediaNodesDao,
-    sourcesDao: DbModule.mediaLibSourcesDao,
-    probeService: probe ? createMediaProbeService() : null,
-  );
-  final rootPath = dir.path.isEmpty ? storage.basePath.join('/') : dir.path;
-  // The scan mutates `media_nodes`; announce the storage when it finishes so
-  // the derived queue index and any open queue view pick up the new content.
-  unawaited(service
-      .scanRecursively(rootPaths: [rootPath], context: context).then(
-          (_) => MediaRevisionActions.mediaNodesChanged([storage.id])));
-  return true;
+  return () async {
+    for (final (storage, dir) in resolvable) {
+      final service = RecursiveScanService(
+        storage: storage,
+        scanStore: scanStore,
+        nodesDao: DbModule.mediaNodesDao,
+        sourcesDao: DbModule.mediaLibSourcesDao,
+        probeService: probe ? createMediaProbeService() : null,
+      );
+      final rootPath = _effectiveScanRoot(dir);
+      if (!context.mounted) return;
+      try {
+        await service.scanRecursively(rootPaths: [rootPath], context: context);
+      } catch (_) {
+        // One failed root must not stop the rest of the batch.
+      }
+      await MediaRevisionActions.mediaNodesChanged([storage.id]);
+    }
+  }();
 }
 
 String _dirLabel(ScenarioSourceSpec dir, AppLocalizations t) =>
@@ -312,82 +487,46 @@ Future<bool> ensureDirsScannedWithPendingPlay(
   required Future<void> Function() playOnScanNow,
 }) async {
   final hold = usePendingPlayIntentHolder();
-  // Single-use listener: only arm it the first time this window's scan is
-  // triggered, so consecutive gate dialogs don't stack watchers.
+  // Single-use: only arm it the first time this window's scan is triggered, so
+  // consecutive gate dialogs don't stack resumers.
   var armed = false;
 
-  final proceed = await ensureDirsScanned(
+  return ensureDirsScanned(
     context,
     dirs,
-    onScanNow: () {
+    onScanNow: (done) {
       if (armed) return;
       armed = true;
       hold.set(PendingPlayIntent(resume: playOnScanNow));
-      _watchScanCompletionForResume(
+      _offerPendingWhenDone(
         holder: hold,
         captureContext: context,
+        done: done,
       );
     },
   );
-  return proceed;
 }
 
-/// Whether a scan-store phase change should offer the resume prompt.
+/// Offers the pending intent ONCE, after the whole chained scan batch finishes.
 ///
-/// Pure and `@visibleForTesting` so the once-only contract is unit-testable:
-/// exactly one offer per armed intent, on the first `scanning → terminal`
-/// transition. [offered] latches after the first terminal transition; further
-/// transitions (a multi-storage batch completes once per storage) are ignored.
-@visibleForTesting
-bool shouldOfferScanResume({
-  required ScanPhase? previousPhase,
-  required ScanPhase nextPhase,
-  required bool offered,
-}) {
-  if (offered) return false;
-  if (previousPhase != ScanPhase.scanning) return false;
-  return nextPhase == ScanPhase.done ||
-      nextPhase == ScanPhase.stopped ||
-      nextPhase == ScanPhase.error;
-}
-
-/// Watches the shared scan store for the completion of the scan that took over
-/// this playback, then offers to resume the pending intent ONCE.
-///
-/// Listens for the transition `scanning → done/stopped/error`. The pending
-/// intent is CONSUMED before the dialog is shown so a scan that reaches a
-/// terminal phase more than once (a multi-storage batch completes once per
-/// storage) can never stack duplicate dialogs. The subscription cancels itself
-/// after offering, so repeated gated plays cannot accumulate listeners that all
-/// fire on one completion. A separate [armed] flag in
-/// [ensureDirsScannedWithPendingPlay] keeps this from stacking for one user
-/// action.
-void _watchScanCompletionForResume({
+/// [done] completes when every gated root's scan has finished, so a multi-root
+/// batch can never offer early (the old store-phase watcher fired on the first
+/// `scanning → terminal` transition). The intent is CONSUMED before the dialog
+/// is shown so it can never stack; the [armed] flag in
+/// [ensureDirsScannedWithPendingPlay] keeps repeated gated plays from arming
+/// more than one resumer for a single user action.
+void _offerPendingWhenDone({
   required PendingPlayIntentHolder holder,
   required BuildContext captureContext,
+  required Future<void> done,
 }) {
-  final scanStore = useRecursiveScanStore();
-  ScanPhase? prevPhase = scanStore.state.phase;
-  var offered = false;
-  StreamSubscription<dynamic>? sub;
-  sub = scanStore.stream.listen((state) {
-    final shouldOffer = shouldOfferScanResume(
-      previousPhase: prevPhase,
-      nextPhase: state.phase,
-      offered: offered,
-    );
-    prevPhase = state.phase;
-    if (!shouldOffer) return;
+  unawaited(done.whenComplete(() {
     final intent = holder.pending;
     if (intent == null) return;
-    offered = true;
-    // Consume first: the dialog below must not be able to stack, and a
-    // subsequent terminal transition has nothing left to offer.
     holder.clear();
-    unawaited(sub?.cancel() ?? Future<void>.value());
     if (!captureContext.mounted) return;
     _offerPendingResume(captureContext, intent);
-  });
+  }));
 }
 
 /// Shows the single "scan finished — continue playing?" prompt for [intent].

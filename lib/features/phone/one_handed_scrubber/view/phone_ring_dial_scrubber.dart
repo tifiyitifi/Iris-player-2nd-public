@@ -18,6 +18,7 @@ import 'package:iris/features/phone/one_handed_scrubber/view/phone_scrubber_time
 import 'package:iris/features/virtual_media/interaction/ui/vm_dual_time.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
+import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/virtual_media/view/vm_scrubber_marks.dart';
 import 'package:iris/l10n/app_localizations.dart';
@@ -169,9 +170,12 @@ class PhoneRingDialScrubber extends HookWidget {
     final vmSyncMode = useAppStore().select(context, (s) => s.vmDualTimeSync);
     final VmScrubberMarks vmMarks =
         useMemoized(() => computeVmScrubberMarks(vmItem), [vmItem]);
-    // Lengthened boundary ticks, user-tinted (opaque white default).
+    // Lengthened boundary ticks, user-tinted (opaque white default) and
+    // user-sized (per-side reach from `virtualmedia.markTickExtent`).
     final vmTickArgb =
         useAppStore().select(context, (s) => s.vmMarkTickColor);
+    final vmTickExtent =
+        useAppStore().select(context, (s) => s.vmMarkTickExtent);
     final Duration duration = progress.duration > Duration.zero
         ? progress.duration
         : const Duration(milliseconds: 1);
@@ -707,6 +711,7 @@ class PhoneRingDialScrubber extends HookWidget {
                     useScrubDragStore().endHold(ScrubOwners.ringDial);
                   },
                     child: CustomPaint(
+                    key: const ValueKey('vmDialPaint'),
                     painter: _DialPainter(
                       previewMs: preview.value.inMilliseconds.toDouble(),
                       durationMs: duration.inMilliseconds.toDouble(),
@@ -720,6 +725,7 @@ class PhoneRingDialScrubber extends HookWidget {
                       vmItem: vmItem,
                       vmMarks: vmMarks.isEmpty ? null : vmMarks,
                       vmTickColor: Color(vmTickArgb),
+                      vmTickExtent: vmTickExtent,
                       vmFailedColor:
                           Theme.of(context).colorScheme.error,
                       windowFloorFraction: bgWindowFloorFraction,
@@ -1125,6 +1131,7 @@ class _DialPainter extends CustomPainter {
     this.vmItem,
     this.vmMarks,
     this.vmTickColor,
+    this.vmTickExtent = kVmTickExtentDefaultPx,
     this.vmFailedColor,
     this.windowFloorFraction,
     this.windowCeilingFraction,
@@ -1161,6 +1168,12 @@ class _DialPainter extends CustomPainter {
   /// the full timeline, now swappable). Null when no VM session is active.
   final VmScrubberMarks? vmMarks;
   final Color? vmTickColor;
+
+  /// Per-side reach of each boundary tick past the chunk-ring centreline, from
+  /// `virtualmedia.markTickExtent` — the same value the linear slider and the
+  /// circle slider read, so the one setting drives all three surfaces.
+  final int vmTickExtent;
+
   final Color? vmFailedColor;
 
   /// Radius of the hole the 45° sector X leaves over the center readout, from
@@ -1576,11 +1589,14 @@ class _DialPainter extends CustomPainter {
         ..color = vmTickColor!;
       for (final f in boundaries) {
         final double rad = arc.startRad + f * arc.sweepRad;
-        final Offset from = c +
-            Offset((chunkR - 9) * m.cos(rad), (chunkR - 9) * m.sin(rad));
-        final Offset to = c +
-            Offset((chunkR + 9) * m.cos(rad), (chunkR + 9) * m.sin(rad));
-        canvas.drawLine(from, to, tick);
+        final ({Offset from, Offset to}) span =
+            PhoneRingDialMath.vmChunkTickSpan(
+          center: c,
+          radius: chunkR,
+          angleRad: rad,
+          extentPx: vmTickExtent,
+        );
+        canvas.drawLine(span.from, span.to, tick);
       }
     }
   }
@@ -1605,6 +1621,7 @@ class _DialPainter extends CustomPainter {
       !identical(old.vmItem, vmItem) ||
       !identical(old.vmMarks, vmMarks) ||
       old.vmTickColor != vmTickColor ||
+      old.vmTickExtent != vmTickExtent ||
       old.vmFailedColor != vmFailedColor ||
       old.windowFloorFraction != windowFloorFraction ||
       old.windowCeilingFraction != windowCeilingFraction ||

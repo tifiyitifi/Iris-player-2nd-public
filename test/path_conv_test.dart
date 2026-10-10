@@ -61,4 +61,27 @@ void main() {
       );
     });
   });
+
+  group('pathRidesCaseInsensitiveFs', () {
+    test('Windows drive-letter forms fold', () {
+      expect(pathRidesCaseInsensitiveFs('E:/Movies/a.mp4'), isTrue);
+      expect(pathRidesCaseInsensitiveFs(r'E:\Movies\a.mp4'), isTrue);
+      expect(pathRidesCaseInsensitiveFs('E:'), isTrue);
+    });
+
+    test('UNC forms fold', () {
+      expect(pathRidesCaseInsensitiveFs('//server/share/a.mp4'), isTrue);
+      expect(pathRidesCaseInsensitiveFs(r'\\server\share\a.mp4'), isTrue);
+    });
+
+    test('POSIX, SAF and relative paths stay case-sensitive', () {
+      expect(pathRidesCaseInsensitiveFs('storage/emulated/0/a.mp4'), isFalse);
+      expect(
+        pathRidesCaseInsensitiveFs('content://p/tree/x/a.mp4'),
+        isFalse,
+      );
+      expect(pathRidesCaseInsensitiveFs('Movies/a.mp4'), isFalse);
+      expect(pathRidesCaseInsensitiveFs(''), isFalse);
+    });
+  });
 }

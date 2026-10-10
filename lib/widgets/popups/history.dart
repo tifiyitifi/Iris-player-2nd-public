@@ -7,6 +7,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/progress.dart';
 import 'package:iris/models/storages/local.dart';
@@ -170,6 +171,12 @@ class History extends HookWidget {
                               historyList[index].value.file, popupDirection);
                         }
                         break;
+                      case FileOptions.openInExplorer:
+                        await revealFileInExplorer(
+                          context,
+                          historyList[index].value.file,
+                        );
+                        break;
                     }
                   },
                   itemBuilder: (context) => [
@@ -185,6 +192,11 @@ class History extends HookWidget {
                       PopupMenuItem(
                         value: FileOptions.openInFolder,
                         child: Text(t.open_in_folder),
+                      ),
+                    if (canRevealFileInExplorer(historyList[index].value.file))
+                      PopupMenuItem(
+                        value: FileOptions.openInExplorer,
+                        child: Text(t.open_in_explorer),
                       ),
                   ],
                 ),

@@ -1637,7 +1637,16 @@ class ScenarioResolver {
       ));
     }
     if (items.isNotEmpty) {
-      segments.add(await _ExplicitSegment.build(items, nodeRepo, scenarioId));
+      // Explicit items take part in the scenario's sort like a folder source
+      // does; otherwise an explicit-item queue ignores the sort menu entirely
+      // (the bug this fixes).
+      segments.add(await _ExplicitSegment.build(
+        items,
+        nodeRepo,
+        scenarioId,
+        sortField: sortField,
+        sortDirection: segmentDirection,
+      ));
     }
     return segments;
   }
@@ -2150,7 +2159,13 @@ class ScenarioResolver {
       ));
     }
     if (items.isNotEmpty) {
-      segments.add(await _ExplicitSegment.build(items, nodeRepo, scenarioId));
+      segments.add(await _ExplicitSegment.build(
+        items,
+        nodeRepo,
+        scenarioId,
+        sortField: sortField,
+        sortDirection: segmentDirection,
+      ));
     }
 
     final exclusionSet = await _buildExclusionSet(exclusions);
@@ -2252,7 +2267,13 @@ class ScenarioResolver {
       ));
     }
     if (items.isNotEmpty) {
-      segments.add(await _ExplicitSegment.build(items, nodeRepo, scenarioId));
+      segments.add(await _ExplicitSegment.build(
+        items,
+        nodeRepo,
+        scenarioId,
+        sortField: sortField,
+        sortDirection: segmentDirection,
+      ));
     }
 
     final space = _VirtualSpace(segments);
@@ -2572,14 +2593,83 @@ class _ExplicitSegment extends _Segment {
   static Future<_ExplicitSegment> build(
     List<ScenarioExplicitItem> items,
     MediaNodeRepository nodeRepo,
-    String scenarioId,
-  ) async {
+    String scenarioId, {
+    required ScenarioSortField sortField,
+    required SortDirection sortDirection,
+  }) async {
     final slots = <_ExplicitSlot>[];
     for (final item in items) {
       final node = await _resolve(item, nodeRepo);
       slots.add(_ExplicitSlot(item: item, node: node));
     }
+    // Explicit items are a plain list in the DB, so the sort must be applied
+    // here — mirroring the DAO's ORDER BY exactly (nulls-last for the numeric
+    // axes, direction on the primary only, ascending name→path tail) so an
+    // explicit queue pages in the same order a folder source would.
+    slots.sort((a, b) => _compareSlots(a, b, sortField, sortDirection));
     return _ExplicitSegment(slots: slots);
+  }
+
+  /// DAO-parity comparator (see `MediaNodesDao._nullsLastTerms` /
+  /// `_orderTailTerms`).
+  static int _compareSlots(
+    _ExplicitSlot a,
+    _ExplicitSlot b,
+    ScenarioSortField field,
+    SortDirection direction,
+  ) {
+    final ascending = direction == SortDirection.asc;
+    if (field == ScenarioSortField.name) {
+      final byName = _slotName(a).compareTo(_slotName(b));
+      if (byName != 0) return ascending ? byName : -byName;
+      return a.item.path.compareTo(b.item.path);
+    }
+    final va = _slotNumeric(a, field);
+    final vb = _slotNumeric(b, field);
+    if (va == null || vb == null) {
+      // NULLs last whichever direction — never flipped.
+      if (va == null && vb == null) return _slotTail(a, b, field);
+      return va == null ? 1 : -1;
+    }
+    final byValue = va.compareTo(vb);
+    if (byValue != 0) return ascending ? byValue : -byValue;
+    return _slotTail(a, b, field);
+  }
+
+  /// Ascending total-order tail, kept ascending in both directions.
+  static int _slotTail(
+    _ExplicitSlot a,
+    _ExplicitSlot b,
+    ScenarioSortField field,
+  ) {
+    if (field != ScenarioSortField.name) {
+      final byName = _slotName(a).compareTo(_slotName(b));
+      if (byName != 0) return byName;
+    }
+    return a.item.path.compareTo(b.item.path);
+  }
+
+  static String _slotName(_ExplicitSlot slot) {
+    final node = slot.node;
+    if (node != null) {
+      return (node.normalizedName ?? node.name).toLowerCase();
+    }
+    // Missing node: fall back to the stored path's last segment.
+    final segments = pathConv(slot.item.path);
+    return (segments.isEmpty ? slot.item.path : segments.last).toLowerCase();
+  }
+
+  static int? _slotNumeric(_ExplicitSlot slot, ScenarioSortField field) {
+    final node = slot.node;
+    if (node == null) return null;
+    return switch (field) {
+      ScenarioSortField.modifiedAt => node.modifiedAt?.millisecondsSinceEpoch,
+      ScenarioSortField.durationMs =>
+        node.maybeMap(file: (f) => f.durationMs, orElse: () => null),
+      ScenarioSortField.sizeInBytes =>
+        node.maybeMap(file: (f) => f.sizeInBytes, orElse: () => null),
+      ScenarioSortField.name => null,
+    };
   }
 
   static Future<MediaNode?> _resolve(

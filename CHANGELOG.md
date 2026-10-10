@@ -1,3 +1,29 @@
+## v2.0.8
+
+### Changelog
+
+1. Scenario play queues gain per-row rescan actions in the desktop right-click menu, and a queue row can be opened in Explorer. Opening that menu no longer throws before it appears
+2. Scenario sources are reconciled more honestly: explicit items already covered by a directory source are dropped, a non-recursive whole-storage source no longer covers deep explicit items, re-adding a stored non-recursive source recursively promotes it, and path case is folded only where the filesystem is case-insensitive (Windows drive/UNC and SMB)
+3. Explicit-item queues are sorted, and after a scan you are prompted to source the rescanned folder instead of the queue being rebuilt silently
+4. Step seeking is adaptive: a held fast-forward/rewind no longer drops steps, jumps back to a keyframe, or re-seeks an already-landed position, and a burst collapses cleanly on key release. The play queue keeps advancing after a desktop physical delete
+5. Virtual-media pinning stays stable: groups that became infeasible are retained across a membership freeze, pinned chunks carry fresh library metadata, and the tick extent defaults to 7px with a 0-15 range, honoured on the phone ring dial as well
+6. A desktop physical delete inside a merged (virtual) item is localised to the affected chunk instead of the whole rule
+7. Windows Explorer integration: media rows expose "Open in Explorer", network (SMB/UNC) rows are revealed correctly, and Explorer is launched through ShellExecuteW
+8. String cleanup: the scenario queue exclude/remove labels are clearer, and the library info dialog, the sort/scope menus and several hardcoded strings are localised
+9. Internal: the pubspec build number is auto-synced with the Android versionCode, and device-verified development diagnostics were removed
+
+### 更新日志
+
+1. 场景播放队列在桌面右键菜单中新增逐行重扫操作，队列行可「在资源管理器中打开」；该菜单也不再在弹出前抛异常
+2. 场景来源的合并更诚实：已被目录来源覆盖的显式条目会被移除；非递归的整盘来源不再覆盖深处的显式条目；把已存的非递归来源重新按递归加入时会提升它；路径大小写只在文件系统不区分大小写时折叠（Windows 盘符/UNC 与 SMB）
+3. 显式条目队列会排序；扫描后会提示为被重扫的文件夹指定来源，而不是静默重建队列
+4. 步进快进自适应：按住快进/快退不再丢步、不再跳回关键帧或重复 seek 已经落地的位置，松开时连按会干净收敛；桌面物理删除后队列继续前进
+5. 虚拟媒体固定保持稳定：失效的分组在成员冻结期间仍会保留，固定的分块携带最新的媒体库元数据；刻度默认 7px、范围扩展到 0-15，手机环形表盘同样生效
+6. 合并（虚拟）条目内的桌面物理删除只作用于受影响的分块，而不是整条规则
+7. Windows 资源管理器集成：媒体行新增「在资源管理器中打开」，网络（SMB/UNC）行可正确显示，并通过 ShellExecuteW 启动资源管理器
+8. 文案清理：场景队列的排除/移除标签更清晰，媒体库信息对话框、排序/范围菜单以及若干硬编码字符串已本地化
+9. 内部：pubspec 构建号与 Android versionCode 自动同步；移除已在真机验证的开发诊断
+
 ## v2.0.7
 
 ### Changelog

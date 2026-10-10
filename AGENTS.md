@@ -145,6 +145,10 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
 - **Android versionCode:** lives in `android/version.properties`, auto-incremented by
   `.githooks/pre-commit` (base 2025). Enable hooks with `git config core.hooksPath .githooks`.
   Never edit it downward.
+- **pubspec build number:** `pubspec.yaml`'s `version: X.Y.Z+N` build number is kept
+  equal to the Android `versionCode` by the same `pre-commit` hook (via
+  `scripts/sync-version-code.sh`). Never hand-edit the `+N`; a release commit changes only
+  `X.Y.Z`.
 - **Split vs universal APK:** `flutter build apk --split-per-abi` rewrites versionCode to
   `ABI×1000 + base` (arm64 = base+2000), while `flutter run` keeps the plain base. Installing
   a split APK then running via Android Studio is a versionCode DOWNGRADE → forced uninstall +

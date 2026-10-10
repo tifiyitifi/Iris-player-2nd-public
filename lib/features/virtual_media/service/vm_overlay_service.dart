@@ -3,6 +3,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/resolver/vm_preflight.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -175,6 +176,10 @@ class VirtualMediaService {
     _dismissedScanScopes.clear();
     _shellUnsupported.clear();
     _publishFailFingerprint();
+    // A rule edit (the caller of the full-propagation path) is one of the four
+    // legitimate re-group triggers: drop any delete-time boundary freeze so the
+    // next resolve derives fresh chunks.
+    VmMembershipPin.instance.clear();
   }
 
   /// Full rule-change propagation: drop the rule cache AND bump the
@@ -197,6 +202,9 @@ class VirtualMediaService {
   /// bumped so open lists re-resolve and pick up the now-mergeable group; the
   /// fail map itself is updated by [removeFailFor] before this call.
   Future<void> notifyDurationsChanged() async {
+    // Durations can change chunking (duration cap), so this is a re-group
+    // trigger that must also drop a delete-time boundary freeze.
+    VmMembershipPin.instance.clear();
     try {
       final store = usePlaybackScenarioStore();
       await store.bumpPlaybackVersion();
@@ -236,8 +244,19 @@ class VirtualMediaService {
   /// ([vmRuleCoversFile]).
   Future<VirtualMediaRule?> coveringRuleFor(
       String storageId, String path) async {
+    final rules = await coveringRulesFor(storageId, path);
+    return rules.isEmpty ? null : rules.first;
+  }
+
+  /// EVERY enabled rule whose scope covers (storageId, path).
+  ///
+  /// Overlapping rules are allowed to claim the same file, so the desktop
+  /// physical-delete path must freeze the boundaries of ALL rules the deleted
+  /// file participates in — not just the first (`coveringRuleFor`).
+  Future<List<VirtualMediaRule>> coveringRulesFor(
+      String storageId, String path) async {
     final rules = await enabledRules();
-    if (rules.isEmpty) return null;
+    if (rules.isEmpty) return const [];
     final segs = pathConv(path);
     final probe = VirtualSegment(
       mediaKey: canonicalKey(storageId, path),
@@ -248,9 +267,9 @@ class VirtualMediaService {
           ? ''
           : segs.sublist(0, segs.length - 1).join('/')),
     );
-    for (final rule in rules) {
-      if (vmRuleCoversFile(rule, probe)) return rule;
-    }
-    return null;
+    return [
+      for (final rule in rules)
+        if (vmRuleCoversFile(rule, probe)) rule,
+    ];
   }
 }

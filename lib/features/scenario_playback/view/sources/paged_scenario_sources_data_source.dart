@@ -20,7 +20,9 @@ import 'package:iris/features/scenario_playback/model/enum/exclude_rule_kind.dar
 import 'package:iris/features/scenario_playback/model/enum/scenario_manage_sort_by.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_explicit_dedup_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
+import 'package:iris/features/scenario_playback/resolver/explicit_redundancy.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/scan/commands/scenario_source_scan_command.dart';
 import 'package:iris/features/scenario_playback/store/playback_scenario_store_state.dart';
@@ -149,6 +151,15 @@ class PagedScenarioSourcesDataSource
     ScenarioManageGroup.itemExclude,
   ];
   Set<ScenarioManageGroup> _hiddenGroups = {};
+
+  /// Ids of explicit includes that a directory / whole-storage source already
+  /// covers (see [redundantExplicitItems]). Drives the row's "Remove redundant
+  /// addition" label; recomputed in [load].
+  Set<int> _redundantIncludeIds = const {};
+
+  /// Test seam for [load]'s redundancy pass.
+  @visibleForTesting
+  Set<int> get debugRedundantIncludeIds => _redundantIncludeIds;
 
   final String scenarioId;
 
@@ -326,6 +337,14 @@ class PagedScenarioSourcesDataSource
       final sources = await _store.getSources(scenarioId);
       final rules = await _store.getExcludeRules(scenarioId);
       final includes = await _store.getExplicitItems(scenarioId);
+
+      _redundantIncludeIds = {
+        for (final e in redundantExplicitItems(
+          sources: sources,
+          items: includes,
+        ))
+          e.id,
+      };
 
       final items = <ScenarioManageItem>[
         for (final s in sources)
@@ -695,17 +714,17 @@ class PagedScenarioSourcesDataSource
     return [
       PageAction(
         icon: const Icon(Icons.search, size: 18),
-        label: 'Search',
+        label: getLocalizations(context).browser_search,
         onPressed: () => _openSearch(context),
       ),
       PageAction(
         icon: const Icon(Icons.filter_list, size: 18),
-        label: 'Filter',
+        label: getLocalizations(context).scn_filter,
         onPressed: () => _showFilterDialog(context),
       ),
       PageAction(
         icon: const Icon(Icons.visibility_outlined, size: 18),
-        label: 'Preview resolve queue',
+        label: getLocalizations(context).scn_preview_queue,
         onPressed: () => openScenarioPreview(
           context,
           scenarioId: scenarioId,
@@ -726,6 +745,17 @@ class PagedScenarioSourcesDataSource
               }
             : null,
       ),
+      PageAction(
+        icon: const Icon(Icons.cleaning_services_outlined, size: 18),
+        label: getLocalizations(context).scn_dedupe_explicit_action,
+        onPressed: () async {
+          await ScenarioExplicitDedupActions.runWithDialogs(
+            context,
+            scenarioId: scenarioId,
+          );
+          await load();
+        },
+      ),
     ];
   }
 
@@ -739,11 +769,11 @@ class PagedScenarioSourcesDataSource
         SearchSource(
           storageId: s.storageId,
           path: s.path.isEmpty ? null : s.path,
-          kind: s.path.isEmpty
-              ? MediaSourceKind.storage
-              : s.sourceKind == ScenarioSourceKind.file
-                  ? MediaSourceKind.file
-                  : MediaSourceKind.directory,
+          // See paged_scenario_media_data_source: an empty-path folder source
+          // must keep its recursion flag, not collapse to whole-storage.
+          kind: s.sourceKind == ScenarioSourceKind.file
+              ? MediaSourceKind.file
+              : MediaSourceKind.directory,
           recursive: s.recursive,
           scenarioSourceId: s.id,
         ),
@@ -795,10 +825,23 @@ class PagedScenarioSourcesDataSource
     BuildContext scenario,
     ScenarioManageItem item,
   ) {
+    final t = getLocalizations(scenario);
+    // A redundant explicit include is still removed by the same single-row
+    // operation; only the label changes so the user sees WHY it is safe to go.
+    final redundant = item.kind == ScenarioManageItemKind.include &&
+        item.includeId != null &&
+        _redundantIncludeIds.contains(item.includeId);
     return [
       GenericItemAction<ScenarioManageItem>(
-        label: 'Remove',
-        icon: const Icon(Icons.remove_circle_outline, size: 16),
+        label: redundant
+            ? t.scn_remove_redundant_addition
+            : t.scn_remove_from_scenario,
+        icon: Icon(
+          redundant
+              ? Icons.cleaning_services_outlined
+              : Icons.remove_circle_outline,
+          size: 16,
+        ),
         onPressed: (ctx, i) {
           removeItem(i as ScenarioManageItem);
         },
@@ -825,7 +868,7 @@ class PagedScenarioSourcesDataSource
       if (scenarioMode)
         CustomSelectionAction<ScenarioManageItem>(
           icon: const Icon(Icons.playlist_play, size: 18),
-          label: 'Play selected items',
+          label: getLocalizations(scenario).scn_play_selected,
           enabledFor: (selected) => selected.every((i) {
             final id = i.storageId;
             return id == null || useStorageStore().isConnected(id);
@@ -834,7 +877,7 @@ class PagedScenarioSourcesDataSource
         ),
       CustomSelectionAction<ScenarioManageItem>(
         icon: const Icon(Icons.remove_circle_outline, size: 18),
-        label: 'Remove selected',
+        label: getLocalizations(scenario).scn_remove_selected_from_scenario,
         onPressed: (ctx, selected) async {
           await removeAll(selected);
           return true;

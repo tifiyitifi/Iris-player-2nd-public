@@ -1,4 +1,3 @@
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
@@ -325,6 +324,16 @@ KeyboardEvent useKeyboard({
         default:
           break;
       }
+    }
+
+    // Releasing a held ←/→ must stop the step burst (see
+    // StepSeekChain.collapseOnRelease): without this a held arrow key keeps
+    // walking its auto-repeated backlog long after the key was let go.
+    if (event is KeyUpEvent &&
+        (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+      await player.endStepBurst?.call();
+      return;
     }
 
     if (event.runtimeType == KeyDownEvent || event.runtimeType == KeyRepeatEvent) {

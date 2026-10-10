@@ -124,6 +124,16 @@ abstract class PaginatedBrowserDataSource<T> extends ChangeNotifier {
   List<PageAction> buildTrailingPageActions(BuildContext context) => const [];
   List<CustomSelectionAction<T>> buildCustomSelectionActions(
       BuildContext context);
+  /// The row's trailing (more-menu) actions.
+  ///
+  /// Called in TWO distinct phases: during `build` by the trailing "more"
+  /// button (`UnifiedItemTile`), and from a gesture callback by the desktop
+  /// right-click menu when [supportsRowContextMenu] is on. Implementations must
+  /// therefore be callable OUTSIDE build — notably, a reactive
+  /// `store.select(context, …)` is FORBIDDEN here (provider asserts
+  /// `debugDoingBuild`). Read store state as a snapshot (`store.state.x`);
+  /// reactivity is only needed by [isCurrentItem] and friends, which are
+  /// build-only.
   List<GenericItemAction<T>> getItemTrailingActions(
       BuildContext context, T item);
 
@@ -132,6 +142,15 @@ abstract class PaginatedBrowserDataSource<T> extends ChangeNotifier {
   /// Newer surfaces (e.g. the media search page) opt out; the generic tile
   /// gates the long-press/selection entry on this flag (O3/O8).
   bool get supportsSelection => true;
+
+  /// Whether rows expose a desktop right-click context menu that reuses
+  /// [getItemTrailingActions].
+  ///
+  /// Defaults to false so every existing surface keeps its exact interaction;
+  /// only surfaces that opt in pay the extra [GestureDetector] on the row (and
+  /// only on desktop). The menu items are the SAME trailing actions, so a
+  /// surface never has to maintain two lists.
+  bool get supportsRowContextMenu => false;
 
   /// Whether this item is the currently active/playing item.
   ///

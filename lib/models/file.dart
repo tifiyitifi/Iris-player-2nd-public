@@ -17,6 +17,7 @@ enum FileOptions {
   addToPlayQueue,
   remove,
   openInFolder,
+  openInExplorer,
 }
 
 @freezed

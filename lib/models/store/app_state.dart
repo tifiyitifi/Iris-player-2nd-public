@@ -14,6 +14,7 @@ import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart'
     show kVmTickExtentDefaultPx;
 import 'package:iris/models/enums/breadcrumb_start_side.dart'
     show BreadcrumbStartSide;
+import 'package:iris/models/enums/step_seek_mode.dart' show StepSeekMode;
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart' show WebDavScanMode;
 import 'package:iris/models/store/gesture_region.dart';
@@ -651,6 +652,15 @@ abstract class AppState with _$AppState {
     @Default(VideoCachePreset.balanced)
     @JsonKey(includeToJson: false, includeFromJson: false)
     VideoCachePreset videoCachePreset,
+
+    /// Step-seek (← / →, phone double-tap) scheduling strategy. Metadata-only
+    /// AUX row (`playback.stepSeekMode`, JsonKey-excluded); legacy mode
+    /// degrades to [StepSeekMode.precise] via `resolveStepSeekMode`. Both modes
+    /// keep the precise landing; the difference is burst scheduling only (see
+    /// [StepSeekMode]).
+    @Default(StepSeekMode.adaptive)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    StepSeekMode stepSeekMode,
 
     // --- Keyboard OSD (PotPlayer-style floating info) ---
     //

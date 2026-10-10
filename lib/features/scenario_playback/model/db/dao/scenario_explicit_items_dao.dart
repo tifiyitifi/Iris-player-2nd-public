@@ -34,6 +34,15 @@ class ScenarioExplicitItemsDao extends DatabaseAccessor<AppDatabase>
     return (delete(scenarioExplicitItemsTable)..where((t) => t.id.equals(itemId))).go();
   }
 
+  /// Deletes several explicit items in one statement. Empty input is a no-op
+  /// (an `IN ()` list would otherwise be malformed SQL).
+  Future<void> deleteItems(Iterable<int> itemIds) {
+    final ids = itemIds.toList(growable: false);
+    if (ids.isEmpty) return Future.value();
+    return (delete(scenarioExplicitItemsTable)..where((t) => t.id.isIn(ids)))
+        .go();
+  }
+
   Future<void> deleteByScenario(String scenarioId) {
     return (delete(scenarioExplicitItemsTable)
           ..where((t) => t.scenarioId.equals(scenarioId)))

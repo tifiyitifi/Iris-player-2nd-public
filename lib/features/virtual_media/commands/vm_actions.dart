@@ -343,7 +343,10 @@ Future<ResolvedRules> resolveEnabledRules() async {
   final lib = await loadPreviewLibrarySegments();
   final map = <String, List<VirtualMediaItem>>{};
   for (final r in all.where((r) => r.enabled)) {
-    map[r.id] = resolveVirtualMedia(rules: [r], library: lib);
+    // The preview reads the WHOLE library, but the boundary freeze is seeded
+    // from one scenario's stream — applying it here would drop members outside
+    // that scenario, so the preview always re-derives.
+    map[r.id] = resolveVirtualMedia(rules: [r], library: lib, applyPin: false);
   }
   return ResolvedRules(all, map, libraryCount: lib.length);
 }

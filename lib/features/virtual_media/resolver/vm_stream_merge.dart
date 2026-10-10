@@ -4,6 +4,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/resolver/vm_preflight.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/vm_l10n.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/logger.dart';
@@ -154,6 +155,45 @@ VmStreamGroups resolveGroupsForStream(
     }
   }
   return VmStreamGroups(byKey: byKey, inOrder: items, failByKey: partitioned.failByKey, failedGroups: partitioned.failed);
+}
+
+/// Delete-time boundary capture for [VmMembershipPin] (pure, unit-testable).
+///
+/// Collects the frozen raw chunks of every rule in [ruleIds] — BOTH the
+/// feasible groups ([VmStreamGroups.inOrder]) AND the infeasible ones
+/// ([VmStreamGroups.failedGroups], e.g. unknown duration). The latter never
+/// merge, so freezing them changes no playlist row, but dropping them would
+/// lose their yellow degraded mark once the rule is pinned: a pinned rule
+/// re-emits only its frozen chunks instead of re-deriving, and the next
+/// `resolveGroupsForStream` would then publish an empty `failByKey` for it.
+///
+/// Callers seed the result via `VmMembershipPin.seedRule` per rule; empty
+/// results seed nothing (the pin's `seedRule` no-ops on empty lists).
+Map<String, List<PinnedVmChunk>> collectPinnedVmChunks(
+  VmStreamGroups groups,
+  Set<String> ruleIds,
+) {
+  if (ruleIds.isEmpty) return const {};
+  final byRule = <String, List<PinnedVmChunk>>{};
+  final seenScopes = <String>{};
+  void add(VirtualMediaItem g) {
+    if (!ruleIds.contains(g.ruleId)) return;
+    if (!seenScopes.add(g.scopeKey)) return;
+    (byRule[g.ruleId] ??= []).add(PinnedVmChunk(
+      ruleId: g.ruleId,
+      scopeKey: g.scopeKey,
+      rootPath: g.rootPath,
+      displayIndex: g.displayIndex,
+      originalSegments: g.segments,
+    ));
+  }
+  for (final g in groups.inOrder) {
+    add(g);
+  }
+  for (final g in groups.failedGroups) {
+    add(g);
+  }
+  return byRule;
 }
 
 /// Human-readable attribution for a resolve where NO rule matched ANY

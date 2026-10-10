@@ -4,6 +4,72 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 
 void main() {
+  group('VM chunk tick geometry', () {
+    const Offset c = Offset(100, 50);
+    const double r = 40.0;
+
+    double radiusOf(Offset p) => (p - c).distance;
+
+    test('extent is the per-side reach past the band centreline', () {
+      // The regression this locks: the dial used to hardcode +/-9 and never read
+      // `virtualmedia.markTickExtent`, so the length setting did nothing here
+      // while it worked on the linear and circle sliders.
+      for (final int e in <int>[0, 2, 7, 15]) {
+        final ({Offset from, Offset to}) span =
+            PhoneRingDialMath.vmChunkTickSpan(
+          center: c,
+          radius: r,
+          angleRad: 0.7,
+          extentPx: e,
+        );
+        expect(radiusOf(span.from), closeTo(r - e, 1e-9));
+        expect(radiusOf(span.to), closeTo(r + e, 1e-9));
+      }
+    });
+
+    test('a longer setting produces a strictly longer bar', () {
+      double lengthOf(int e) {
+        final ({Offset from, Offset to}) s =
+            PhoneRingDialMath.vmChunkTickSpan(
+                center: c, radius: r, angleRad: 0.7, extentPx: e);
+        return (s.to - s.from).distance;
+      }
+
+      expect(lengthOf(4), closeTo(8, 1e-9));
+      expect(lengthOf(15), greaterThan(lengthOf(4)));
+      expect(lengthOf(0), closeTo(0, 1e-9));
+    });
+
+    test('out-of-range extent clamps to the setting bounds', () {
+      final Offset high = PhoneRingDialMath.vmChunkTickSpan(
+              center: c, radius: r, angleRad: 0.7, extentPx: 99)
+          .to;
+      final ({Offset from, Offset to}) low = PhoneRingDialMath.vmChunkTickSpan(
+          center: c, radius: r, angleRad: 0.7, extentPx: -5);
+      expect(radiusOf(high), closeTo(r + 15, 1e-9));
+      expect((low.to - low.from).distance, closeTo(0, 1e-9));
+    });
+
+    test('inner end never crosses the dial centre', () {
+      // radius - extent would go negative on a tiny ring; the bar must stay a
+      // single ray instead of mirroring through the centre.
+      final ({Offset from, Offset to}) s = PhoneRingDialMath.vmChunkTickSpan(
+          center: c, radius: 3, angleRad: 0.7, extentPx: 15);
+      expect(radiusOf(s.from), closeTo(0, 1e-9));
+      expect(radiusOf(s.to), closeTo(18, 1e-9));
+    });
+
+    test('endpoints lie on the requested ray', () {
+      const double rad = 2.1;
+      final ({Offset from, Offset to}) s = PhoneRingDialMath.vmChunkTickSpan(
+          center: c, radius: r, angleRad: rad, extentPx: 5);
+      for (final Offset p in <Offset>[s.from, s.to]) {
+        final Offset d = p - c;
+        expect(m.atan2(d.dy, d.dx), closeTo(rad, 1e-9));
+      }
+    });
+  });
+
   group('block count (round semantics)', () {
     test('below derived floor stays unchunked', () {
       expect(PhoneRingDialMath.blockCountFor(const Duration(seconds: 0)), 1);

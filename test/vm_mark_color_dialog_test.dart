@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/features/virtual_media/view/vm_mark_color_dialog.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -26,7 +27,7 @@ void main() {
 
   tearDown(() async {
     await useAppStore().updateVmMarkTickColor(0xFFFFFFFF);
-    await useAppStore().updateVmMarkTickExtent(3);
+    await useAppStore().updateVmMarkTickExtent(kVmTickExtentDefaultPx);
   });
 
   Widget tree(Size surface, double keyboard) {
@@ -85,8 +86,8 @@ void main() {
     // input holds focus, so dismiss the keyboard state first (no focus yet
     // → header visible).
     expect(find.text('分段刻度颜色·长度'), findsOneWidget);
-    // Default white + 3px label renders.
-    expect(find.text('#FFFFFFFF · 3px'), findsOneWidget);
+    // Default white + 7px label renders.
+    expect(find.text('#FFFFFFFF · 7px'), findsOneWidget);
   });
 
   testWidgets('tapping a swatch writes the color to the store',
@@ -120,6 +121,20 @@ void main() {
         findsOneWidget);
     expect(find.byKey(const ValueKey('vmTickExtentNumber')),
         findsOneWidget);
+  });
+
+  testWidgets('extent slider spans 0..MAX in 1px steps', (tester) async {
+    // The range is part of the setting's contract, not an incidental detail:
+    // a stale `max:` here silently makes the top of the range unreachable.
+    await pumpOpener(tester);
+    final Slider slider = tester.widget<Slider>(
+        find.byKey(const ValueKey('vmTickExtentSlider')));
+    expect(slider.min, 0.0);
+    expect(slider.max, 15.0);
+    expect(slider.max, kVmTickExtentMaxPx.toDouble());
+    expect(slider.divisions, kVmTickExtentMaxPx - kVmTickExtentMinPx);
+    // The handle must sit on the new default, not the old 3px.
+    expect(slider.value, kVmTickExtentDefaultPx.toDouble());
   });
 
   testWidgets('RGB inputs + hex field are present', (tester) async {
@@ -180,15 +195,15 @@ void main() {
     expect(after & 0xFF000000, 0xFF000000);
   });
 
-  testWidgets('reset restores white + 3px', (tester) async {
+  testWidgets('reset restores white + 7px', (tester) async {
     await useAppStore().updateVmMarkTickColor(0xFFFF0000);
-    await useAppStore().updateVmMarkTickExtent(9);
+    await useAppStore().updateVmMarkTickExtent(15);
     await pumpOpener(tester);
     expect(tester.takeException(), isNull);
     await tester.tap(find.byKey(const ValueKey('vmTickReset')));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(useAppStore().state.vmMarkTickColor, 0xFFFFFFFF);
-    expect(useAppStore().state.vmMarkTickExtent, 3);
+    expect(useAppStore().state.vmMarkTickExtent, 7);
   });
 }

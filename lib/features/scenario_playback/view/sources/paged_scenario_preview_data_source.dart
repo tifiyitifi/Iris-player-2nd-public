@@ -807,16 +807,17 @@ class PagedScenarioPreviewDataSource
   @override
   List<PageAction> buildCustomPageActions(BuildContext scenarioContext) {
     final stay = _store.state.scenarioPreviewStayOnTap;
+    final t = getLocalizations(scenarioContext);
     return [
       buildStayModePageAction(
         stay: stay,
         onToggle: () => _store.updateScenarioPreviewStayOnTap(!stay),
-        stayLabel: 'Stay in preview',
-        leaveLabel: 'Close storagedb',
+        stayLabel: t.scn_preview_stay,
+        leaveLabel: t.scn_preview_leave,
       ),
       PageAction(
         icon: const Icon(Icons.casino_outlined),
-        label: 'Shuffle refresh',
+        label: t.scn_shuffle_refresh,
         onPressed: () async {
           _sortConfig = _sortConfig.copyWith(
             order: PlaybackOrder.shuffled,

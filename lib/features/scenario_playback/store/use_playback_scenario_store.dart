@@ -27,6 +27,7 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/store/playback_scenario_store_state.dart';
 import 'package:iris/features/scenario_playback/logging/scenario_log_keys.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/store/app_state.dart' show Repeat;
@@ -601,6 +602,11 @@ class PlaybackScenarioStore
   }
 
   Future<void> setActiveScenario(String id) async {
+    // Switching scenarios changes which member set each VM rule sees, so a
+    // delete-time boundary freeze seeded from the PREVIOUS scenario's stream is
+    // stale: applying it would strip/misgroup the new scenario's VM rows. A
+    // scenario switch is therefore a legitimate re-group trigger.
+    VmMembershipPin.instance.clear();
     // Switching scenarios changes no scenario's CONTENT, so the derived index
     // stays valid: an A→B→A switch must not rebuild A.
     set(state.copyWith(activeScenarioId: id));
@@ -1057,7 +1063,48 @@ class PlaybackScenarioStore
     );
   }
 
+  /// [addSource] targeting an explicit [scenarioId] instead of the active one.
+  ///
+  /// The open queue can page a NON-active scenario, and a row action must edit
+  /// the scenario it belongs to — never whichever workspace happens to be
+  /// active.
+  Future<void> addSourceFor(
+    String scenarioId, {
+    required String storageId,
+    required String path,
+    bool recursive = false,
+    ScenarioSourceKind kind = ScenarioSourceKind.folder,
+  }) {
+    return _repo.addSource(
+      scenarioId: scenarioId,
+      storageId: storageId,
+      path: path,
+      recursive: recursive,
+      kind: kind,
+    );
+  }
+
   Future<void> removeSource(int sourceId) => _repo.removeSource(sourceId);
+
+  /// Batch form of [addSource] for the drag-drop append/override paths: one
+  /// transaction for the whole list instead of one per folder.
+  Future<void> addSources({
+    required List<({String storageId, String path, bool recursive})> specs,
+    ScenarioSourceKind kind = ScenarioSourceKind.folder,
+  }) {
+    return _repo.addSources(
+      scenarioId: _requireActiveId(),
+      specs: [
+        for (final s in specs)
+          (
+            storageId: s.storageId,
+            path: s.path,
+            recursive: s.recursive,
+            kind: kind,
+          ),
+      ],
+    );
+  }
 
   Future<void> addExplicitInclude({
     required String storageId,
@@ -1073,6 +1120,10 @@ class PlaybackScenarioStore
   Future<void> removeExplicitInclude(int includeId) =>
       _repo.removeExplicitItem(includeId);
 
+  /// Batch form of [removeExplicitInclude] for the redundant-addition cleanup.
+  Future<void> removeExplicitIncludes(Iterable<int> includeIds) =>
+      _repo.removeExplicitItems(includeIds);
+
   /// Adds an explicit item to an arbitrary scenario (not necessarily active).
   Future<void> addExplicitItemFor({
     required String scenarioId,
@@ -1084,6 +1135,27 @@ class PlaybackScenarioStore
         storageId: storageId,
         path: path,
       );
+
+  /// Batch form of [addExplicitItemFor] for the drag-drop append/override
+  /// paths: one transaction and one read for the whole list.
+  Future<void> addExplicitItemsFor({
+    required String scenarioId,
+    required List<({String storageId, String path})> items,
+  }) {
+    return _repo.addExplicitItems(
+      scenarioId: scenarioId,
+      items: [
+        for (final i in items)
+          (
+            storageId: i.storageId,
+            path: i.path,
+            batchId: null,
+            mediaId: null,
+            uiSortKey: null,
+          ),
+      ],
+    );
+  }
 
   Future<void> addExcludeRule(ScenarioExcludeRule rule) {
     return _repo.addExcludeRule(scenarioId: _requireActiveId(), rule: rule);

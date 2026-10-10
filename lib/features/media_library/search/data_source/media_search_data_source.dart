@@ -37,11 +37,13 @@ import 'package:iris/features/virtual_media/rule/vm_title_composer.dart'
     show kVmDisplayPrefix;
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/escape_like.dart';
+import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/utils/path_conv.dart';
@@ -190,6 +192,12 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   int _dbTotal = 0;
   int _dbWindowOffset = -1;
   List<SearchResultItem> _dbWindow = const [];
+
+  /// The snapshot [_dbWindow]/[_dbWindowOffset] were fetched for. Guards the
+  /// window cache against a newer `_runQuery` clobbering it mid-flight: a stale
+  /// page build (or "Play search result" materialization) must never read rows
+  /// from a newer query's window just because the offset happens to match.
+  _QuerySnapshot? _dbWindowSnapshot;
 
   // Explicit segment (current query state only).
   List<SearchResultItem> _explicitList = const [];
@@ -400,6 +408,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       _dbTotal = 0;
       _dbWindow = const [];
       _dbWindowOffset = -1;
+      _dbWindowSnapshot = null;
       _explicitList = const [];
       _vmList = const [];
       _items = const [];
@@ -464,6 +473,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       _dbTotal = dbResult.totalItems;
       _dbWindowOffset = 0;
       _dbWindow = dbResult.items.map(_fromNode).toList();
+      _dbWindowSnapshot = snapshot;
       _explicitList = explicit;
       _vmList = virtual;
       _currentQuery = snapshot;
@@ -676,8 +686,14 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   }
 
   /// Window-cached DB segment accessor (NFR-007, window = max(pageSize, 64)).
+  ///
+  /// The cache is keyed by BOTH offset AND snapshot: a window fetched for a
+  /// different (newer) query must not be served to a stale [snap], even when the
+  /// requested index falls inside its offset range.
   Future<SearchResultItem?> _dbAt(_QuerySnapshot snap, int index) async {
-    if (_dbWindowOffset <= index && index < _dbWindowOffset + _dbWindow.length) {
+    if (identical(_dbWindowSnapshot, snap) &&
+        _dbWindowOffset <= index &&
+        index < _dbWindowOffset + _dbWindow.length) {
       return _dbWindow[index - _dbWindowOffset];
     }
     final windowSize = math.max(pageSize, _minWindowSize);
@@ -693,12 +709,16 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       page: offset ~/ windowSize + 1,
       pageSize: windowSize,
     );
-    _dbWindowOffset = offset;
-    _dbWindow = result.items.map(_fromNode).toList();
-    if (index >= _dbWindowOffset && index < _dbWindowOffset + _dbWindow.length) {
-      return _dbWindow[index - _dbWindowOffset];
+    final fetched = result.items.map(_fromNode).toList();
+    // Only the snapshot that still owns the shared cache may publish into it;
+    // otherwise a concurrent newer run would be clobbered by our stale fetch.
+    if (identical(_currentQuery, snap)) {
+      _dbWindowOffset = offset;
+      _dbWindow = fetched;
+      _dbWindowSnapshot = snap;
     }
-    return null;
+    final rel = index - offset;
+    return (rel >= 0 && rel < fetched.length) ? fetched[rel] : null;
   }
 
   // ── Item mapping ──
@@ -1053,12 +1073,27 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   ///
   /// Virtual merged groups are SKIPPED: they have no single-file identity, so
   /// materializing the representative would degrade a merge into one file.
+  ///
+  /// The snapshot (query + total + tail) is captured ONCE up front so a new
+  /// keystroke that starts another `_runQuery` mid-materialization cannot splice
+  /// rows from the newer generation into this play list.
   Future<void> _playSearchResults() async {
+    final snap = _currentQuery;
+    if (snap == null) {
+      throw const PlaybackUnavailableException('没有可播放的内容：当前搜索结果为空。');
+    }
+    final tail = List<SearchResultItem>.of(_tailItems);
     final files = <FileItem>[];
     const cap = 500;
-    final total = math.min(_totalItems, cap);
+    final total = math.min(snap.dbTotal + tail.length, cap);
     for (var i = 0; i < total; i++) {
-      final item = await _itemAt(i);
+      final SearchResultItem? item;
+      if (i < snap.dbTotal) {
+        item = await _dbAt(snap, i);
+      } else {
+        final idx = i - snap.dbTotal;
+        item = idx < tail.length ? tail[idx] : null;
+      }
       if (item == null || item.isVirtualGroup) continue;
       files.add(_toFileItem(item));
     }
@@ -1071,16 +1106,6 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       sortField: ScenarioPlaybackActions.scenarioSortFieldFromMedia(_sortField),
       sortDirection: _sortDirection,
     );
-  }
-
-  /// Virtual-index accessor over the current result set (DB + explicit + vm).
-  Future<SearchResultItem?> _itemAt(int index) async {
-    final snap = _currentQuery;
-    if (snap == null) return null;
-    if (index < _dbTotal) return _dbAt(snap, index);
-    final idx = index - _dbTotal;
-    final tail = _tailItems;
-    return idx < tail.length ? tail[idx] : null;
   }
 
   /// "Play scenario" (v15-D2, context B): install the searched scenario's full
@@ -1289,9 +1314,10 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     final hasNoLocation = searchContext.hasNoLocation;
     final isScenario = searchContext.scenarioId != null;
     final respectExcludes = searchStore.state.respectExcludes;
+    final t = getLocalizations(context);
 
     return PopupMenuButton<Object>(
-      tooltip: 'Scope',
+      tooltip: t.search_scope_tip,
       icon: const Icon(Icons.tune),
       onSelected: (value) {
         if (value is SearchScope) {
@@ -1301,11 +1327,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
         }
       },
       itemBuilder: (_) => [
-        _scopeEntry(SearchScope.allSources, 'All sources',
+        _scopeEntry(SearchScope.allSources, t.search_scope_all,
             enabled: true, current: _scope, context: context),
-        _scopeEntry(SearchScope.currentDirRecursive, 'Current dir · recursive',
+        _scopeEntry(SearchScope.currentDirRecursive, t.search_scope_recursive,
             enabled: !hasNoLocation, current: _scope, context: context),
-        _scopeEntry(SearchScope.currentDirDirect, 'Current dir · direct',
+        _scopeEntry(SearchScope.currentDirDirect, t.search_scope_direct,
             enabled: !hasNoLocation, current: _scope, context: context),
         if (lastScope != null)
           PopupMenuItem<Object>(
@@ -1314,7 +1340,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
               children: [
                 const Icon(Icons.history, size: 18),
                 const SizedBox(width: 8),
-                Text('上次: ${_scopeLabel(lastScope)}',
+                Text(t.search_last_scope(_scopeLabel(t, lastScope)),
                     style: TextStyle(
                         color: Theme.of(context).colorScheme.onSurfaceVariant)),
               ],
@@ -1326,7 +1352,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('排除规则 (respect excludes)'),
+                Text(t.search_excludes_label),
                 Checkbox(
                   value: respectExcludes,
                   onChanged: null,
@@ -1374,10 +1400,10 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     );
   }
 
-  String _scopeLabel(SearchScope scope) => switch (scope) {
-        SearchScope.allSources => 'All sources',
-        SearchScope.currentDirRecursive => 'Current dir · recursive',
-        SearchScope.currentDirDirect => 'Current dir · direct',
+  String _scopeLabel(AppLocalizations t, SearchScope scope) => switch (scope) {
+        SearchScope.allSources => t.search_scope_all,
+        SearchScope.currentDirRecursive => t.search_scope_recursive,
+        SearchScope.currentDirDirect => t.search_scope_direct,
       };
 
   /// Sort + pin via the custom-page-actions slot (v6-D7 sort; v11-D3 pin).
@@ -1386,6 +1412,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   /// (setPinned only mutates a plain field; the page rebuilds via useListenable).
   @override
   List<PageAction> buildCustomPageActions(BuildContext context) {
+    final t = getLocalizations(context);
     return [
       buildStayModePageAction(
         stay: _pinned,
@@ -1393,12 +1420,12 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
           useSearchBrowserStore().setPinned(!_pinned);
           notifyListeners();
         },
-        stayLabel: 'Keep open',
-        leaveLabel: 'Close on play',
+        stayLabel: t.search_stay_open,
+        leaveLabel: t.search_close_on_play,
       ),
       PageAction(
         icon: const Icon(Icons.sort_rounded, size: 18),
-        label: 'Sort',
+        label: t.search_sort_tip,
         subActions: [
           for (final field in _sortFields)
             PageAction(
@@ -1410,7 +1437,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
                     : Icons.sort_rounded,
                 size: 16,
               ),
-              label: '${_sortFieldLabel(field)}'
+              label: '${_sortFieldLabel(t, field)}'
                   '${field == _sortField ? ' ${_sortDirection == SortDirection.asc ? '▲' : '▼'}' : ''}',
               onPressed: () => _applySort(field),
             ),
@@ -1428,13 +1455,14 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     MediaSortField.pixelCount,
   ];
 
-  String _sortFieldLabel(MediaSortField field) => switch (field) {
-        MediaSortField.name => 'Name',
-        MediaSortField.path => 'Path',
-        MediaSortField.modifiedAt => 'Modified',
-        MediaSortField.sizeInBytes => 'Size',
-        MediaSortField.durationMs => 'Duration',
-        MediaSortField.pixelCount => 'Resolution',
+  String _sortFieldLabel(AppLocalizations t, MediaSortField field) =>
+      switch (field) {
+        MediaSortField.name => t.search_sort_name,
+        MediaSortField.path => t.search_sort_path,
+        MediaSortField.modifiedAt => t.search_sort_modified,
+        MediaSortField.sizeInBytes => t.search_sort_size,
+        MediaSortField.durationMs => t.search_sort_duration,
+        MediaSortField.pixelCount => t.search_sort_resolution,
         _ => field.name,
       };
 
@@ -1478,6 +1506,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
             (ctx) => _openInLib(ctx, item)),
         _trailingAction('Open in folder', Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
+        ...buildExplorerRevealActions<SearchResultItem>(
+          context: context,
+          item: item,
+          fileOf: _toFileItem,
+        ),
       ];
     }
     if (_isSystemPlayingSearch) {
@@ -1487,6 +1520,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
             (ctx) => _openInLib(ctx, item)),
         _trailingAction('Open in folder', Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
+        ...buildExplorerRevealActions<SearchResultItem>(
+          context: context,
+          item: item,
+          fileOf: _toFileItem,
+        ),
       ];
     }
     if (_isMediaLibSearch) {
@@ -1499,6 +1537,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
             (ctx) => _appendPlay(ctx, item)),
         _trailingAction('Open in folder', Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
+        ...buildExplorerRevealActions<SearchResultItem>(
+          context: context,
+          item: item,
+          fileOf: _toFileItem,
+        ),
       ];
     }
     // B: user scenario — Override opens the shared play-options dialog.
@@ -1511,6 +1554,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
           (ctx) => _openInLib(ctx, item)),
       _trailingAction('Open in folder', Icons.folder_open,
           (ctx) => _openInFolder(ctx, item)),
+      ...buildExplorerRevealActions<SearchResultItem>(
+        context: context,
+        item: item,
+        fileOf: _toFileItem,
+      ),
     ];
   }
 
@@ -1601,7 +1649,9 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       BuildContext context) {
     final overrideQueue = CustomSelectionAction<SearchResultItem>(
       icon: const Icon(Icons.playlist_play),
-      label: _isSystemPlayingSearch ? 'Play selected items' : 'Override Queue',
+      label: _isSystemPlayingSearch
+          ? getLocalizations(context).scn_play_selected
+          : getLocalizations(context).lib_override_queue,
       onPressed: (ctx, selected) async {
         final files = selected.map(_toFileItem).toList();
         if (files.isEmpty) return false;
@@ -1628,7 +1678,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       overrideQueue,
       CustomSelectionAction<SearchResultItem>(
         icon: const Icon(Icons.playlist_add),
-        label: 'Append Queue',
+        label: getLocalizations(context).lib_append_queue,
         onPressed: (ctx, selected) async {
           final files = selected.map(_toFileItem).toList();
           if (files.isEmpty) return false;

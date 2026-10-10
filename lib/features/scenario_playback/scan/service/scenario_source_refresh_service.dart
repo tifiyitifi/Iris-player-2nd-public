@@ -14,7 +14,9 @@ import 'package:iris/features/scenario_playback/scan/model/scenario_source_refre
 import 'package:iris/features/scenario_playback/scan/store/scenario_source_refresh_store.dart';
 import 'package:iris/features/scenario_playback/scan/view/scenario_source_refresh_summary_dialog.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/file_list_result.dart';
 import 'package:iris/models/storages/storage.dart';
@@ -146,12 +148,23 @@ ScenarioSourceRefreshPlan planSourceRefresh({
     final files = filesByStorage[id] ?? const <ScenarioSource>[];
     final explicit = explicitByStorage[id] ?? const <ScenarioExplicitItem>[];
 
-    // Directory roots: empty path = storage root (whole storage).
-    final dirRoots = dirs.map((s) => s.path).toList();
+    // Directory roots: empty path = storage root (whole storage). A stored
+    // source path may be storage-RELATIVE (model-canonical) or base-INCLUSIVE
+    // (legacy/drag-drop); the scan service expects the absolute domain form, so
+    // non-empty roots are absolutized here (empty stays '' so the whole-storage
+    // marker survives to [hasWholeStorageSource]).
+    final dirRoots = dirs
+        .map((s) => s.path.trim().isEmpty
+            ? ''
+            : StoragePathCodec.absolutize(
+                s.storageId, canonicalDbPath(s.path)))
+        .toList();
     final fileParents = <String>[];
     for (final f in files) {
       final parent = _parentOf(f.path);
-      fileParents.add(parent);
+      fileParents.add(parent.isEmpty
+          ? ''
+          : StoragePathCodec.absolutize(f.storageId, parent));
     }
     final roots = collapseRootPaths([...dirRoots, ...fileParents]);
     // A whole-storage source collapses to the storage base path. An
@@ -407,6 +420,10 @@ class ScenarioSourceRefreshService {
       if (batchAborted) {
         batchStore.stop();
       } else {
+        // Manual/auto source refresh is one of the four legitimate re-group
+        // triggers: drop any delete-time VM boundary freeze so chunks derive
+        // fresh from the rescanned content.
+        VmMembershipPin.instance.clear();
         await scenarioStore.bumpPlaybackVersion();
         await scenarioStore.bumpSourceScanRevision(
           storages: {for (final e in prepared) e.storage.id},

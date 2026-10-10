@@ -55,6 +55,9 @@ void main() {
         // media_kit demuxer cache preset (metadata-only `playback.` AUX row;
         // hidden while the fvp backend is active).
         'playback.videoCachePreset',
+        // Step-seek scheduling strategy (metadata-only `playback.` AUX row;
+        // hidden while the fvp backend is active).
+        'playback.stepSeekMode',
         // "Slider type" merged tile (design + anchor live in its dialog) and
         // the dial-ring/circle style tile — both power the sideway panel on
         // desktop too.
@@ -202,6 +205,8 @@ void main() {
         'app.showControlsOnPlayToPause',
         // media_kit demuxer cache preset (metadata-only `playback.` AUX row).
         'playback.videoCachePreset',
+        // Step-seek scheduling strategy (metadata-only `playback.` AUX row).
+        'playback.stepSeekMode',
         'app.phoneLandscapeSliderType',
         'speed.gestureMode',
         'speed.rateMode',

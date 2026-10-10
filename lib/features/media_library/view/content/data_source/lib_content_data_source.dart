@@ -36,6 +36,7 @@ import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/db/storage_scope.dart';
@@ -533,81 +534,88 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
       final s = item.source;
       final storageName = useStorageStore().findById(s.storageId)?.name;
       rows.addAll([
-        _infoRow('Source ID', '${s.id}'),
-        _infoRow('Name', item.title),
-        _infoRow('Type', 'Source'),
-        _infoRow('Storage ID', s.storageId),
+        _infoRow(t.lib_info_source_id, '${s.id}'),
+        _infoRow(t.name, item.title),
+        _infoRow(t.lib_info_type, t.lib_info_source),
+        _infoRow(t.lib_info_storage_id, s.storageId),
         if (storageName != null && storageName.isNotEmpty)
-          _infoRow('Storage Name', storageName),
+          _infoRow(t.lib_info_storage_name, storageName),
         if (s.path != null && s.path!.isNotEmpty)
-          _infoRow('Path', s.path!.join('/')),
-        if (s.kind != null) _infoRow('Kind', '${s.kind}'),
-        _infoRow('Total media', '${s.totalMediaCount}'),
-        _infoRow('Total dirs', '${s.totalDirCount}'),
-        _infoRow('Total items', '${s.totalItemCount}'),
-        _infoRow(
-            'Total size', NodeLibContentItem.formatSize(s.totalSizeInBytes)),
-        _infoRow('Total duration',
+          _infoRow(t.lib_info_path, s.path!.join('/')),
+        if (s.kind != null) _infoRow(t.lib_info_kind, '${s.kind}'),
+        _infoRow(t.lib_info_total_media, '${s.totalMediaCount}'),
+        _infoRow(t.lib_info_total_dirs, '${s.totalDirCount}'),
+        _infoRow(t.lib_info_total_items, '${s.totalItemCount}'),
+        _infoRow(t.lib_info_total_size,
+            NodeLibContentItem.formatSize(s.totalSizeInBytes)),
+        _infoRow(t.lib_info_total_duration,
             NodeLibContentItem.formatDurationHumanReadable(s.totalDurationMs)),
-        _infoRow('Modified', NodeLibContentItem.formatDateTime(s.modifiedAt)),
-        _infoRow('Created', NodeLibContentItem.formatDateTime(s.createdAt)),
+        _infoRow(t.lib_info_modified,
+            NodeLibContentItem.formatDateTime(s.modifiedAt)),
+        _infoRow(t.lib_info_created,
+            NodeLibContentItem.formatDateTime(s.createdAt)),
       ]);
     } else if (item is NodeLibContentItem && item.node.isDir) {
       final dir = item.node as MediaDirectory;
       final storageName = useStorageStore().findById(dir.storageId)?.name;
       rows.addAll([
-        _infoRow('Node ID', dir.id),
-        _infoRow('Name', item.title),
-        _infoRow('Type', 'Directory'),
-        _infoRow('Path', dir.displayPath),
-        _infoRow('Direct children',
-            '${dir.directMediaCount} media, ${dir.directDirCount} dirs, ${dir.directItemCount} total'),
-        _infoRow('Recursive totals',
-            '${dir.totalMediaCount} media, ${dir.totalDirCount} dirs, ${dir.totalItemCount} items'),
-        _infoRow(
-            'Total size', NodeLibContentItem.formatSize(dir.totalSizeInBytes)),
-        _infoRow(
-            'Total duration',
+        _infoRow(t.lib_info_node_id, dir.id),
+        _infoRow(t.name, item.title),
+        _infoRow(t.lib_info_type, t.lib_info_directory),
+        _infoRow(t.lib_info_path, dir.displayPath),
+        _infoRow(t.lib_info_direct_children,
+            t.lib_info_direct_children_value(
+                dir.directMediaCount, dir.directDirCount, dir.directItemCount)),
+        _infoRow(t.lib_info_recursive_totals,
+            t.lib_info_recursive_totals_value(
+                dir.totalMediaCount, dir.totalDirCount, dir.totalItemCount)),
+        _infoRow(t.lib_info_total_size,
+            NodeLibContentItem.formatSize(dir.totalSizeInBytes)),
+        _infoRow(t.lib_info_total_duration,
             NodeLibContentItem.formatDurationHumanReadable(
                 dir.totalDurationMs)),
-        _infoRow('Modified', NodeLibContentItem.formatDateTime(dir.modifiedAt)),
-        _infoRow('Created', NodeLibContentItem.formatDateTime(dir.createdAt)),
-        _infoRow('Present', dir.isPresent ? 'Yes' : 'No'),
-        _infoRow(
-            'Last seen', NodeLibContentItem.formatDateTime(dir.lastSeenAt)),
-        _infoRow('Storage ID', dir.storageId),
+        _infoRow(t.lib_info_modified,
+            NodeLibContentItem.formatDateTime(dir.modifiedAt)),
+        _infoRow(t.lib_info_created,
+            NodeLibContentItem.formatDateTime(dir.createdAt)),
+        _infoRow(t.lib_info_present, dir.isPresent ? t.lib_info_yes : t.lib_info_no),
+        _infoRow(t.lib_info_last_seen,
+            NodeLibContentItem.formatDateTime(dir.lastSeenAt)),
+        _infoRow(t.lib_info_storage_id, dir.storageId),
         if (storageName != null && storageName.isNotEmpty)
-          _infoRow('Storage Name', storageName),
-        _infoRow('Depth', '${dir.pathDepth}'),
+          _infoRow(t.lib_info_storage_name, storageName),
+        _infoRow(t.lib_info_depth, '${dir.pathDepth}'),
       ]);
     } else if (item is NodeLibContentItem && item.node.isFile) {
       final file = item.node as MediaFile;
       final storageName = useStorageStore().findById(file.storageId)?.name;
       rows.addAll([
-        _infoRow('Node ID', file.id),
-        _infoRow('Name', item.title),
-        _infoRow('Type', 'File'),
-        _infoRow('Path', file.displayPath),
-        _infoRow('Size', NodeLibContentItem.formatSize(file.sizeInBytes ?? 0)),
-        _infoRow(
-            'Duration',
+        _infoRow(t.lib_info_node_id, file.id),
+        _infoRow(t.name, item.title),
+        _infoRow(t.lib_info_type, t.lib_info_file),
+        _infoRow(t.lib_info_path, file.displayPath),
+        _infoRow(t.lib_info_size,
+            NodeLibContentItem.formatSize(file.sizeInBytes ?? 0)),
+        _infoRow(t.lib_info_duration,
             NodeLibContentItem.formatDurationHumanReadable(
                 file.durationMs ?? 0)),
-        _infoRow(
-            'Modified', NodeLibContentItem.formatDateTime(file.modifiedAt)),
-        _infoRow('Created', NodeLibContentItem.formatDateTime(file.createdAt)),
-        _infoRow('Present', file.isPresent ? 'Yes' : 'No'),
-        _infoRow(
-            'Last seen', NodeLibContentItem.formatDateTime(file.lastSeenAt)),
-        _infoRow('Storage ID', file.storageId),
+        _infoRow(t.lib_info_modified,
+            NodeLibContentItem.formatDateTime(file.modifiedAt)),
+        _infoRow(t.lib_info_created,
+            NodeLibContentItem.formatDateTime(file.createdAt)),
+        _infoRow(t.lib_info_present, file.isPresent ? t.lib_info_yes : t.lib_info_no),
+        _infoRow(t.lib_info_last_seen,
+            NodeLibContentItem.formatDateTime(file.lastSeenAt)),
+        _infoRow(t.lib_info_storage_id, file.storageId),
         if (storageName != null && storageName.isNotEmpty)
-          _infoRow('Storage Name', storageName),
-        _infoRow('Depth', '${file.pathDepth}'),
+          _infoRow(t.lib_info_storage_name, storageName),
+        _infoRow(t.lib_info_depth, '${file.pathDepth}'),
       ]);
     } else {
       rows.addAll([
-        _infoRow('Name', item.title),
-        _infoRow('Type', item.isDirectory ? 'Directory' : 'File'),
+        _infoRow(t.name, item.title),
+        _infoRow(t.lib_info_type,
+            item.isDirectory ? t.lib_info_directory : t.lib_info_file),
       ]);
     }
 
@@ -895,7 +903,6 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
   }
 
   void _showViewModeDialog(BuildContext context) {
-    final t = getLocalizations(context);
     final currentMode = _store.state.viewMode;
 
     showDialog(
@@ -1117,7 +1124,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
       ),
       CustomSelectionAction<LibContentItem>(
         icon: const Icon(Icons.playlist_play),
-        label: 'Override Queue',
+        label: getLocalizations(context).lib_override_queue,
         // Offline-grey: queueing needs live files for every selected item —
         // one disconnected storage disables the action. Greyed rows stay
         // selectable so info / add-as-source / delete keep working on them.
@@ -1842,6 +1849,14 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
             },
           ),
       ],
+      // Windows desktop: hand the row to Explorer. Built from the same node →
+      // FileItem projection the tile already uses, so the entry matches the
+      // rest of the row's identity; empty off-Windows or for remote rows.
+      ...buildExplorerRevealActions<LibContentItem>(
+        context: context,
+        item: item,
+        fileOf: _libContentRevealFile,
+      ),
       GenericItemAction(
         label: getLocalizations(context).lib_info_action,
         icon: const Icon(Icons.info_outline, size: 16),
@@ -1941,6 +1956,47 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
       storageId,
       viewingId: _store.state.currentStorageId,
     );
+  }
+
+  /// Projects a library row to the [FileItem] the "Open in Explorer" action
+  /// needs, or null when the row has no on-disk identity (a source with no
+  /// resolvable storage, an unknown subclass).
+  FileItem? _libContentRevealFile(LibContentItem item) {
+    if (item is NodeLibContentItem) {
+      final node = item.node;
+      if (node.isDir) {
+        final storage = _lookupStorage(node.storageId);
+        return FileItem(
+          storageId: node.storageId,
+          storageType: storage?.type ?? StorageType.none,
+          name: node.name,
+          uri: mediaNodePlayableUri(storage, node.path),
+          path: node.path,
+          isDir: true,
+          type: ContentType.other,
+        );
+      }
+      return _mediaFileToFileItem(node as MediaFile);
+    }
+    if (item is SourceLibContentItem) {
+      final source = item.source;
+      final storage = _lookupStorage(source.storageId);
+      if (storage == null) return null;
+      final segments = (source.path ?? const <String>[])
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (segments.isEmpty) return null;
+      return FileItem(
+        storageId: source.storageId,
+        storageType: storage.type,
+        name: item.title,
+        uri: mediaNodePlayableUri(storage, segments),
+        path: segments,
+        isDir: true,
+        type: ContentType.other,
+      );
+    }
+    return null;
   }
 
   // --- HELPER: Gather media files recursively ---

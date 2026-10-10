@@ -316,6 +316,24 @@ abstract final class AppSettingsContribution {
       iconKey: 'playback_cache_preset',
       sortOrder: 35,
     ),
+    // Step-seek (← / → / phone double-tap) scheduling strategy. Metadata-only
+    // `playback.` AUX row (JsonKey-excluded AppState field). Both modes land
+    // each press precisely; `adaptive` stops swallowing queued presses and
+    // holds the shown time monotonic through a burst. Hidden on the fvp backend
+    // (DefVisibility): only the media_kit scheduler consumes it.
+    SettingDef(
+      key: 'playback.stepSeekMode',
+      section: SettingsSection.play,
+      valueType: SettingValueType.enumeration,
+      defaultValue: 'adaptive',
+      enumValues: ['precise', 'adaptive'],
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'playback_step_seek_mode',
+      titleKey: 'playback_step_seek_mode',
+      subtitleKey: 'playback_step_seek_mode_desc',
+      iconKey: 'playback_step_seek_mode',
+      sortOrder: 36,
+    ),
 
     // ── 手机滑动与手势 ──
     SettingDef(

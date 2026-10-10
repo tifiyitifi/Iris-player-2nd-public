@@ -10,12 +10,12 @@ import 'package:iris/features/paginated_browser/models/generic_browser_models.da
 PageAction buildStayModePageAction({
   required bool stay,
   required VoidCallback onToggle,
-  String? stayLabel,
-  String? leaveLabel,
+  required String stayLabel,
+  required String leaveLabel,
 }) {
   return PageAction(
     icon: Icon(stay ? Icons.push_pin : Icons.push_pin_outlined),
-    label: stay ? (stayLabel ?? 'Stay') : (leaveLabel ?? 'Close on play'),
+    label: stay ? stayLabel : leaveLabel,
     onPressed: onToggle,
   );
 }

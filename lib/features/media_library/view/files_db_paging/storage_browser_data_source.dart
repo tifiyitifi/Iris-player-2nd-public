@@ -31,6 +31,7 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_action
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/enums/storage_list_error.dart';
@@ -716,6 +717,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
 
   @override
   List<PageAction> buildCustomPageActions(BuildContext context) {
+    final t = getLocalizations(context);
     final isFavorite = useStorageStore().select(
       context,
       (s) => s.favorites
@@ -732,21 +734,21 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
       PageAction(
         icon: Icon(
             isFavorite ? Icons.star_rounded : Icons.star_outline_rounded),
-        label: isFavorite ? 'Unfavorite' : 'Favorite',
+        label: isFavorite ? t.remove_favorite : t.add_favorite,
         onPressed: _toggleFavorite,
       ),
       PageAction(
         icon: const Icon(Icons.refresh),
-        label: 'Refresh/Scan',
+        label: t.files_refresh_scan,
         subActions: [
           PageAction(
             icon: const Icon(Icons.refresh),
-            label: 'Refresh current',
+            label: t.files_refresh,
             onPressed: () => refresh(),
           ),
           PageAction(
             icon: const Icon(Icons.manage_search_rounded),
-            label: 'Scan recursively',
+            label: t.files_scan_recursive,
             onPressed: online ? () => _startRecursiveScan(context) : null,
           ),
         ],
@@ -756,7 +758,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
         // without a connection, same rule as the scan entry above.
         PageAction(
           icon: const Icon(Icons.play_arrow_rounded),
-          label: 'Play current folder',
+          label: t.lib_play_folder,
           onPressed: online
               ? () async {
                   await ScenarioPlaybackActions
@@ -1030,6 +1032,13 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
           icon: const Icon(Icons.open_in_new_rounded, size: 16),
           onPressed: (ctx, i) => openMediaFileExternally(i.uri),
         ),
+      // Windows desktop: hand the row to Explorer. The builder returns nothing
+      // off-Windows or for remote storage, so this is safe to spread.
+      ...buildExplorerRevealActions<FileItem>(
+        context: context,
+        item: item,
+        fileOf: (f) => f,
+      ),
       GenericItemAction(
         label: t.lib_info_action,
         icon: const Icon(Icons.info_outline, size: 16),

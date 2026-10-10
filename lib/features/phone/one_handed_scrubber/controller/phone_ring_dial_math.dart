@@ -2,6 +2,7 @@ import 'dart:math' as m;
 import 'dart:ui' show Offset, Size;
 
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
+import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/models/store/app_state.dart' show DialSide;
 
 /// Dual-ring dial scrubber math ("Ring dial" one-handed design).
@@ -136,6 +137,29 @@ class PhoneRingDialMath {
   static double vmSectorFraction(int index, int segmentCount) {
     if (segmentCount < 1) return 0.0;
     return index.clamp(0, segmentCount) / segmentCount;
+  }
+
+  /// Radial endpoints of one VM segment boundary tick on the chunk ring.
+  ///
+  /// [extentPx] is the per-side reach past the band centreline — the SAME
+  /// `virtualmedia.markTickExtent` value the linear slider and the circle
+  /// slider consume, so one setting drives all three surfaces. Extent clamps
+  /// to the setting's own range and the inner end floors at 0, so a degenerate
+  /// radius can never mirror the bar across the dial centre.
+  static ({Offset from, Offset to}) vmChunkTickSpan({
+    required Offset center,
+    required double radius,
+    required double angleRad,
+    required int extentPx,
+  }) {
+    final double e =
+        extentPx.clamp(kVmTickExtentMinPx, kVmTickExtentMaxPx).toDouble();
+    final double rIn = (radius - e).clamp(0.0, double.infinity);
+    final double rOut = radius + e;
+    return (
+      from: center + Offset(rIn * m.cos(angleRad), rIn * m.sin(angleRad)),
+      to: center + Offset(rOut * m.cos(angleRad), rOut * m.sin(angleRad)),
+    );
   }
 
   /// Clock degree at the CENTRE of the 30° dead wedge of block [index] — the

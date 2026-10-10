@@ -4,6 +4,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_list_sort_by.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
+import 'package:iris/utils/get_localizations.dart';
 
 class PlaybackScenarioSortMenu extends HookWidget {
   const PlaybackScenarioSortMenu({super.key});
@@ -11,6 +12,7 @@ class PlaybackScenarioSortMenu extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final store = usePlaybackScenarioStore();
+    final t = getLocalizations(context);
 
     final sortBy = store.select(context, (s) => s.scenarioSortBy);
     final sortDirection = store.select(context, (s) => s.scenarioSortDirection);
@@ -32,19 +34,19 @@ class PlaybackScenarioSortMenu extends HookWidget {
       },
       itemBuilder: (_) => [
         _item(
-          label: 'Name',
+          label: t.scn_sort_name,
           target: ScenarioListSortBy.name,
           current: sortBy,
           order: sortDirection,
         ),
         _item(
-          label: 'Created',
+          label: t.scn_sort_created,
           target: ScenarioListSortBy.createdAt,
           current: sortBy,
           order: sortDirection,
         ),
         _item(
-          label: 'Updated',
+          label: t.scn_sort_updated,
           target: ScenarioListSortBy.updatedAt,
           current: sortBy,
           order: sortDirection,

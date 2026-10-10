@@ -210,6 +210,78 @@ class ScenarioRepository {
   Future<void> clearSources(String scenarioId) =>
       sourcesDao.deleteByScenario(scenarioId);
 
+  /// Batch form of [addSource]: ONE transaction and ONE `nextSortOrder` read,
+  /// so a drop of many folders never pays a DB round trip per folder.
+  ///
+  /// Specs that duplicate each other or an existing row (same storage +
+  /// canonical path) collapse to one row, matching the table's
+  /// UNIQUE(scenario_id, storage_id, path) constraint.
+  ///
+  /// Recursion is the only dimension the UNIQUE key lets vary: because the key
+  /// is (scenario, storage, path), a folder re-added RECURSIVELY over a stored
+  /// non-recursive row must PROMOTE that row instead of being silently dropped
+  /// — otherwise the wider scope never takes effect (the append path relies on
+  /// this, as it adds without clearing existing sources). A recursive row is
+  /// never downgraded by a later non-recursive spec.
+  Future<void> addSources({
+    required String scenarioId,
+    required List<
+            ({
+              String storageId,
+              String path,
+              bool recursive,
+              ScenarioSourceKind kind
+            })>
+        specs,
+  }) async {
+    if (specs.isEmpty) return;
+    await db.transaction(() async {
+      // Collapse the batch first, recursive-wins, so within-batch duplicates
+      // cannot later need an id-less upgrade.
+      final merged = <String, ({
+        String storageId,
+        String path,
+        bool recursive,
+        ScenarioSourceKind kind
+      })>{};
+      for (final spec in specs) {
+        final key = canonicalKey(spec.storageId, spec.path);
+        final prior = merged[key];
+        if (prior == null || (!prior.recursive && spec.recursive)) {
+          merged[key] = spec;
+        }
+      }
+
+      final existing = await sourcesDao.getByScenario(scenarioId);
+      final storedByKey = <String, ScenarioSource>{
+        for (final e in existing) canonicalKey(e.storageId, e.path): e,
+      };
+      var order = await sourcesDao.nextSortOrder(scenarioId);
+      for (final spec in merged.values) {
+        final key = canonicalKey(spec.storageId, spec.path);
+        final stored = storedByKey[key];
+        if (stored != null) {
+          if (!stored.recursive && spec.recursive) {
+            await sourcesDao.upsert(stored.copyWith(recursive: true));
+          }
+          continue;
+        }
+        await sourcesDao.upsert(
+          ScenarioSource(
+            id: 0,
+            scenarioId: scenarioId,
+            storageId: spec.storageId,
+            path: spec.path,
+            recursive: spec.recursive,
+            sourceKind: spec.kind,
+            sortOrder: order++,
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
+    });
+  }
+
   /// Copies all sources from one scenario to another, preserving relative
   /// sortOrder (appends after the target's existing sources).
   ///
@@ -363,8 +435,70 @@ class ScenarioRepository {
 
   Future<void> removeExplicitItem(int itemId) => itemsDao.deleteItem(itemId);
 
+  /// Batch form of [removeExplicitItem]: ONE transaction for the whole set, so
+  /// a cleanup of N redundant additions never pays N autocommits (and an open
+  /// queue sees a single definition change). Empty input is a no-op.
+  Future<void> removeExplicitItems(Iterable<int> itemIds) async {
+    final ids = itemIds.toList(growable: false);
+    if (ids.isEmpty) return;
+    await db.transaction(() => itemsDao.deleteItems(ids));
+  }
+
   Future<void> clearExplicitItems(String scenarioId) =>
       itemsDao.deleteByScenario(scenarioId);
+
+  /// Batch form of [addExplicitItem]: ONE transaction and ONE `getByScenario`
+  /// read, so a drop of many files never pays an O(N) read per file (the
+  /// per-file loop used to be O(N²) over the whole drop).
+  ///
+  /// `addOrder` continues per `batchId` exactly like [addExplicitItem]: the
+  /// first new row of a batch takes the batch's current max + 1 and the rest
+  /// follow in list order.
+  Future<void> addExplicitItems({
+    required String scenarioId,
+    required List<
+            ({
+              String storageId,
+              String path,
+              String? batchId,
+              int? mediaId,
+              String? uiSortKey
+            })>
+        items,
+  }) async {
+    if (items.isEmpty) return;
+    await db.transaction(() async {
+      final existing = await itemsDao.getByScenario(scenarioId);
+      final orderByBatch = <String?, int>{};
+      final seen = <String>{};
+      for (final e in existing) {
+        final cur = orderByBatch[e.batchId] ?? 0;
+        if (e.addOrder > cur) orderByBatch[e.batchId] = e.addOrder;
+        seen.add(canonicalKey(e.storageId, e.path));
+      }
+      for (final it in items) {
+        // The table's UNIQUE(scenario_id, storage_id, path) is NOT the PK, so
+        // an insertOnConflictUpdate would throw on a repeat; collapse
+        // duplicates (within the batch and against existing rows) instead.
+        if (!seen.add(canonicalKey(it.storageId, it.path))) continue;
+        final next = (orderByBatch[it.batchId] ?? 0) + 1;
+        orderByBatch[it.batchId] = next;
+        await itemsDao.upsert(
+          ScenarioExplicitItem(
+            id: 0,
+            scenarioId: scenarioId,
+            batchId: it.batchId,
+            storageId: it.storageId,
+            path: it.path,
+            mediaId: it.mediaId,
+            addOrder: next,
+            uiSortKey: it.uiSortKey,
+            createdAt: DateTime.now(),
+          ),
+        );
+      }
+    });
+  }
 
   /// Copies all explicit items (preserving batchId/addOrder/uiSortKey).
   Future<void> copyExplicitItems({

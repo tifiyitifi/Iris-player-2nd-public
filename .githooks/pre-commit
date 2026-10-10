@@ -15,3 +15,9 @@ next=$((cur + 1))
 echo "versionCode=$next" > "$file"
 echo "[pre-commit] auto-increment versionCode: $cur -> $next"
 git add "$file"
+
+# Keep pubspec.yaml's build number (`version: X.Y.Z+N`) in lockstep with the
+# versionCode just written, so the two can never drift. Single source of truth
+# is the version.properties above; never hand-edit the `+N` in pubspec.yaml.
+sh scripts/sync-version-code.sh
+git add pubspec.yaml

@@ -15,7 +15,7 @@ import 'package:iris/widgets/adaptive/keyboard_inset_padder.dart';
 /// rationale) → preset palette → hand-rolled hue ring + SV plane (zero new
 /// dependencies; alpha locked at FF, translucent ticks vanish on the axis) →
 /// manual RGB (`0-255` triple + `#RRGGBB` text, invalid input degrades to an
-/// explanatory dialog, never a SnackBar) → length slider (0-10px) + numeric
+/// explanatory dialog, never a SnackBar) → length slider (0-15px) + numeric
 /// field. Selection applies live through the AppStore updaters; the sheet
 /// stays open for comparison and closes via the Close action.
 ///
@@ -383,7 +383,7 @@ class _PreviewTrack extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final e = extent.clamp(0, 10).toDouble();
+    final e = extent.clamp(kVmTickExtentMinPx, kVmTickExtentMaxPx).toDouble();
     return SizedBox(
       height: 16 + 2 * e,
       child: Stack(
@@ -795,7 +795,7 @@ class _RgbInputs extends HookWidget {
   }
 }
 
-/// Length section: slider (0-10px) + numeric cell.
+/// Length section: slider (0-[kVmTickExtentMaxPx]px) + numeric cell.
 ///
 /// The slider previews locally and persists once on release; the numeric
 /// cell commits on submit (invalid input is ignored, keeping the last good
@@ -817,7 +817,8 @@ class _ExtentInputs extends HookWidget {
       return null;
     }, [extent]);
     final preview = useState<int?>(null);
-    final shown = preview.value ?? extent.clamp(0, 10);
+    final shown =
+        preview.value ?? extent.clamp(kVmTickExtentMinPx, kVmTickExtentMaxPx);
 
     void commit() {
       final v = int.tryParse(ctrl.text.trim());
@@ -836,9 +837,10 @@ class _ExtentInputs extends HookWidget {
           child: Slider(
             key: const ValueKey('vmTickExtentSlider'),
             value: shown.toDouble(),
-            min: 0,
-            max: 10,
-            divisions: 10,
+            min: kVmTickExtentMinPx.toDouble(),
+            max: kVmTickExtentMaxPx.toDouble(),
+            // 1px steps across the whole 0..MAX range.
+            divisions: kVmTickExtentMaxPx - kVmTickExtentMinPx,
             label: '${shown}px',
             onChanged: (v) => preview.value = v.round(),
             onChangeEnd: (v) {

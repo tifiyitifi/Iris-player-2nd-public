@@ -30,25 +30,27 @@ void main() {
     expect(icon.icon, Icons.push_pin_outlined);
   });
 
-  test('labels fall back to generic defaults when omitted', () {
-    expect(buildStayModePageAction(stay: true, onToggle: () {}).label, 'Stay');
-    expect(
-      buildStayModePageAction(stay: false, onToggle: () {}).label,
-      'Close on play',
-    );
-  });
-
   test('the icon carries no explicit size (default 24, legacy-aligned)', () {
-    final action = buildStayModePageAction(stay: true, onToggle: () {});
+    final action = buildStayModePageAction(
+      stay: true,
+      onToggle: () {},
+      stayLabel: 'Stay in preview',
+      leaveLabel: 'Close storagedb',
+    );
     final icon = action.icon as Icon;
     expect(icon.size, isNull);
   });
 
   test('onPressed invokes the toggle callback', () {
     var toggled = false;
-    final action = buildStayModePageAction(stay: false, onToggle: () {
-      toggled = true;
-    });
+    final action = buildStayModePageAction(
+      stay: false,
+      onToggle: () {
+        toggled = true;
+      },
+      stayLabel: 'Stay in preview',
+      leaveLabel: 'Close storagedb',
+    );
     action.onPressed!();
     expect(toggled, isTrue);
   });

@@ -5,6 +5,7 @@ import 'package:iris/features/virtual_media/rule/vm_chunk_numbering.dart';
 import 'package:iris/features/virtual_media/rule/vm_natural_compare.dart';
 import 'package:iris/features/virtual_media/rule/vm_sorter.dart';
 import 'package:iris/features/virtual_media/rule/vm_title_composer.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/vm_l10n.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/dir_match.dart';
@@ -21,12 +22,71 @@ List<VirtualMediaItem> resolveVirtualMedia({
   required List<VirtualMediaRule> rules,
   required List<VirtualSegment> library,
   AppLocalizations? l10n,
+  /// When false the delete-time boundary freeze ([VmMembershipPin]) is ignored
+  /// and every rule re-derives normally. The full-library MANAGEMENT PREVIEW
+  /// uses this: the pin is seeded from one scenario's stream, so applying it to
+  /// a whole-`media_nodes` snapshot would drop members outside that scenario.
+  bool applyPin = true,
 }) {
   final items = <VirtualMediaItem>[];
   final t = l10n ?? vmLocalizations();
+  final pin = VmMembershipPin.instance;
   for (final rule in rules) {
     if (!rule.enabled) continue;
-    items.addAll(_resolveRule(rule, library, t));
+    // A rule whose boundaries a physical delete froze this session emits its
+    // pinned chunks instead of re-deriving them (see VmMembershipPin).
+    final pinned = applyPin ? pin.chunksFor(rule.id) : null;
+    if (pinned != null) {
+      items.addAll(_resolveFromPinned(rule, pinned, library, t));
+    } else {
+      items.addAll(_resolveRule(rule, library, t));
+    }
+  }
+  return items;
+}
+
+/// Rebuilds a pinned rule's frozen chunks against the CURRENT library.
+///
+/// Members that vanished (physically deleted) or are absent from the library
+/// are dropped; survivors keep their original order, so chunk boundaries and
+/// cross-chunk membership stay exactly as they were before the delete. A chunk
+/// that was multi-member stays merged even when it shrinks to one member (the
+/// "vm1 survives as {1}" contract), while a chunk that was ALWAYS single keeps
+/// the normal [VirtualMediaRule.skipSingleSegment] handling.
+List<VirtualMediaItem> _resolveFromPinned(
+  VirtualMediaRule rule,
+  List<PinnedVmChunk> pinned,
+  List<VirtualSegment> library,
+  AppLocalizations l10n,
+) {
+  // The pin freezes only the BOUNDARY shape. Members are looked up in the
+  // CURRENT library by mediaKey so they carry up-to-date metadata (duration,
+  // dimensions) instead of the pre-delete snapshot captured when the pin was
+  // seeded.
+  final freshByKey = <String, VirtualSegment>{
+    for (final s in library) s.mediaKey: s,
+  };
+  final removed = VmMembershipPin.instance.removedKeys;
+  final items = <VirtualMediaItem>[];
+  for (final chunk in pinned) {
+    final segments = <VirtualSegment>[
+      for (final seg in chunk.originalSegments)
+        if (!removed.contains(seg.mediaKey) &&
+            freshByKey.containsKey(seg.mediaKey))
+          freshByKey[seg.mediaKey]!,
+    ];
+    if (segments.isEmpty) continue;
+    if (rule.skipSingleSegment && chunk.originalSegments.length == 1) {
+      continue;
+    }
+    items.add(VirtualMediaItem(
+      ruleId: rule.id,
+      scopeKey: chunk.scopeKey,
+      rootPath: chunk.rootPath,
+      displayIndex: chunk.displayIndex,
+      displayName: _displayName(rule, segments, chunk.displayIndex, l10n),
+      segments: segments,
+    ));
   }
   return items;
 }
@@ -50,6 +110,7 @@ List<VirtualMediaItem> resolveRuleGroups({
   required List<VirtualSegment> library,
   Set<String>? membership,
   AppLocalizations? l10n,
+  bool applyPin = true,
 }) {
   if (rules.isEmpty || library.isEmpty) return const [];
   final scoped = membership == null
@@ -59,7 +120,8 @@ List<VirtualMediaItem> resolveRuleGroups({
             if (membership.contains(seg.mediaKey)) seg,
         ];
   if (scoped.isEmpty) return const [];
-  return resolveVirtualMedia(rules: rules, library: scoped, l10n: l10n);
+  return resolveVirtualMedia(
+      rules: rules, library: scoped, l10n: l10n, applyPin: applyPin);
 }
 
 List<VirtualMediaItem> _resolveRule(

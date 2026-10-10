@@ -54,6 +54,8 @@ import 'package:iris/features/media_library/scan/view/scan_rescan_reminder_dialo
 import 'package:iris/features/meta_settings/engine/browse_media_scope.dart';
 import 'package:iris/features/meta_settings/engine/playback_resume.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
+import 'package:iris/hooks/player/step_seek_mode.dart';
+import 'package:iris/models/enums/step_seek_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/meta_settings/view/setting_texts.dart';
@@ -266,6 +268,18 @@ abstract final class EditorBindings {
                     s.useMetadataSettings && MetaSettingsModule.ready),
             t),
         open: _openVideoCachePresetDialog,
+      ),
+
+      // ── Play · step-seek strategy (`playback.` AUX) ──
+      'playback_step_seek_mode': _tile(
+        icon: Icons.fast_forward_rounded,
+        titleKey: 'playback_step_seek_mode',
+        subtitle: (s, t) => _stepSeekModeLabel(
+            resolveStepSeekMode(s,
+                metadataEnabled:
+                    s.useMetadataSettings && MetaSettingsModule.ready),
+            t),
+        open: _openStepSeekModeDialog,
       ),
 
       // ── General ──
@@ -1276,6 +1290,23 @@ abstract final class EditorBindings {
     );
   }
 
+  static void _openStepSeekModeDialog(BuildContext context) {
+    final t = getLocalizations(context);
+    final store = useAppStore();
+    showEnumRadioDialog<StepSeekMode>(
+      context: context,
+      title: SettingTexts.title('playback_step_seek_mode', t),
+      values: StepSeekMode.values,
+      currentValue: resolveStepSeekMode(
+        store.state,
+        metadataEnabled:
+            store.state.useMetadataSettings && MetaSettingsModule.ready,
+      ),
+      labelOf: (v) => _stepSeekModeLabel(v, t),
+      onSelected: (v) => unawaited(store.updateStepSeekMode(v)),
+    );
+  }
+
   // Shared enum→label helpers: the row subtitle and its dialog must report the
   // SAME localized name (previously duplicated as inline switches).
   static String _browseScopeLabel(BrowseMediaScope scope, AppLocalizations t) =>
@@ -1323,6 +1354,12 @@ abstract final class EditorBindings {
         VideoCachePreset.low => t.set_cache_preset_low,
         VideoCachePreset.balanced => t.set_cache_preset_balanced,
         VideoCachePreset.high => t.set_cache_preset_high,
+      };
+
+  static String _stepSeekModeLabel(StepSeekMode v, AppLocalizations t) =>
+      switch (v) {
+        StepSeekMode.precise => t.set_step_seek_mode_precise,
+        StepSeekMode.adaptive => t.set_step_seek_mode_adaptive,
       };
 
   /// Builds a reactive tile whose subtitle recomputes from live state on

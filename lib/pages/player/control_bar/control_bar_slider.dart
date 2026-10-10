@@ -9,6 +9,7 @@ import 'package:iris/features/virtual_media/interaction/ui/vm_drag_preview_overl
 import 'package:iris/features/virtual_media/interaction/ui/vm_dual_time.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/virtual_media/view/vm_scrubber_marks.dart';
 import 'package:iris/models/player.dart';
@@ -73,7 +74,7 @@ class ControlBarSlider extends HookWidget {
     final vmMarks = useMemoized(() => computeVmScrubberMarks(vmItem), [vmItem]);
     // Vertical boundary ticks, user-tinted via `virtualmedia.markTickColor`
     // (opaque white default) with per-side extent from `vmMarkTickExtent`
-    // (3px default, 0 = flush with the axis).
+    // (7px default, 0 = flush with the axis).
     final vmTickArgb = useAppStore().select(context, (s) => s.vmMarkTickColor);
     final vmTickExtent =
         useAppStore().select(context, (s) => s.vmMarkTickExtent);
@@ -323,7 +324,10 @@ class ControlBarSlider extends HookWidget {
 
 class _CustomTrackShape extends RoundedRectSliderTrackShape {
   const _CustomTrackShape(
-      {this.marks, this.tickColor, this.tickExtent = 3, this.failedColor});
+      {this.marks,
+      this.tickColor,
+      this.tickExtent = kVmTickExtentDefault,
+      this.failedColor});
 
   /// Virtual-media segment marks; null (or empty) when no VM session is
   /// active — the track renders exactly as before.
@@ -428,7 +432,9 @@ class _CustomTrackShape extends RoundedRectSliderTrackShape {
 
     if (tickColor != null) {
       final tickPaint = Paint()..color = tickColor!;
-      final e = tickExtent.clamp(0.0, 10.0).toDouble();
+      final e = tickExtent
+          .clamp(kVmTickExtentMinPx.toDouble(), kVmTickExtentMaxPx.toDouble())
+          .toDouble();
       for (final f in marks.boundaries) {
         final x = trackRect.left + f * w;
         canvas.drawRect(

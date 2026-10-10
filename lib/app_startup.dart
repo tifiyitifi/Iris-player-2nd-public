@@ -198,6 +198,15 @@ Future<void> completeStartupInitialization() async {
         useAppStore().state.useMetadataSettings &&
         useAppStore().state.playerBackend == PlayerBackend.mediaKit,
   );
+  // Step-seek scheduling steers the media_kit burst chain only; hide it while
+  // fvp is active.
+  DefVisibility.registerKey(
+    'playback.stepSeekMode',
+    () =>
+        MetaSettingsModule.ready &&
+        useAppStore().state.useMetadataSettings &&
+        useAppStore().state.playerBackend == PlayerBackend.mediaKit,
+  );
   // App-identity rows: meta-driven era only (entries live in `identity.*`
   // AUX rows); the def's own platforms list restricts to android/windows.
   DefVisibility.registerPrefix(

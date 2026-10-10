@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/features/paginated_browser/data_source/paginated_browser_data_source.dart';
+import 'package:iris/features/paginated_browser/models/generic_browser_models.dart';
 import 'package:iris/features/paginated_browser/paginated_browser_controller.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/a11y_tooltip.dart';
 
 /// Alpha of the left cursor bar while the list does NOT hold keyboard focus —
@@ -134,25 +136,7 @@ class UnifiedItemTile<T> extends HookWidget {
             onSelected: (index) {
               trailingActions[index].onPressed(context, item);
             },
-            itemBuilder: (context) {
-              return [
-                for (int i = 0; i < trailingActions.length; i++)
-                  PopupMenuItem<int>(
-                    value: i,
-                    // Offline-grey: disabled entry, no tap reaction.
-                    enabled: trailingActions[i].enabled,
-                    child: Row(
-                      children: [
-                        if (trailingActions[i].icon != null) ...[
-                          trailingActions[i].icon!,
-                          const SizedBox(width: 8),
-                        ],
-                        Text(trailingActions[i].label),
-                      ],
-                    ),
-                  ),
-              ];
-            },
+            itemBuilder: (context) => _actionItems(trailingActions),
           ),
         );
       }
@@ -232,9 +216,63 @@ class UnifiedItemTile<T> extends HookWidget {
                     const SizedBox.shrink(),
             ],
           );
+    // Desktop right-click context menu, opted in per data source. Reuses the
+    // SAME trailing actions as the "more" button, so the two can never drift.
+    // Suppressed in selection mode, mirroring the hidden trailing button.
+    final withContextMenu =
+        !isMobilePlatform && dataSource.supportsRowContextMenu && !hasSelection
+            ? GestureDetector(
+                behavior: HitTestBehavior.deferToChild,
+                onSecondaryTapDown: (details) =>
+                    _showRowContextMenu(context, details.globalPosition),
+                child: content,
+              )
+            : content;
     return keyboardCursor
-        ? _withCursorAccent(context, content, active: keyboardCursorActive)
-        : content;
+        ? _withCursorAccent(context, withContextMenu, active: keyboardCursorActive)
+        : withContextMenu;
+  }
+
+  /// Renders [GenericItemAction]s as popup entries. Shared by the trailing
+  /// "more" button and the right-click context menu so both stay identical.
+  List<PopupMenuItem<int>> _actionItems(List<GenericItemAction<T>> actions) => [
+        for (int i = 0; i < actions.length; i++)
+          PopupMenuItem<int>(
+            value: i,
+            // Offline-grey: disabled entry, no tap reaction.
+            enabled: actions[i].enabled,
+            child: Row(
+              children: [
+                if (actions[i].icon != null) ...[
+                  actions[i].icon!,
+                  const SizedBox(width: 8),
+                ],
+                Text(actions[i].label),
+              ],
+            ),
+          ),
+      ];
+
+  /// Opens the row's trailing actions at the right-click position.
+  Future<void> _showRowContextMenu(
+    BuildContext context,
+    Offset globalPosition,
+  ) async {
+    final actions = dataSource.getItemTrailingActions(context, item);
+    if (actions.isEmpty) return;
+    final overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final selected = await showMenu<int>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromPoints(globalPosition, globalPosition),
+        Offset.zero & overlay.size,
+      ),
+      items: _actionItems(actions),
+    );
+    if (selected == null || !context.mounted) return;
+    actions[selected].onPressed(context, item);
   }
 
   Widget _withCursorAccent(BuildContext context, Widget child,

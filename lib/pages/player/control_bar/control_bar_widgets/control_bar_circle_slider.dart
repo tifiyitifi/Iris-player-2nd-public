@@ -12,6 +12,7 @@ import 'package:iris/features/control_group/domain/center_zone_actions.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_scrubber_live_seek_throttle.dart';
 import 'package:iris/features/virtual_media/interaction/ui/vm_dual_time.dart';
+import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/virtual_media/view/vm_scrubber_marks.dart';
 import 'package:iris/models/player.dart';
@@ -180,7 +181,7 @@ class ControlBarCircleSlider extends HookWidget {
     final vmItem = vmItemForControlTarget(vmItemRaw, bgIsControl: bgIsControl);
     final vmMarks = useMemoized(() => computeVmScrubberMarks(vmItem), [vmItem]);
     // Boundary ticks, user-tinted (opaque white default) with per-side
-    // extent from `vmMarkTickExtent` (3px default, 0 = flush).
+    // extent from `vmMarkTickExtent` (7px default, 0 = flush).
     final vmTickArgb =
         useAppStore().select(context, (s) => s.vmMarkTickColor);
     final vmTickExtent =
@@ -635,7 +636,7 @@ class _CircleSliderPainter extends CustomPainter {
     required this.thumbColor,
     this.marks,
     this.tickColor,
-    this.tickExtent = 3,
+    this.tickExtent = kVmTickExtentDefault,
     this.failedColor,
     this.windowFloorFraction,
     this.windowCeilingFraction,
@@ -723,7 +724,9 @@ class _CircleSliderPainter extends CustomPainter {
       final tickPaint = Paint()
         ..strokeWidth = 2.0
         ..color = tickColor!;
-      final e = tickExtent.clamp(0.0, 10.0).toDouble();
+      final e = tickExtent
+          .clamp(kVmTickExtentMinPx.toDouble(), kVmTickExtentMaxPx.toDouble())
+          .toDouble();
       for (final f in marks.boundaries) {
         final angle = arcStart + f * arcSweep;
         final from = Offset(center.dx + (radius - e) * math.cos(angle),

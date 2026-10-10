@@ -70,6 +70,7 @@
   "ok": "OK",
   "on": "On",
   "open_file": "Open file",
+  "open_in_explorer": "Open in Explorer",
   "open_in_folder": "Open in folder",
   "open_link": "Open link",
   "password": "Password",
@@ -90,6 +91,10 @@
   "repeat_none": "Repeat: None",
   "repeat_one": "Repeat: One",
   "retry": "Retry",
+  "reveal_in_explorer_failed_body": "Windows Explorer could not be started.",
+  "reveal_in_explorer_failed_title": "Cannot open in Explorer",
+  "reveal_in_explorer_missing_body":
+  "The file and its folder no longer exist on this computer.",
   "save": "Save",
   "screen_orientation": "Screen orientation",
   "select_language": "Select language",
@@ -417,6 +422,7 @@
   "playq_move_up": "Move up",
   "playq_move_down": "Move down",
   "playq_move_bottom": "Move to bottom",
+  "playq_remove": "Remove from queue",
   "search_play_options_body": "This media cannot be played from the current playing scenario queue.",
   "search_play_file_only": "Play this media only",
   "search_play_folder": "Play its folder",
@@ -930,7 +936,7 @@
   "set_virtual_media_cross_drag_desc": "Cross-segment drag: previewOnRelease (floating preview, jump on release) / directSwitch (jump directly)",
   "set_vm_dual_time_sync_desc": "The total and sub times are each floored to whole seconds, but a segment's start offset is rarely a whole second, so their seconds tick at different instants (up to ~1s apart). 1) Each exact - both stay accurate, seconds may tick alternately. 2) Align sub to total - the total stays exact, the sub counts on the total's second grid (default). 3) Align total to sub - the sub stays exact, the total counts on the sub's second grid.",
   "set_vm_hide_chunk_when_single_segment_desc": "Dial-ring chunk indicator hides when a virtual item has a single segment",
-  "set_vm_mark_tick_color_desc": "Virtual segment tick color & length (default white 3px; 0px flush with axis)",
+  "set_vm_mark_tick_color_desc": "Virtual segment tick color & length (default white 7px; 0px flush with axis)",
   "set_vm_naming_strategy_desc": "Numbering for new/copied rule names (rule+N): maxPlusOne takes max+1 (default, no reuse) / reuseGap reuses smallest gap / globalCounter global increment",
   "set_vm_name_prefix_desc": "Auto-naming prefix (non-empty, default rule)",
   "set_vm_name_number_format_desc": "Number format: raw no padding / pad2-pad4 zero-padded",
@@ -1428,10 +1434,56 @@
   "scn_close": "Close",
   "scn_scan_sources": "Scan and update sources",
   "scn_rescan_sources": "Rescan source",
+  "scn_rescan_file": "Rescan this file",
+  "scn_rescan_dir": "Rescan containing folder",
+  "scn_rescan_source": "Rescan origin source",
+  "scn_rescan_file_missing_title": "File not found",
+  "scn_rescan_file_missing_body": "The file is no longer on disk, so it was removed from the library.",
+  "scn_rescan_offline_title": "Storage unreachable",
+  "scn_rescan_offline_body": "The storage is currently unreachable; nothing was changed. Reconnect and try again.",
+  "scn_rescan_folder_title": "Folder not in the queue",
+  "scn_rescan_folder_body": "The folder \"{folder}\" is not one of this queue's sources. What should the scan do?",
+  "@scn_rescan_folder_body": {
+    "placeholders": {
+      "folder": {"type": "String"}
+    }
+  },
+  "scn_rescan_folder_add_recursive": "Add as source (including subfolders)",
+  "scn_rescan_folder_add_non_recursive": "Add as source (this level only)",
+  "scn_rescan_folder_scan_only": "Scan only, keep the list as-is",
   "scn_manage_scenario": "Manage scenario",
   "scn_shuffle_refresh": "Shuffle refresh",
   "scn_remove_from_tag": "Remove from tag",
-  "scn_exclude_selected": "Exclude selected",
+  "scn_remove_manual_addition": "Remove this manual addition",
+  "scn_add_temp_exclude": "Exclude for this playback",
+  "scn_add_perm_exclude": "Exclude from scenario permanently",
+  "scn_add_source_exclude": "Exclude from this source",
+  "scn_add_perm_exclude_selected": "Exclude selected from scenario permanently",
+  "scn_remove_from_scenario": "Remove from scenario",
+  "scn_remove_selected_from_scenario": "Remove selected from scenario",
+  "scn_dedupe_explicit_action": "Clean up redundant additions",
+  "scn_remove_redundant_addition": "Remove this redundant addition",
+  "scn_dedupe_explicit_none_title": "Nothing to clean up",
+  "scn_dedupe_explicit_none_body": "No manual additions are covered by this scenario's folder sources.",
+  "scn_dedupe_explicit_confirm_title": "Remove redundant additions?",
+  "scn_dedupe_explicit_confirm_body": "{count} manual addition(s) are already covered by a folder source and will be removed.",
+  "@scn_dedupe_explicit_confirm_body": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "scn_dedupe_explicit_confirm_ok": "Remove",
+  "scn_dedupe_explicit_done_title": "Cleanup complete",
+  "scn_dedupe_explicit_done_body": "Removed {count} redundant manual addition(s).",
+  "@scn_dedupe_explicit_done_body": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "scn_filter": "Filter",
+  "scn_play_selected": "Play selected items",
+  "scn_preview_stay": "Stay in preview",
+  "scn_preview_leave": "Close storage browser",
   "scn_order_shuffled": "Shuffled",
   "scn_order_original": "Original",
   "scn_order_original_of": "Original ({field})",
@@ -1540,6 +1592,9 @@
   "scn_sort_modified": "Modified",
   "scn_sort_duration": "Duration",
   "scn_sort_size": "Size",
+  "scn_sort_created": "Created",
+  "scn_sort_updated": "Updated",
+  "scn_tag_sort_added": "Added to tag",
   "scn_group_dir_sources": "Dir sources",
   "scn_group_item_sources": "Item sources",
   "scn_group_dir_exclude": "Dir exclude",
@@ -1602,6 +1657,8 @@
   "lib_sort_duration": "Duration",
   "lib_sort_resolution": "Resolution",
   "lib_sort_modified": "Last Modified",
+  "lib_sort_created": "Created",
+  "lib_sort_updated": "Updated",
   "lib_sort_tip": "Sort",
   "lib_recursive": "Recursive",
   "lib_direct_only": "Direct only",
@@ -1950,6 +2007,42 @@
   "lib_info_path": "Path",
   "lib_info_size": "Size",
   "lib_info_modified": "Modified",
+  "lib_info_created": "Created",
+  "lib_info_source": "Source",
+  "lib_info_file": "File",
+  "lib_info_source_id": "Source ID",
+  "lib_info_node_id": "Node ID",
+  "lib_info_storage_id": "Storage ID",
+  "lib_info_storage_name": "Storage Name",
+  "lib_info_kind": "Kind",
+  "lib_info_depth": "Depth",
+  "lib_info_present": "Present",
+  "lib_info_yes": "Yes",
+  "lib_info_no": "No",
+  "lib_info_last_seen": "Last seen",
+  "lib_info_duration": "Duration",
+  "lib_info_total_media": "Total media",
+  "lib_info_total_dirs": "Total dirs",
+  "lib_info_total_items": "Total items",
+  "lib_info_total_duration": "Total duration",
+  "lib_info_direct_children": "Direct children",
+  "lib_info_recursive_totals": "Recursive totals",
+  "lib_info_direct_children_value": "{media} media, {dirs} dirs, {total} total",
+  "@lib_info_direct_children_value": {
+    "placeholders": {
+      "media": {"type": "int"},
+      "dirs": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
+  "lib_info_recursive_totals_value": "{media} media, {dirs} dirs, {total} items",
+  "@lib_info_recursive_totals_value": {
+    "placeholders": {
+      "media": {"type": "int"},
+      "dirs": {"type": "int"},
+      "total": {"type": "int"}
+    }
+  },
   "lib_add_to_library": "Add to Library",
   "lib_info_files": "Files",
   "lib_info_selected_items": "Selected: {count} items",
@@ -2007,6 +2100,19 @@
   },
   "gate_play_anyway": "Play anyway",
   "gate_scan_now": "Scan fully now",
+  "gate_multi_title": "Several folders need a full scan",
+  "gate_multi_body": "{count} folders have not been fully scanned (or their scan is stale).\n\nThe playlist may be incomplete or miss the latest files. Scan them all now?",
+  "@gate_multi_body": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "gate_multi_interrupt_warn": "Starting now will interrupt {count} folder(s) currently being scanned.",
+  "@gate_multi_interrupt_warn": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
   "gate_resume_title": "Scan finished",
   "gate_resume_body": "Continue playing what you started?",
   "gate_resume_continue": "Continue playing",
@@ -2434,7 +2540,7 @@
       "rate": {"type": "String"}
     }
   },
-  "storages_stay_open": "Keep storagedb open",
+  "storages_stay_open": "Keep storage browser open",
   "storages_close_on_play": "Close on play",
   "storages_folder": "Folder",
   "storages_play_override": "Play Override",
@@ -2443,6 +2549,7 @@
   "storages_scenarios": "Scenarios",
   "files_refresh": "Refresh current",
   "files_scan_recursive": "Scan recursively",
+  "files_refresh_scan": "Refresh/Scan",
   "entry_new": "New desktop entry",
   "entry_edit": "Edit entry",
   "entry_choose_image": "Choose image",
@@ -3388,6 +3495,10 @@
   "set_cache_preset_low": "Low",
   "set_cache_preset_balanced": "Balanced",
   "set_cache_preset_high": "High",
+  "set_playback_step_seek_mode": "Step seek mode",
+  "set_playback_step_seek_mode_desc": "How rapid ← / → (and phone double-taps) are scheduled. Adaptive keeps every step while the key is held and, on release, jumps straight to the last target so playback resumes at once; both modes land every press precisely. Applies to the Media Kit backend only.",
+  "set_step_seek_mode_precise": "Precise (drop oldest)",
+  "set_step_seek_mode_adaptive": "Adaptive (no dropped steps)",
   "startup_failed_title": "Startup failed",
   "startup_failed_body": "IRIS could not finish starting up. Your data has not been modified.\n\n$error",
   "@startup_failed_body": {

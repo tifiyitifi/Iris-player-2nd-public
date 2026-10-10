@@ -236,6 +236,34 @@ class MediaNodeRepository {
     return _nodesDao.upsertNode(node);
   }
 
+  /// Upserts many file nodes in chunked batches (500/块).
+  ///
+  /// Used by the desktop drag-and-drop path, which indexes a whole dropped
+  /// batch at once instead of one round trip per file. Chunked upsert keeps a
+  /// single poisoned node from failing the rest: a chunk that throws falls back
+  /// to per-node writes, mirroring [updateNode] semantics.
+  Future<void> batchUpsertNodes(List<MediaNode> nodes) async {
+    if (nodes.isEmpty) return;
+    const chunkSize = 500;
+    for (var i = 0; i < nodes.length; i += chunkSize) {
+      final end = (i + chunkSize) > nodes.length ? nodes.length : i + chunkSize;
+      final chunk = nodes.sublist(i, end);
+      try {
+        await _nodesDao.batchUpsert([for (final n in chunk) n.toCompanion()]);
+      } catch (_) {
+        // One bad row must not drop the whole batch; retry individually.
+        for (final node in chunk) {
+          try {
+            await _nodesDao.upsertNode(node);
+          } catch (_) {
+            // Best-effort: a failed index still lets playback surface the
+            // real open error later.
+          }
+        }
+      }
+    }
+  }
+
   /// Writes the duration for a file node and recomputes ancestor aggregates.
   Future<void> updateFileDuration({
     required String storageId,

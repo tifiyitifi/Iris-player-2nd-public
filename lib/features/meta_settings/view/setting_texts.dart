@@ -38,6 +38,7 @@ abstract final class SettingTexts {
         'resume_on_startup' => t.set_resume_on_startup,
         'drop_append_zone_percent' => t.set_drop_append_zone_percent,
         'playback_cache_preset' => t.set_playback_cache_preset,
+        'playback_step_seek_mode' => t.set_playback_step_seek_mode,
         'controls_title_settings' => t.controls_title_settings,
         'minimal_title_settings' => t.minimal_title_settings,
         'warning_dialog_prefs' => t.set_warning_dialog_prefs,
@@ -149,6 +150,7 @@ abstract final class SettingTexts {
         'resume_on_startup_desc' => t.set_resume_on_startup_desc,
         'drop_append_zone_percent_desc' => t.set_drop_append_zone_percent_desc,
         'playback_cache_preset_desc' => t.set_playback_cache_preset_desc,
+        'playback_step_seek_mode_desc' => t.set_playback_step_seek_mode_desc,
         'identity_entries_desc' => t.set_identity_entries_desc,
         'auto_resize_desc' => t.set_auto_resize_desc,
         'playlist_panel_mode_desc' => t.set_playlist_panel_mode_desc,
@@ -269,6 +271,11 @@ abstract final class SettingTexts {
             'low' => t.set_cache_preset_low,
             'balanced' => t.set_cache_preset_balanced,
             'high' => t.set_cache_preset_high,
+            _ => name,
+          },
+        'playback.stepSeekMode' => switch (name) {
+            'precise' => t.set_step_seek_mode_precise,
+            'adaptive' => t.set_step_seek_mode_adaptive,
             _ => name,
           },
         'app.themeMode' => switch (name) {

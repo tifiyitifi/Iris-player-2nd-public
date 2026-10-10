@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' hide Chip;
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/features/media_library/store/use_media_lib_browser_store.dart';
 import 'package:iris/features/paginated_browser/models/generic_browser_models.dart';
 import 'package:iris/features/paginated_browser/data_source/paginated_browser_data_source.dart';
@@ -25,7 +26,10 @@ import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
 import 'package:iris/features/media_library/search/model/search_context.dart';
 import 'package:iris/features/media_library/search/model/search_scope.dart';
 import 'package:iris/features/media_library/search/store/search_browser_store.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_media_rescan_actions.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_explicit_dedup_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
+import 'package:iris/features/scenario_playback/resolver/explicit_redundancy.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/scan/commands/scenario_source_scan_command.dart';
@@ -49,8 +53,10 @@ import 'package:iris/features/virtual_media/rule/vm_title_composer.dart'
     show kVmDisplayPrefix;
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/view/vm_child_segment_list.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/local.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -143,6 +149,14 @@ class PagedScenarioMediaDataSource
   /// overlap). Presentation-only (never persisted) and lives here — not in the
   /// recycled tile — so scroll recycling cannot lose it.
   String? _expandedVmKey;
+
+  /// Canonical media keys of this scenario's explicit items that a directory /
+  /// whole-storage source already covers (see [redundantExplicitItems]).
+  ///
+  /// Refreshed on every page fetch so the row's trailing / right-click menu can
+  /// offer "Remove redundant addition" WITHOUT an async read during build or a
+  /// gesture callback. Empty in the tag view (a read-only window).
+  Set<String> _redundantExplicitKeys = const {};
 
   /// Last seen persisted page size (reactivity filter for the scenario store).
   late int _lastPageSize;
@@ -281,6 +295,11 @@ class PagedScenarioMediaDataSource
   @override
   bool isItemSelectable(EffectivePlaybackItem item) => !item.virtualMerged;
 
+  /// Desktop right-click reuses the row's trailing actions (see
+  /// [getItemTrailingActions]).
+  @override
+  bool get supportsRowContextMenu => !isMobilePlatform;
+
   @override
   Future<void> fetchPage(int targetPage, int currentSize) async {
     _isLoading = true;
@@ -313,13 +332,46 @@ class PagedScenarioMediaDataSource
         _items = result.items;
         _totalItems = result.totalItems;
       }
-    } catch (e) {
+    } catch (e, st) {
       _isError = true;
+      // Never swallow a resolve failure: it leaves the previous page in place,
+      // which reads as "the scan / sort did nothing".
+      areaKeyLog.e(
+          'queue fetch failed scenario=$scenarioId page=$targetPage: $e', st);
     }
 
+    await _refreshRedundantExplicitKeys();
     _isLoading = false;
     notifyListeners();
   }
+
+  /// Recomputes [_redundantExplicitKeys] for the just-resolved page.
+  ///
+  /// Only runs when the page actually shows an explicit row, so an ordinary
+  /// page never pays the two definition reads. Best-effort: a failure clears
+  /// the set (the row menu simply falls back to "Remove manual addition").
+  Future<void> _refreshRedundantExplicitKeys() async {
+    if (_tagActive || !_items.any((e) => e.explicit)) {
+      _redundantExplicitKeys = const {};
+      return;
+    }
+    try {
+      final sources = await _store.getSources(scenarioId);
+      final items = await _store.getExplicitItems(scenarioId);
+      final redundant = redundantExplicitItems(sources: sources, items: items);
+      _redundantExplicitKeys = {
+        for (final e in redundant) canonicalKey(e.storageId, e.path),
+      };
+    } catch (e) {
+      _redundantExplicitKeys = const {};
+    }
+  }
+
+  /// Whether [item] is an explicit row already covered by a directory source.
+  bool _isRedundantExplicit(EffectivePlaybackItem item) =>
+      item.explicit &&
+      _redundantExplicitKeys
+          .contains(canonicalKey(item.media.storageId, item.pathValue));
 
   @override
   bool get supportsCurrentItem => true;
@@ -764,6 +816,7 @@ class PagedScenarioMediaDataSource
   /// (never the scenario's). Shuffled toggles + re-click flips direction;
   /// Name / Tag-added are plain sort fields with filesdb-style flip.
   Widget _buildTagSortMenu(BuildContext context) {
+    final t = getLocalizations(context);
     return PopupMenuButton<_TagOrderChoice>(
       icon: const Icon(Icons.sort_rounded),
       onSelected: _onTagOrderSelected,
@@ -775,9 +828,9 @@ class PagedScenarioMediaDataSource
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(switch (choice) {
-                  _TagOrderChoice.shuffled => 'Shuffled',
-                  _TagOrderChoice.name => 'Name',
-                  _TagOrderChoice.tagAddedAt => 'Added to tag',
+                  _TagOrderChoice.shuffled => t.scn_sort_shuffled,
+                  _TagOrderChoice.name => t.scn_sort_name,
+                  _TagOrderChoice.tagAddedAt => t.scn_tag_sort_added,
                 }),
                 FutureBuilder<TagPlayViewState?>(
                   future: _tagRepo
@@ -1442,6 +1495,17 @@ class PagedScenarioMediaDataSource
             : null,
       ),
       PageAction(
+        icon: const Icon(Icons.cleaning_services_outlined, size: 18),
+        label: t.scn_dedupe_explicit_action,
+        onPressed: () async {
+          await ScenarioExplicitDedupActions.runWithDialogs(
+            scenarioContext,
+            scenarioId: scenarioId,
+          );
+          await fetchPage(0, pageSize);
+        },
+      ),
+      PageAction(
         icon: const Icon(Icons.casino_outlined, size: 18),
         label: t.scn_shuffle_refresh,
         onPressed: () async {
@@ -1477,16 +1541,19 @@ class PagedScenarioMediaDataSource
     EffectivePlaybackItem item,
   ) {
     final actions = <GenericItemAction<EffectivePlaybackItem>>[];
-    // Called during build (from UnifiedItemTile.build), so a reactive select
-    // is valid here; the value is captured for use in the async handlers.
-    final popupDirection =
-        useAppStore().select(scenario, (s) => s.defaultPopupDirection);
+    // NOT a reactive select: this action list is built both during `build`
+    // (trailing "more" button) and from a gesture callback (desktop right-click
+    // menu), and provider asserts `select` outside build. The value only feeds
+    // the onPressed handlers, so a snapshot read is correct on both paths (and
+    // matches the three other `defaultPopupDirection` reads in this file).
+    final popupDirection = useAppStore().state.defaultPopupDirection;
+    final t = getLocalizations(scenario);
 
     if (_tagActive) {
       // Tag view semantics: Remove = un-tag this media from the ACTIVE tag
       // (scenario excludes/explicit edits stay scenario-only).
       actions.add(GenericItemAction<EffectivePlaybackItem>(
-        label: '从 Tag 移除',
+        label: t.scn_remove_from_tag,
         icon: const Icon(Icons.remove_circle_outline, size: 16),
         onPressed: (ctx, i) {
           _removeFromActiveTag(i as EffectivePlaybackItem);
@@ -1495,7 +1562,7 @@ class PagedScenarioMediaDataSource
       final path = _pathOf(item);
       if (path.isNotEmpty) {
         actions.add(GenericItemAction<EffectivePlaybackItem>(
-          label: 'Open in folder',
+          label: t.open_in_folder,
           icon: const Icon(Icons.folder_open, size: 16),
           onPressed: (ctx, i) {
             _openInFolderDb(
@@ -1507,13 +1574,30 @@ class PagedScenarioMediaDataSource
           },
         ));
       }
+      // Windows desktop: the same row in Explorer (empty off-Windows / remote).
+      actions.addAll(buildExplorerRevealActions<EffectivePlaybackItem>(
+        context: scenario,
+        item: item,
+        fileOf: _revealFileFor,
+      ));
       return actions;
     }
 
     if (item.explicit) {
+      // An explicit row already covered by a directory source is redundant:
+      // label the removal so the user understands why it can go (the operation
+      // is the same single-row removal either way).
+      final redundant = _isRedundantExplicit(item);
       actions.add(GenericItemAction<EffectivePlaybackItem>(
-        label: 'Remove from scenario',
-        icon: const Icon(Icons.remove_circle_outline, size: 16),
+        label: redundant
+            ? t.scn_remove_redundant_addition
+            : t.scn_remove_manual_addition,
+        icon: Icon(
+          redundant
+              ? Icons.cleaning_services_outlined
+              : Icons.remove_circle_outline,
+          size: 16,
+        ),
         onPressed: (ctx, i) {
           _removeExplicitInclude(i as EffectivePlaybackItem);
         },
@@ -1522,7 +1606,7 @@ class PagedScenarioMediaDataSource
 
     // Remove for this playing session only (temporary scenario-scope exclude).
     actions.add(GenericItemAction<EffectivePlaybackItem>(
-      label: 'Remove',
+      label: t.scn_add_temp_exclude,
       icon: const Icon(Icons.remove_circle_outline, size: 16),
       onPressed: (ctx, i) async {
         final e = i as EffectivePlaybackItem;
@@ -1537,7 +1621,7 @@ class PagedScenarioMediaDataSource
         item.origins.isEmpty ? null : item.origins.first.sourceId;
     if (originSourceId != null) {
       actions.add(GenericItemAction<EffectivePlaybackItem>(
-        label: 'Skip from source',
+        label: t.scn_add_source_exclude,
         icon: const Icon(Icons.filter_alt_off, size: 16),
         onPressed: (ctx, i) async {
           final e = i as EffectivePlaybackItem;
@@ -1553,7 +1637,7 @@ class PagedScenarioMediaDataSource
     // Permanent block (persistent scenario-scope exclude — does NOT survive
     // the next Override, E1).
     actions.add(GenericItemAction<EffectivePlaybackItem>(
-      label: 'Permanent block',
+      label: t.scn_add_perm_exclude,
       icon: const Icon(Icons.block, size: 16),
       onPressed: (ctx, i) async {
         final e = i as EffectivePlaybackItem;
@@ -1565,7 +1649,7 @@ class PagedScenarioMediaDataSource
     ));
 
     actions.add(GenericItemAction<EffectivePlaybackItem>(
-      label: 'Add as source',
+      label: t.browse_add_scenario,
       icon: const Icon(Icons.playlist_add, size: 16),
       onPressed: (ctx, i) {
         _showAddToOtherScenarioDialog(ctx, i as EffectivePlaybackItem);
@@ -1575,7 +1659,7 @@ class PagedScenarioMediaDataSource
     final path = _pathOf(item);
     if (path.isNotEmpty) {
       actions.add(GenericItemAction<EffectivePlaybackItem>(
-        label: 'Open in folder',
+        label: t.open_in_folder,
         icon: const Icon(Icons.folder_open, size: 16),
         onPressed: (ctx, i) {
           _openInFolderDb(
@@ -1588,7 +1672,87 @@ class PagedScenarioMediaDataSource
       ));
     }
 
+    // Desktop-only rescan trio: this file / its containing folder / the source
+    // that produced it. Each scope invalidates through the same media-revision
+    // funnel as a full source refresh. "Rescan source" is GREYED (not hidden)
+    // when the row has no originating source (an explicit single-file pick).
+    if (!isMobilePlatform && path.isNotEmpty && item.media is MediaFile) {
+      // Offline-grey. An unknown storage greys too: every scope needs the
+      // Storage object to act on, and an enabled entry that then silently
+      // no-ops is worse than a visibly disabled one.
+      final storage = useStorageStore().findById(item.media.storageId);
+      final online =
+          storage != null && useStorageStore().isConnected(storage.id);
+      actions.add(GenericItemAction<EffectivePlaybackItem>(
+        label: t.scn_rescan_file,
+        icon: const Icon(Icons.refresh_rounded, size: 16),
+        enabled: online,
+        onPressed: (ctx, i) => _runRowRescan(
+          ctx,
+          'file',
+          i as EffectivePlaybackItem,
+          ScenarioMediaRescanActions.rescanFile,
+        ),
+      ));
+      actions.add(GenericItemAction<EffectivePlaybackItem>(
+        label: t.scn_rescan_dir,
+        icon: const Icon(Icons.manage_search_rounded, size: 16),
+        enabled: online,
+        onPressed: (ctx, i) => _runRowRescan(
+          ctx,
+          'dir',
+          i as EffectivePlaybackItem,
+          ScenarioMediaRescanActions.rescanDirectory,
+        ),
+      ));
+      actions.add(GenericItemAction<EffectivePlaybackItem>(
+        label: t.scn_rescan_source,
+        icon: const Icon(Icons.autorenew_rounded, size: 16),
+        enabled: online && item.origins.isNotEmpty,
+        onPressed: (ctx, i) => _runRowRescan(
+          ctx,
+          'source',
+          i as EffectivePlaybackItem,
+          ScenarioMediaRescanActions.rescanSource,
+        ),
+      ));
+    }
+
+    // Windows desktop: hand the row to Explorer. Added last so it trails the
+    // queue-management entries, matching the other surfaces.
+    actions.addAll(buildExplorerRevealActions<EffectivePlaybackItem>(
+      context: scenario,
+      item: item,
+      fileOf: _revealFileFor,
+    ));
+
     return actions;
+  }
+
+  /// Runs one row rescan scope, then refreshes page 0 in place.
+  ///
+  /// [GenericItemAction.onPressed] is a `void` callback, so nothing can await
+  /// it: without this guard a throw (DAO error, failed scan, unmounted context)
+  /// would surface as an unhandled async error instead of a log line. SnackBars
+  /// are out of convention — a failed rescan is logged on `log.scenario.queue`
+  /// and the page is still refreshed, because a partial write is better shown
+  /// than hidden.
+  void _runRowRescan(
+    BuildContext context,
+    String scope,
+    EffectivePlaybackItem item,
+    Future<void> Function(BuildContext, EffectivePlaybackItem) action,
+  ) async {
+    try {
+      await action(context, item);
+    } catch (e, st) {
+      areaKeyLog.e('rescan $scope failed: $e', st);
+    }
+    try {
+      await fetchPage(0, pageSize);
+    } catch (e, st) {
+      areaKeyLog.e('rescan $scope page refresh failed: $e', st);
+    }
   }
 
   /// Storage-relative path segments of the media item.
@@ -1596,6 +1760,32 @@ class PagedScenarioMediaDataSource
         file: (f) => f.path,
         orElse: () => const <String>[],
       );
+
+  /// Projects a queue row to the [FileItem] the "Open in Explorer" action
+  /// needs, or null for non-file rows (directories never appear in the queue).
+  FileItem? _revealFileFor(EffectivePlaybackItem item) => item.media.maybeMap(
+        file: (f) => _revealFileItem(f, item.media.storageId),
+        orElse: () => null,
+      );
+
+  FileItem _revealFileItem(MediaFile file, String storageId) {
+    final storage = useStorageStore().findById(storageId);
+    return FileItem(
+      storageId: storageId,
+      storageType: storage?.type ?? StorageType.none,
+      name: file.name,
+      uri: mediaNodePlayableUri(storage, file.path, uri: file.uri),
+      path: file.path,
+      size: file.sizeInBytes ?? 0,
+      durationMs: file.durationMs,
+      lastModified: file.modifiedAt,
+      type: switch (file.mediaType) {
+        MediaType.video => ContentType.video,
+        MediaType.audio => ContentType.audio,
+        _ => ContentType.other,
+      },
+    );
+  }
 
   /// Jumps into the storagedb file browser at the item's folder
   /// (open-in-folder mechanism).
@@ -1701,7 +1891,7 @@ class PagedScenarioMediaDataSource
     return [
       CustomSelectionAction<EffectivePlaybackItem>(
         icon: const Icon(Icons.remove_circle_outline, size: 18),
-        label: t.scn_exclude_selected,
+        label: t.scn_add_perm_exclude_selected,
         onPressed: (ctx, selected) async {
           for (final item in selected) {
             await _store.addExcludeRule(_excludeRule(item,
@@ -1747,7 +1937,7 @@ class PagedScenarioMediaDataSource
     await showDialog<void>(
       context: scenario,
       builder: (ctx) => SimpleDialog(
-        title: const Text('Add to scenario'),
+        title: Text(getLocalizations(ctx).browse_add_scenario),
         children: others
             .map(
               (c) => SimpleDialogOption(
@@ -1775,11 +1965,13 @@ class PagedScenarioMediaDataSource
         SearchSource(
           storageId: s.storageId,
           path: s.path.isEmpty ? null : s.path,
-          kind: s.path.isEmpty
-              ? MediaSourceKind.storage
-              : s.sourceKind == ScenarioSourceKind.file
-                  ? MediaSourceKind.file
-                  : MediaSourceKind.directory,
+          // An empty-path folder source is NOT whole-storage: the `directory`
+          // predicate carries recursion, so a non-recursive root source stays
+          // root-level (matching playback, which resolves it to direct
+          // children only). Mapping it to `storage` ignored `recursive`.
+          kind: s.sourceKind == ScenarioSourceKind.file
+              ? MediaSourceKind.file
+              : MediaSourceKind.directory,
           recursive: s.recursive,
           scenarioSourceId: s.id,
         ),

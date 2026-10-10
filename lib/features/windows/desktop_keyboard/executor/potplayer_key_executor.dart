@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:iris/utils/app_exit.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/features/scenario_playback/playback/playback_provider.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
+import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/playback_tools/services/screenshot_service.dart';
 import 'package:iris/features/playback_tools/view/screenshot_capture_flow.dart';
 import 'package:iris/features/playback_tools/view/screenshot_feedback.dart';
@@ -34,6 +36,16 @@ import 'package:iris/features/osd/engine/osd_texts.dart';
 import 'package:iris/features/osd/model/osd_entry.dart';
 import 'package:iris/features/osd/store/osd_store.dart';
 import 'package:iris/features/windows/recycle_bin/recycle_bin.dart';
+import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
+import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
+import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
+import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
+import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
+import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/file.dart';
+import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_message_dialog.dart';
 import 'package:iris/globals.dart';
 import 'package:iris/models/player.dart';
@@ -58,6 +70,40 @@ import 'package:iris/widgets/popups/track/subtitle_and_audio_track.dart';
 import 'package:provider/provider.dart';
 
 final _log = AreaKeyLog(LogKeys.player);
+
+/// The currently playing LOCAL file's identity (see
+/// [PotPlayerKeyExecutor._resolveCurrentLocalMedia]).
+typedef _LocalMedia = ({
+  PlayQueueItem item,
+  String path,
+  String storageId,
+  String? relPath,
+});
+
+/// Whether a physical delete must re-arm autoplay so the legacy/paged queue
+/// keeps playing the NEXT entry.
+///
+/// Scenario mode has an explicit resume path (`revalidateCurrent` /
+/// `resumeActive`). The non-scenario queue only re-opens the advanced entry
+/// through the player's `[file]` effect with `play: autoPlay`; if the user was
+/// watching while autoplay happened to be off, the delete would otherwise park
+/// on a paused, swapped-out current item. Pure so the intent is unit-testable.
+@visibleForTesting
+bool shouldContinueQueuePlaybackAfterDelete({
+  required bool scenarioMode,
+  required bool wasPlaying,
+}) =>
+    !scenarioMode && wasPlaying;
+
+/// Whether [key]'s release must collapse a held step-seek burst (← / → and
+/// their Ctrl/Shift/Alt tier variants all feed the same [StepSeekChain]).
+///
+/// Every other repeatable key owns its own release handling in [handle]
+/// (volume ArrowUp/Down, speed X/C). Pure so the binding is unit-testable.
+@visibleForTesting
+bool shouldReleaseStepHold(LogicalKeyboardKey key) =>
+    key == LogicalKeyboardKey.arrowLeft ||
+    key == LogicalKeyboardKey.arrowRight;
 
 /// Executes PotPlayerAction for the potplayer keyboard scheme (SRS §5).
 ///
@@ -98,6 +144,16 @@ class PotPlayerKeyExecutor {
         (event.logicalKey == LogicalKeyboardKey.keyX ||
             event.logicalKey == LogicalKeyboardKey.keyC)) {
       await useAppStore().commitRate();
+      return;
+    }
+
+    // Releasing a held ←/→ ends the step burst: collapse the queued walk to
+    // its final target so it stops within one landing instead of draining
+    // every auto-repeated press (see StepSeekChain.collapseOnRelease). The
+    // input-idle settle repeats this collapse, so a UP swallowed by a blur or
+    // dialog still self-heals.
+    if (event is KeyUpEvent && shouldReleaseStepHold(event.logicalKey)) {
+      await player.endStepBurst?.call();
       return;
     }
 
@@ -266,9 +322,15 @@ class PotPlayerKeyExecutor {
     } else {
       await player.backward(seconds);
     }
+    // The OSD reads the accumulated step intent (set synchronously by the seek
+    // path) so a rapid burst shows where the seek is HEADING instead of the
+    // stale pre-seek snapshot — which used to read ahead of the picture.
+    final int? intentMs = player.stepIntentTargetMs?.call();
     _showOsd(OsdTexts.seek(t,
         delta: Duration(milliseconds: deltaMs),
-        position: _clampedRelativeTarget(player, deltaMs),
+        position: intentMs == null
+            ? _clampedRelativeTarget(player, deltaMs)
+            : Duration(milliseconds: intentMs),
         duration: player.duration));
   }
 
@@ -294,20 +356,29 @@ class PotPlayerKeyExecutor {
 
   // ── Physical delete (Windows-only policy, §5) ──
 
-  /// Resolves the currently playing LOCAL file path; null for remote sources
-  /// (browse-only by policy) or when nothing plays.
-  String? _resolveCurrentLocalPath() {
+  /// Identity of the currently playing LOCAL file: the play-queue item plus
+  /// the bits the delete path needs — the absolute path for the shell op, and
+  /// the storage id + storage-relative path for the DB row / VM-rule matching.
+  _LocalMedia? _resolveCurrentLocalMedia() {
     final state = usePlayQueueStore().state;
     for (final item in state.playQueue) {
       if (item.index != state.currentIndex) continue;
       final uri = item.file.uri;
       if (uri.isEmpty || uri.startsWith('http')) return null;
+      final relPath = item.file.path.join('/');
       try {
         final path = uri.startsWith('file:')
-            ? Uri.parse(uri).toFilePath().replaceFirst(RegExp(r'^/([A-Za-z]:)'), r'$1')
+            ? Uri.parse(uri)
+                .toFilePath()
+                .replaceFirst(RegExp(r'^/([A-Za-z]:)'), r'$1')
             : uri;
-        final file = File(path);
-        return file.existsSync() ? path : null;
+        if (!File(path).existsSync()) return null;
+        return (
+          item: item,
+          path: path,
+          storageId: item.file.storageId,
+          relPath: relPath.isEmpty ? null : relPath,
+        );
       } catch (_) {
         return null;
       }
@@ -315,10 +386,161 @@ class PotPlayerKeyExecutor {
     return null;
   }
 
+  /// Confirms the irreversible permanent-delete fallback (class B1: always
+  /// shown, never suppressible). True only when the user explicitly accepts.
+  Future<bool> _confirmPermanentDelete(String path) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) {
+        final t = getLocalizations(dialogCtx);
+        return AlertDialog(
+          icon: Icon(Icons.warning_amber_rounded,
+              color: Theme.of(dialogCtx).colorScheme.error),
+          title: Text(t.recycle_unavailable_title),
+          content: Text(t.recycle_unavailable_body(path)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              child: Text(t.recycle_cancel),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(dialogCtx).colorScheme.error,
+                foregroundColor: Theme.of(dialogCtx).colorScheme.onError,
+              ),
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              child: Text(t.recycle_permanent),
+            ),
+          ],
+        );
+      },
+    );
+    return ok == true;
+  }
+
+  /// Captures the frozen chunk boundaries of every enabled VM rule covering the
+  /// to-be-deleted file, keyed by ruleId. Captures BOTH feasible and infeasible
+  /// (unknown-duration) groups — the latter keep their yellow degraded mark
+  /// after the rule is pinned (see `collectPinnedVmChunks`). MUST run while
+  /// the file still exists:
+  /// once the DB row is gone the rule would already have re-chunked and the
+  /// original boundary would be unrecoverable. Does NOT activate the freeze —
+  /// the caller seeds it only after the delete actually succeeds, so an aborted
+  /// delete never leaves boundaries frozen.
+  Future<Map<String, List<PinnedVmChunk>>> _captureVmChunks(
+      String storageId, String? relPath) async {
+    if (storageId.isEmpty || relPath == null || relPath.isEmpty) return const {};
+    if (!VirtualMediaGate.enabled) return const {};
+    final rules =
+        await VirtualMediaService.instance.coveringRulesFor(storageId, relPath);
+    if (rules.isEmpty) return const {};
+
+    final store = usePlaybackScenarioStore();
+    final scenarioId = store.state.activeScenarioId;
+    if (scenarioId == null) return const {};
+    final ruleIds = {for (final r in rules) r.id};
+    try {
+      final groups = await store.resolver.resolveVmGroupsFor(
+        scenarioId,
+        playbackVersion: store.state.playbackVersion,
+      );
+      return collectPinnedVmChunks(groups, ruleIds);
+    } catch (e) {
+      _log.w('vm boundary capture failed: $e');
+      return const {};
+    }
+  }
+
+  /// Applies the delete across every layer so nothing can re-feed the dead
+  /// source: drops the DB row, removes it from the legacy queue, ends a VM
+  /// session that fed it, bumps the revisions (PRESERVING the VM boundary
+  /// freeze), then advances to the next playable item.
+  ///
+  /// [wasPlaying] drives the non-scenario continuation: the queue's `[file]`
+  /// effect opens the next entry with `play: autoPlay`, so autoplay is re-armed
+  /// when the user was actually watching.
+  Future<void> _removeDeletedMediaAndAdvance(
+    _LocalMedia media, {
+    required bool wasPlaying,
+  }) async {
+    final scenarioMode = PlaybackProviderRegistry.scenarioModeActive;
+    final scenarioProvider = PlaybackProviderRegistry.scenario;
+    final vmWasActive = VirtualMediaController.instance.isActive;
+    // Snapshot the surviving VM group BEFORE the DB row disappears, so a
+    // resolver cache serving the pre-delete stream cannot hide it. Guarded:
+    // scenario mode without an active scenario must not throw out of a keybind.
+    final vmCurrent = (scenarioMode && vmWasActive)
+        ? await _safeScenarioCurrent(scenarioProvider)
+        : null;
+
+    if (media.storageId.isNotEmpty && media.relPath != null) {
+      try {
+        await DbModule.mediaNodesDao
+            .deleteNode(media.storageId, media.relPath!);
+      } catch (e) {
+        _log.w('media node delete failed: $e');
+      }
+    }
+
+    if (shouldContinueQueuePlaybackAfterDelete(
+      scenarioMode: scenarioMode,
+      wasPlaying: wasPlaying,
+    )) {
+      // Set autoplay BEFORE the removal so the [file] effect opens the advanced
+      // entry playing (legacy mode has no scenario resume effect to restart it).
+      try {
+        await useAppStore().updateAutoPlay(true);
+      } catch (_) {}
+    }
+    if (!scenarioMode) {
+      try {
+        await usePlayQueueStore().remove(media.item);
+      } catch (_) {}
+    }
+
+    if (vmWasActive) {
+      try {
+        await VirtualMediaController.instance.stop();
+      } catch (_) {}
+    }
+
+    if (media.storageId.isNotEmpty) {
+      await MediaRevisionActions.mediaNodesChanged(
+        [media.storageId],
+        preserveVirtualMediaBoundaries: true,
+      );
+    }
+
+    if (scenarioMode) {
+      try {
+        // Removing the current occurrence advances to the next entry
+        // (队尾 -> stop).
+        await scenarioProvider.revalidateCurrent();
+        // A merged group that survived keeps its representative: the revalidate
+        // above did NOT re-feed it, so restart the session on the frozen
+        // (shrunk) segment list.
+        if (vmCurrent != null) {
+          await PlaybackProviderRegistry.resumeActive();
+        }
+      } catch (e) {
+        _log.w('advance after delete failed: $e');
+      }
+    }
+  }
+
+  Future<PlaybackEntry?> _safeScenarioCurrent(
+      ScenarioPlaybackProvider provider) async {
+    try {
+      return await provider.current();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _deleteCurrentFileToRecycleBin() async {
     if (!isDesktop || !Platform.isWindows) return; // policy: Windows only
-    final path = _resolveCurrentLocalPath();
-    if (path == null) return;
+    final media = _resolveCurrentLocalMedia();
+    if (media == null) return;
     if (!context.mounted) return;
     final t = getLocalizations(context);
 
@@ -326,55 +548,60 @@ class PotPlayerKeyExecutor {
       context,
       warningId: kWarningPhysicalDeleteRecycle,
       title: t.recycle_title,
-      message: t.recycle_body(path.split(Platform.pathSeparator).last),
+      message: t.recycle_body(media.path.split(Platform.pathSeparator).last),
       confirmLabel: t.recycle_delete,
       destructive: true,
     );
     if (!confirmed) return;
     if (!context.mounted) return;
 
-    if (!moveFileToRecycleBin(path)) {
+    // Capture (but do not yet activate) the VM boundaries of every rule the
+    // file belongs to, while the file is still present.
+    final vmChunks = await _captureVmChunks(media.storageId, media.relPath);
+
+    // Release the backend's handle BEFORE the shell delete: otherwise a
+    // sharing violation can turn a recycle-bin move into the permanent
+    // fallback (and then fail there too).
+    final wasPlaying = player.isPlaying;
+    await player.pause();
+
+    var deleted = moveFileToRecycleBin(media.path);
+    if (!deleted) {
       // Recycle bin unavailable — permanent delete is irreversible, so this
       // confirmation is ALWAYS shown and never suppressible (class B1).
-      final permanentOk = await showDialog<bool>(
-        context: context,
-        builder: (dialogCtx) {
-          final t = getLocalizations(dialogCtx);
-          return AlertDialog(
-            icon: Icon(Icons.warning_amber_rounded,
-                color: Theme.of(dialogCtx).colorScheme.error),
-            title: Text(t.recycle_unavailable_title),
-            content: Text(t.recycle_unavailable_body(path)),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogCtx, false),
-                child: Text(t.recycle_cancel),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(dialogCtx).colorScheme.error,
-                  foregroundColor: Theme.of(dialogCtx).colorScheme.onError,
-                ),
-                onPressed: () => Navigator.pop(dialogCtx, true),
-                child: Text(t.recycle_permanent),
-              ),
-            ],
-          );
-        },
-      );
-      if (permanentOk != true) return;
+      final permanentOk = await _confirmPermanentDelete(media.path);
+      if (!permanentOk) {
+        if (wasPlaying) await player.play();
+        return;
+      }
       try {
-        await File(path).delete();
+        await File(media.path).delete();
+        deleted = true;
       } catch (e) {
         _log.e('permanent delete failed: $e');
-        return;
+      }
+    }
+    if (!deleted) {
+      if (wasPlaying) await player.play();
+      return;
+    }
+
+    // Freeze the captured boundaries and excise the member so only its own
+    // chunk shrinks — neighbouring chunks / other rules stay intact.
+    final mediaKey = media.storageId.isNotEmpty && media.relPath != null
+        ? canonicalKey(media.storageId, media.relPath!)
+        : null;
+    for (final entry in vmChunks.entries) {
+      VmMembershipPin.instance.seedRule(entry.key, entry.value);
+      if (mediaKey != null) {
+        VmMembershipPin.instance.removeMember(entry.key, mediaKey);
       }
     }
 
-    // The file is gone — stop playback of the dead source.
-    player.pause();
-    PlaybackProviderRegistry.stop();
-    _showOsd(OsdTexts.deleted(getLocalizations(context)));
+    await _removeDeletedMediaAndAdvance(media, wasPlaying: wasPlaying);
+    if (context.mounted) {
+      _showOsd(OsdTexts.deleted(getLocalizations(context)));
+    }
   }
 
   // ── Frame capture (mediaKit-only, F1) — shared playback_tools service ──

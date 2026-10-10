@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
@@ -15,6 +16,8 @@ import 'package:iris/features/meta_settings/engine/browse_media_scope.dart'
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
 import 'package:iris/features/scenario_playback/actions/scan_play_gate.dart';
+import 'package:iris/features/scenario_playback/actions/explicit_file_probe.dart';
+import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_append_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_override_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
@@ -177,6 +180,8 @@ class DragDropResolvedFile {
     required this.path,
     required this.relative,
     required this.contentType,
+    required this.size,
+    required this.modifiedAt,
   });
 
   final String rawPath;
@@ -189,15 +194,30 @@ class DragDropResolvedFile {
   final List<String> relative;
 
   final ContentType contentType;
+
+  /// File size in bytes (captured at classification time; the drop path must
+  /// not stat the same file twice).
+  final int size;
+
+  /// Filesystem mtime (captured at classification time).
+  final DateTime? modifiedAt;
 }
 
 /// De-duplicates directory specs by (storage, path), preserving first-seen
 /// order.
+///
+/// Case folds only on a case-insensitive filesystem (Windows drive-letter /
+/// UNC) so the same folder dropped twice in a different case collapses to one
+/// row; POSIX/SAF/remote paths stay byte-exact, where case-only variants are
+/// genuinely distinct folders.
 List<DragDropResolvedDir> dedupeDropDirs(List<DragDropResolvedDir> dirs) {
   final seen = <String>{};
   final out = <DragDropResolvedDir>[];
   for (final dir in dirs) {
-    if (seen.add('${dir.storageId}\u0000${dir.path}')) out.add(dir);
+    final keyPath = pathRidesCaseInsensitiveFs(dir.path)
+        ? dir.path.toLowerCase()
+        : dir.path;
+    if (seen.add('${dir.storageId}\u0000$keyPath')) out.add(dir);
   }
   return out;
 }
@@ -218,9 +238,15 @@ List<DragDropResolvedFile> dropFilesNotCoveredByDirs({
 bool _coveredBy(DragDropResolvedFile file, DragDropResolvedDir dir) {
   if (file.storageId != dir.storageId) return false;
   if (dir.relative.length > file.relative.length) return false;
+  // Fold case ONLY on a case-insensitive filesystem (Windows drive-letter /
+  // UNC). On POSIX/SAF/remote, `A.mkv` and `a/` are genuinely different, so
+  // folding there would wrongly mark the file as covered and drop it.
+  final fold = pathRidesCaseInsensitiveFs(file.path) ||
+      pathRidesCaseInsensitiveFs(dir.path);
   for (var i = 0; i < dir.relative.length; i++) {
-    if (foldMatchSegment(dir.relative[i]) !=
-        foldMatchSegment(file.relative[i])) {
+    final d = dir.relative[i];
+    final f = file.relative[i];
+    if (fold ? d.toLowerCase() != f.toLowerCase() : d != f) {
       return false;
     }
   }
@@ -310,10 +336,16 @@ abstract final class DragDropPlayHandler {
     for (final raw in rawPaths) {
       var exists = false;
       var isDirectory = false;
+      var size = 0;
+      DateTime? modifiedAt;
       try {
-        final type = await FileSystemEntity.type(raw);
-        exists = type != FileSystemEntityType.notFound;
-        isDirectory = type == FileSystemEntityType.directory;
+        // One stat per dropped path: the type decides folder vs file, and the
+        // same stat supplies size/mtime for the DB index (no second syscall).
+        final stat = await FileStat.stat(raw);
+        exists = stat.type != FileSystemEntityType.notFound;
+        isDirectory = stat.type == FileSystemEntityType.directory;
+        size = stat.size;
+        modifiedAt = stat.modified;
       } catch (_) {
         exists = false;
       }
@@ -333,6 +365,8 @@ abstract final class DragDropPlayHandler {
         rawPath: raw,
         kind: kind,
         contentType: contentType,
+        size: size,
+        modifiedAt: modifiedAt,
       ));
     }
     if (classified.isEmpty) return;
@@ -390,11 +424,13 @@ abstract final class DragDropPlayHandler {
           path: rawStoragePath(storage, relative),
           relative: relative,
           contentType: entry.contentType,
+          size: entry.size,
+          modifiedAt: entry.modifiedAt,
         ));
       }
     }
 
-    // The scan gate resolves its storage via the store (`_startScanFor`), so
+    // The scan gate resolves its storage via the store (`_startScansFor`), so
     // every storage feeding a scan must be persisted before the gate runs.
     for (final storage in toPersist) {
       await _persistStorage(storage);
@@ -406,22 +442,59 @@ abstract final class DragDropPlayHandler {
       dirs: uniqueDirs,
     );
 
-    final fileItems = <FileItem>[];
-    for (final file in explicit) {
-      final item = await _indexFile(file);
-      if (item != null) fileItems.add(item);
+    // Index every explicit file in ONE chunked batch (not one DB round trip per
+    // file), then probe duration/dimensions silently in the background so the
+    // queue shows metadata without waiting for the per-play backfill.
+    final indexed = await _indexFiles(explicit);
+    if (indexed.probes.isNotEmpty) {
+      unawaited(_probeInBackground(indexed.probes));
     }
 
-    if (uniqueDirs.isNotEmpty) {
-      final specs = <ScenarioSourceSpec>[
-        for (final dir in uniqueDirs)
-          (storageId: dir.storageId, path: dir.path, recursive: true),
-      ];
+    if (!context.mounted) return;
+    await _proceedAfterResolve(
+      context,
+      dirs: uniqueDirs,
+      files: indexed.fileItems,
+      zone: zone,
+    );
+  }
+
+  /// Second half of the drop flow, after paths are resolved and files indexed.
+  ///
+  /// Split out so the scan gate's resume closure re-runs ONLY this tail with
+  /// the already-resolved specs — it must not re-enumerate storages nor re-stat
+  /// every dropped path (the old `handle(context, rawPaths, ...)` resume did).
+  ///
+  /// [skipGate] is true only on the post-scan resume: the user already chose to
+  /// scan, so the tail must play instead of re-opening the gate (a root whose
+  /// scan failed would otherwise re-prompt forever).
+  static Future<void> _proceedAfterResolve(
+    BuildContext context, {
+    required List<DragDropResolvedDir> dirs,
+    required List<FileItem> files,
+    required DragDropZone zone,
+    bool skipGate = false,
+  }) async {
+    final specs = <ScenarioSourceSpec>[
+      for (final dir in dirs)
+        (storageId: dir.storageId, path: dir.path, recursive: true),
+    ];
+
+    if (shouldRunScanGate(
+      skipGate: skipGate,
+      hasRecursiveDirs: specs.isNotEmpty,
+    )) {
       if (!context.mounted) return;
       final proceed = await ensureDirsScannedWithPendingPlay(
         context,
         specs,
-        playOnScanNow: () => handle(context, rawPaths, zone: zone),
+        playOnScanNow: () => _proceedAfterResolve(
+          context,
+          dirs: dirs,
+          files: files,
+          zone: zone,
+          skipGate: true,
+        ),
       );
       if (!proceed) return;
     }
@@ -430,8 +503,8 @@ abstract final class DragDropPlayHandler {
 
     final scope = currentBrowseMediaScope();
     final report = await evaluateDropScopeRestriction(
-      files: fileItems,
-      dirs: uniqueDirs,
+      files: files,
+      dirs: dirs,
       scope: scope,
       countDir: _countDirInDb,
     );
@@ -457,12 +530,8 @@ abstract final class DragDropPlayHandler {
 
     if (!context.mounted) return;
     final inScopeFiles = <FileItem>[
-      for (final file in fileItems)
+      for (final file in files)
         if (file.matchesBrowseScope(scope)) file,
-    ];
-    final specs = <ScenarioSourceSpec>[
-      for (final dir in uniqueDirs)
-        (storageId: dir.storageId, path: dir.path, recursive: true),
     ];
 
     // Top zone: append to the queue (same semantics as storagedb/lib "append to
@@ -525,28 +594,25 @@ abstract final class DragDropPlayHandler {
     await useStorageStore().addStorage(storage);
   }
 
-  /// Indexes one dropped file so the playability pre-check and the explicit
-  /// resolver find a DB row — a light, non-recursive substitute for scanning
-  /// the whole parent directory.
-  static Future<FileItem?> _indexFile(DragDropResolvedFile file) async {
-    if (file.relative.isEmpty) return null;
-    final name = file.relative.last;
-    var size = 0;
-    DateTime? modified;
-    try {
-      final stat = await File(file.rawPath).stat();
-      size = stat.size;
-      modified = stat.modified;
-    } catch (_) {
-      // A stat failure still indexes a zero-size row; playback will surface
-      // any real open error.
-    }
-
-    final nodeSegments =
-        file.path.split('/').where((s) => s.isNotEmpty).toList();
-    final canonical = canonicalDbPath(file.path);
-    try {
-      await DbModule.mediaNodesDao.upsertNode(MediaNode.file(
+  /// Indexes dropped explicit files in ONE chunked batch and returns the
+  /// [FileItem]s for the playability pre-check plus the probe targets for the
+  /// background duration backfill — a light, non-recursive substitute for
+  /// scanning the whole parent directory.
+  static Future<
+      ({List<FileItem> fileItems, List<ExplicitFileProbeTarget> probes})>
+      _indexFiles(List<DragDropResolvedFile> files) async {
+    final fileItems = <FileItem>[];
+    final nodes = <MediaNode>[];
+    final probes = <ExplicitFileProbeTarget>[];
+    for (final file in files) {
+      if (file.relative.isEmpty) continue;
+      final name = file.relative.last;
+      final nodeSegments =
+          file.path.split('/').where((s) => s.isNotEmpty).toList();
+      if (nodeSegments.isEmpty) continue;
+      final canonical = canonicalDbPath(file.path);
+      final safUri = isSafPath(file.rawPath) ? file.rawPath : null;
+      nodes.add(MediaNode.file(
         id: '${file.storageId}:$canonical',
         storageId: file.storageId,
         path: nodeSegments,
@@ -558,25 +624,55 @@ abstract final class DragDropPlayHandler {
         mediaType: file.contentType == ContentType.audio
             ? MediaType.audio
             : MediaType.video,
-        sizeInBytes: size,
-        modifiedAt: modified,
-        uri: isSafPath(file.rawPath) ? file.rawPath : null,
+        sizeInBytes: file.size,
+        modifiedAt: file.modifiedAt,
+        uri: safUri,
         isPresent: true,
       ));
-    } catch (_) {
-      return null;
+      fileItems.add(FileItem(
+        storageId: file.storageId,
+        name: name,
+        uri: file.rawPath,
+        path: pathConv(file.rawPath),
+        isDir: false,
+        size: file.size,
+        lastModified: file.modifiedAt,
+        type: file.contentType,
+      ));
+      probes.add(ExplicitFileProbeTarget(
+        storageId: file.storageId,
+        path: canonical,
+        uri: nodePlayableUri(nodeSegments, uri: safUri),
+      ));
     }
+    try {
+      await DbModule.mediaNodeRepo.batchUpsertNodes(nodes);
+    } catch (_) {
+      // A failed index must not abort playback. Keep the resolved file items
+      // so the play/append scope still carries the user's selection; only drop
+      // the probes (a probe needs the rows this write would have created).
+      return (
+        fileItems: fileItems,
+        probes: const <ExplicitFileProbeTarget>[],
+      );
+    }
+    return (fileItems: fileItems, probes: probes);
+  }
 
-    return FileItem(
-      storageId: file.storageId,
-      name: name,
-      uri: file.rawPath,
-      path: pathConv(file.rawPath),
-      isDir: false,
-      size: size,
-      lastModified: modified,
-      type: file.contentType,
-    );
+  /// Fires the silent duration/dimension probe and announces the storages it
+  /// touched so an open queue re-fetches. Best-effort: [probeExplicitFiles]
+  /// swallows its own failures, and the announce is guarded here.
+  static Future<void> _probeInBackground(
+    List<ExplicitFileProbeTarget> probes,
+  ) async {
+    try {
+      final touched = await probeExplicitFiles(probes);
+      if (touched.isNotEmpty) {
+        await MediaRevisionActions.mediaNodesChanged(touched);
+      }
+    } catch (_) {
+      // Background best-effort: a probe failure never surfaces to the user.
+    }
   }
 
   static Future<int> _countDirInDb(
@@ -608,9 +704,13 @@ class _ClassifiedDrop {
     required this.rawPath,
     required this.kind,
     required this.contentType,
+    required this.size,
+    required this.modifiedAt,
   });
 
   final String rawPath;
   final DragDropEntryKind kind;
   final ContentType contentType;
+  final int size;
+  final DateTime? modifiedAt;
 }

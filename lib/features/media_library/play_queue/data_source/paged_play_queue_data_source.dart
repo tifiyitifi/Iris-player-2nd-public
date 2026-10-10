@@ -6,6 +6,7 @@ import 'package:iris/features/paginated_browser/data_source/paginated_browser_da
 import 'package:iris/features/media_library/model/media_lib/media_node.dart' show MediaFile;
 import 'package:iris/features/tag_play/model/domain/tag_play_tag.dart';
 import 'package:iris/features/tag_play/playback/tag_play_controller.dart' show TagPlayGate;
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 
@@ -755,7 +756,7 @@ class PagedPlayQueueDataSource
         },
       ),
       GenericItemAction<PlayQueueItem>(
-        label: 'Remove',
+        label: t.playq_remove,
         icon: const Icon(Icons.remove_circle_outline, size: 16),
         onPressed: (ctx, i) async {
           if (i is PlayQueueItem) {
@@ -766,12 +767,13 @@ class PagedPlayQueueDataSource
       ),
     ];
     if (item.file.path.isNotEmpty) {
-      // context.select is valid here — getItemTrailingActions is called during build phase
-      final popupDirection =
-          useAppStore().select(context, (s) => s.defaultPopupDirection);
+      // Snapshot read, not a reactive `select`: the action list is also built
+      // outside `build` (the desktop right-click menu), where provider asserts
+      // `select` is only called during build.
+      final popupDirection = useAppStore().state.defaultPopupDirection;
       actions.add(
         GenericItemAction<PlayQueueItem>(
-          label: 'Open in folder',
+          label: t.open_in_folder,
           icon: const Icon(Icons.folder_open, size: 16),
           onPressed: (ctx, i) {
             if (i is PlayQueueItem) {
@@ -780,6 +782,13 @@ class PagedPlayQueueDataSource
           },
         ),
       );
+      // Windows desktop: the same row, handed to Explorer. Empty off-Windows
+      // or for remote rows.
+      actions.addAll(buildExplorerRevealActions<PlayQueueItem>(
+        context: context,
+        item: item,
+        fileOf: (i) => i.file,
+      ));
     }
     return actions;
   }
@@ -790,7 +799,7 @@ class PagedPlayQueueDataSource
     return [
       CustomSelectionAction<PlayQueueItem>(
         icon: const Icon(Icons.remove_circle_outline, size: 18),
-        label: 'Remove',
+        label: getLocalizations(context).playq_remove,
         onPressed: (ctx, selected) async {
           // Awaited: fire-and-forget lets two removals race the same backend
           // index and leaves the page reading a half-applied queue.

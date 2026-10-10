@@ -145,6 +145,42 @@ bool isStepLanded({
   return forward ? posMs >= targetMs - tol : posMs <= targetMs + tol;
 }
 
+/// Dwell before the next queued step is issued, given how many targets wait.
+///
+/// The landed-frame dwell only exists so a LONE step's frame is actually
+/// perceived before the next seek freezes the picture. While a backlog is
+/// waiting the eye is already chasing, so the dwell is dropped and the queue is
+/// pumped as fast as the engine reports each landing (adaptive mode). The
+/// original serialized mode keeps the constant dwell (see [StepSeekChain]).
+Duration stepLandingDwell(int pendingCount) =>
+    pendingCount == 0 ? kStepLandedDwell : Duration.zero;
+
+/// Monotonic display guard for a precise step burst.
+///
+/// While a ←/→ press is heading to [targetMs] the engine reports PRE-LAND
+/// samples (the previous frame / keyframe) before the target arrives. The
+/// position sanitizer historically bypassed itself for any user seek
+/// (`userSeeked`), so those samples leaked to the UI as a visible rewind (回退
+/// 时间) and to the DB. This holds the shown position until the engine reports
+/// at/after the last shown value in the burst direction.
+///
+/// Released by the caller as soon as [isStepLanded] fires (playback may then
+/// legitimately continue past the target); a direction flip must reset
+/// [lastShown] to null so the reversal is not pinned.
+int saneStepBurstPos({
+  required int raw,
+  required int? lastShown,
+  required bool forward,
+  required int durationMs,
+}) {
+  final int clamped = durationMs > 0 ? raw.clamp(0, durationMs) : raw;
+  final int? shown = lastShown;
+  if (shown == null) return clamped;
+  if (forward && clamped < shown) return shown;
+  if (!forward && clamped > shown) return shown;
+  return clamped;
+}
+
 /// One queued step seek.
 ///
 /// [targetMs] is the caller's axis (virtual while a VM session is active) and
@@ -198,6 +234,12 @@ class StepSeekChain {
   /// How long an unobserved in-flight target may block the chain.
   final Duration hardTimeout;
 
+  /// While true the OLDEST pending target is dropped once the queue exceeds
+  /// [maxPending] (the original serialized behaviour: keep the freshest
+  /// targets). Set false in adaptive mode so NO press is swallowed — the queue
+  /// drains in order after the burst.
+  bool dropOldest = true;
+
   final List<StepSeekRequest> _pending = <StepSeekRequest>[];
   StepSeekRequest? _inFlight;
   DateTime? _inFlightSince;
@@ -207,14 +249,20 @@ class StepSeekChain {
   int get pendingCount => _pending.length;
   bool get isEmpty => _inFlight == null && _pending.isEmpty;
 
-  /// Records a requested step target. When the queue is already full the OLDEST
-  /// pending target is dropped: the input is outpacing the painter, and the
-  /// freshest targets are the ones worth painting.
+  /// Wall-clock instant the in-flight target was handed to the engine, or null
+  /// when nothing is in flight — lets the caller report issue->landed latency.
+  DateTime? get inFlightSince => _inFlightSince;
+
+  /// Records a requested step target. When [dropOldest] is true and the queue is
+  /// already full the OLDEST pending target is dropped: the input is outpacing
+  /// the painter, and the freshest targets are the ones worth painting. When
+  /// [dropOldest] is false nothing is dropped (no press is swallowed).
   void push(int targetMs,
       {required int engineTargetMs, required bool forward}) {
     _pending.add(
       (targetMs: targetMs, engineTargetMs: engineTargetMs, forward: forward),
     );
+    if (!dropOldest) return;
     while (_pending.length > maxPending) {
       _pending.removeAt(0);
     }
@@ -257,6 +305,36 @@ class StepSeekChain {
     _inFlight = null;
     _inFlightSince = null;
     return true;
+  }
+
+  /// Key/gesture release: collapse a held step burst to its FINAL target.
+  ///
+  /// WHY: a held ←/→ auto-repeats (~30/s) far faster than a precise seek lands
+  /// (~330ms each), so in `dropOldest = false` (adaptive) mode the pending queue
+  /// grows without bound. Without this the release would keep walking the whole
+  /// backlog for tens of seconds ("松手不能停止"). Once the key is released the
+  /// burst is over, so only the LAST pressed target still matters.
+  ///
+  /// Returns the target the caller must hand to the engine at once: mpv keeps
+  /// only the newest seek target, so re-issuing it supersedes the in-flight seek
+  /// and the chain lands exactly once more before normal playback resumes. The
+  /// returned [StepSeekRequest.targetMs] is the same value `noteStepSeek` armed
+  /// and the OSD reads, so the shown time matches the resting position.
+  ///
+  /// Null when nothing is newer than the in-flight target (or the chain is
+  /// empty): the in-flight seek already is the release position and is left to
+  /// land on its own.
+  StepSeekRequest? collapseOnRelease() {
+    if (_pending.isEmpty) return null;
+    final StepSeekRequest finalTarget = _pending.last;
+    _pending
+      ..clear()
+      ..add(finalTarget);
+    // The in-flight (older) seek is superseded by the re-issue, so its landing
+    // expectation is dropped with it.
+    _inFlight = null;
+    _inFlightSince = null;
+    return finalTarget;
   }
 
   void reset() {
