@@ -364,6 +364,12 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
   }
 
   Future<void> seek(Duration target) async {
+    // A seek means "no longer parked at the natural end": drop the completion
+    // latch so a following [play] resumes AT the sought position instead of
+    // re-entering [replay] (which would jump to 00:00). The cross-file
+    // continuation parks the pair inside the file that is already open, where
+    // no re-open would ever clear the latch.
+    _ended = false;
     final clamped = _clamp(target);
     if (backend == PlayerBackend.mediaKit) {
       await _mk?.seek(clamped);

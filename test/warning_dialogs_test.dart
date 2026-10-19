@@ -34,7 +34,6 @@ void main() {
         kWarningBgAlignExitDiscard,
         kWarningBgAlignSilenceNoFile,
         kWarningBgAlignMovePointHint,
-        kWarningBgAlignDefaultHint,
         kWarningBgAlignPercentHint,
         kWarningBgAlignSnapGuide,
         kWarningBgAlignSnapNone,
@@ -47,7 +46,6 @@ void main() {
         kWarningTagCommandGrammar,
         kWarningVmMergeConcept,
         kWarningAppOverview,
-        kWarningBgSourceManage,
       ]);
     });
   });

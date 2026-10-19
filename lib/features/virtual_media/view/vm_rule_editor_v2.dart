@@ -1315,41 +1315,12 @@ class _V2ExclusionFields extends HookWidget {
 }
 
 String _v2RelativizeToLibrary(String raw) {
-  var s = raw.trim().replaceAll('\\', '/');
-  if (s.isEmpty) return '';
-  for (final storage in useStorageStore().state.storages) {
-    final base = storage.basePath.join('/');
-    if (base.isEmpty) continue;
-    // Android SAF storage: the picked directory comes back as a content://
-    // tree URI whose ENCODED tree id carries the full provider path. Resolve
-    // it to a readable storage-relative directory (`Movies`, not the whole
-    // `content://com.android.externalstorage...` URI). Only a pick inside
-    // this storage's tree matches; anything else falls through.
-    if (base.startsWith('content://')) {
-      final rel = safTreeRelativeTo(s, base);
-      if (rel != null) return rel;
-      continue;
-    }
-    final normBase = base.replaceAll('\\', '/').replaceAllMapped(
-        RegExp(r'^file:///'), (m) => '');
-    if (normBase.isNotEmpty &&
-        s.toLowerCase().startsWith(normBase.toLowerCase())) {
-      s = s.substring(normBase.length);
-      break;
-    }
-  }
-  while (s.startsWith('/')) {
-    s = s.substring(1);
-  }
-  while (s.endsWith('/')) {
-    s = s.substring(0, s.length - 1);
-  }
-  s = s.trim();
-  // Last resort: a system-picked SAF directory that is not under any
-  // registered storage still decodes to a readable relative directory
-  // (`Download/Movies`), never a raw `content://...` string in a rule.
-  if (isSafPath(s)) {
-    return safReadableRelative(s) ?? s;
-  }
-  return s;
+  // Single source of truth: `relativeToStoragePath` owns SAF tail decoding,
+  // longest-base matching and the segment-boundary rule. The local copy that
+  // lived here drifted — it mapped a SAF descendant to '' (the storage root)
+  // and stripped `E:/media2` under a bare `E:/media` prefix.
+  return relativeToStoragePath(
+    raw,
+    useStorageStore().state.storages.map((s) => s.basePath.join('/')),
+  );
 }

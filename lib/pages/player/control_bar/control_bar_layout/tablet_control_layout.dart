@@ -78,6 +78,11 @@ class TabletControlLayout extends HookWidget {
                 controls.subtitle,
               if (!collapsed.contains(ControlBarSlot.backgroundMenu))
                 controls.backgroundPlaybackMenu,
+              // The playback row's lock slot (see MobileControlLayout): tablet
+              // video is a primary lock scenario and this bar is its only
+              // surface at 640–1024. Inert on the desktop app, where
+              // `showScreenLock` is false.
+              if (controls.showScreenLock) controls.screenLock,
               if (!collapsed.contains(ControlBarSlot.playQueue))
                 controls.playQueue,
               if (!collapsed.contains(ControlBarSlot.storage)) controls.storage,

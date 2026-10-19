@@ -911,6 +911,7 @@ class PagedScenarioSourcesDataSource
           storageId: storageId,
           path: path,
           recursive: recursive,
+          kind: ScenarioSourceKind.folder,
         ));
       } else {
         final segments = path.isEmpty ? const <String>[] : path.split('/');

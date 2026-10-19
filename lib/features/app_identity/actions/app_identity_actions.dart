@@ -150,6 +150,9 @@ class AppIdentityActions {
     bool autoplay,
   ) async {
     final ws = await scenarioStore.ensureSystemPlayingScenario();
+    // Shared entries use the DEFAULT 副音 workspace (their fg/bg pair is the
+    // default one).
+    await scenarioStore.ensureBackgroundWorkspace();
     await ScenarioPlaybackActions.switchPlaybackContext(ws.id,
         autoplay: autoplay);
     return ActivationResult.activated;
@@ -167,10 +170,18 @@ class AppIdentityActions {
     final firstLaunch = entry.initializedAt == null;
     final ws =
         await scenarioStore.ensureEntryWorkspace(entry.workspaceScenarioId);
+    // Every independent entry owns its own fg/bg PAIR: its 副音 workspace is
+    // created alongside the foreground one (prefs stay global; only the
+    // queue/definition is per context).
+    final bgWs = await scenarioStore
+        .ensureEntryBackgroundWorkspace(entry.backgroundWorkspaceScenarioId);
 
     var next = entry;
     if (next.workspaceScenarioId != ws.id) {
       next = next.copyWith(workspaceScenarioId: ws.id);
+    }
+    if (next.backgroundWorkspaceScenarioId != bgWs.id) {
+      next = next.copyWith(backgroundWorkspaceScenarioId: bgWs.id);
     }
 
     if (firstLaunch) {
@@ -227,6 +238,8 @@ class AppIdentityActions {
       // an entry must not keep driving playback against SystemPlaying.
       await PlaybackProviderRegistry.tagPlay.clearActiveView();
       final sys = await scenarioStore.ensureSystemPlayingScenario();
+      // A default-icon launch also uses the DEFAULT 副音 workspace.
+      await scenarioStore.ensureBackgroundWorkspace();
       if (scenarioStore.state.activeScenarioId != sys.id) {
         await scenarioStore.setActiveScenario(sys.id);
       }

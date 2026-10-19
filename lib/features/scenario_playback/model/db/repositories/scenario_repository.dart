@@ -6,9 +6,11 @@ import 'package:iris/features/scenario_playback/model/db/dao/scenario_sources_da
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_states_dao.dart';
 import 'package:iris/features/scenario_playback/model/db/dao/scenarios_dao.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario.dart';
+import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/features/scenario_playback/model/domain/scenario_exclude_rule.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_explicit_item.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_source.dart';
+import 'package:iris/features/scenario_playback/model/domain/scenario_source_spec.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_state.dart';
 import 'package:iris/features/scenario_playback/model/enum/exclude_lifetime.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_kind.dart';
@@ -43,6 +45,42 @@ class ScenarioRepository {
 
   /// The underlying [AppDatabase], used for transactional command batching.
   AppDatabase get db => sourcesDao.attachedDatabase;
+
+  /// Runs [body] in ONE database transaction.
+  ///
+  /// The transfer importer needs this: an overwrite CLEARS a scenario's sources /
+  /// explicit items / excludes before rewriting them, and a failure in between
+  /// (a `skipErrors: false` abort) used to leave the previous definition
+  /// destroyed and the new one half-written. Inside a transaction the rollback
+  /// restores the old definition, so a failed import changes nothing.
+  ///
+  /// Nested calls (the batch writers own `db.transaction` too) join this one.
+  Future<T> inTransaction<T>(Future<T> Function() body) => db.transaction(body);
+
+  /// Deletes every record [id] OWNS: its definition rows (sources / explicit
+  /// items / excludes), its playback state, the scenario row itself and the
+  /// persisted DERIVED queue index that is keyed by the same id.
+  ///
+  /// ONE transaction: the definition rows and the derived index belong to one
+  /// id, so a failure in between leaves a generation no scenario can ever
+  /// address, read or evict again — or, on a revived id (a settings-transfer
+  /// re-import keeps the exported id), a stale queue serving the OLD definition.
+  Future<void> _purgeScenarioRecords(String id) async {
+    await db.transaction(() async {
+      await sourcesDao.deleteByScenario(id);
+      await itemsDao.deleteByScenario(id);
+      await excludesDao.deleteByScenario(id);
+      await statesDao.deleteByScenario(id);
+      await scenariosDao.deleteScenario(id);
+      // The derived index is keyed by a scenario id that no longer exists, so
+      // nothing would ever read or evict it again — it dies WITH the row.
+      await ScenarioQueueIndexDao(db).clearScenario(id);
+      // The shared index is the scenario's ONLY persisted representation, so its
+      // blob must go with the build meta too — otherwise deleting a scenario
+      // would leave its blob behind until some other scenario happens to rebuild.
+      await ScenarioSharedIndexDao(db).gcStaleGenerations();
+    });
+  }
 
   static const String systemPlayingScenarioName = 'Playing';
 
@@ -98,15 +136,66 @@ class ScenarioRepository {
   /// Removes an entry workspace and every record it owns. Unlike
   /// [deleteScenario] this bypasses the userSaved guard — the row is internal
   /// and dies with its owning entry.
-  Future<void> deleteEntryWorkspace(String id) async {
-    await db.transaction(() async {
-      await sourcesDao.deleteByScenario(id);
-      await itemsDao.deleteByScenario(id);
-      await excludesDao.deleteByScenario(id);
-      await statesDao.deleteByScenario(id);
-      await scenariosDao.deleteScenario(id);
-    });
+  Future<void> deleteEntryWorkspace(String id) => _purgeScenarioRecords(id);
+
+  /// The single 副音 (background) workspace row, if it already exists.
+  Future<Scenario?> getBackgroundWorkspace() =>
+      scenariosDao.getByType(ScenarioKind.background);
+
+  /// Ensures the single 副音 workspace row exists (idempotent). Like
+  /// [ensureSystemPlayingScenario] it is an internal kind: never shown in the
+  /// saved-scenario list, never deleted through the scenario UI. It carries no
+  /// definition of its own — 副音 plays the reserved 「副音备选」tag's view and
+  /// the row is only the per-entry position/repeat state container.
+  Future<Scenario> ensureBackgroundWorkspace() async {
+    final existing = await scenariosDao.getByType(ScenarioKind.background);
+    if (existing != null) return existing;
+
+    final now = DateTime.now();
+    final scenario = Scenario(
+      id: const Uuid().v4(),
+      name: 'Background',
+      type: ScenarioKind.background,
+      version: null,
+      // 副音 loops by default (the scenario owns repeat/shuffle, so the default
+      // lives here rather than on the bg store's prefs).
+      repeatMode: Repeat.all,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await scenariosDao.upsert(scenario);
+    await _ensureState(scenario.id);
+    areaKeyLog.i('Created background workspace: ${scenario.id}');
+    return scenario;
   }
+
+  /// Creates a fresh, dedicated 副音 workspace for ONE independent app entry
+  /// ([ScenarioKind.entryBackground]). Unlike [ensureBackgroundWorkspace] there
+  /// can be many of these (one per independent entry), so it always creates a
+  /// new row; the owning entry persists the id and reuses it afterwards —
+  /// mirroring [createEntryWorkspace].
+  Future<Scenario> createEntryBackgroundWorkspace() async {
+    final now = DateTime.now();
+    final scenario = Scenario(
+      id: const Uuid().v4(),
+      name: 'Entry background',
+      type: ScenarioKind.entryBackground,
+      version: null,
+      // Same default as the single background workspace (see there).
+      repeatMode: Repeat.all,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await scenariosDao.upsert(scenario);
+    await _ensureState(scenario.id);
+    areaKeyLog.i('Created entry background workspace: ${scenario.id}');
+    return scenario;
+  }
+
+  /// Removes an entry's 副音 workspace and every record it owns. Mirrors
+  /// [deleteEntryWorkspace]: bypasses the userSaved guard, dies with its entry.
+  Future<void> deleteEntryBackgroundWorkspace(String id) =>
+      _purgeScenarioRecords(id);
 
   Future<Scenario> createScenario({
     required String name,
@@ -160,19 +249,7 @@ class ScenarioRepository {
     if (scenario == null) return false;
     if (scenario.type != ScenarioKind.userSaved) return false;
 
-    await db.transaction(() async {
-      await sourcesDao.deleteByScenario(id);
-      await itemsDao.deleteByScenario(id);
-      await excludesDao.deleteByScenario(id);
-      await statesDao.deleteByScenario(id);
-      await scenariosDao.deleteScenario(id);
-    });
-    final indexDao = ScenarioQueueIndexDao(db);
-    await indexDao.clearScenario(id);
-    // The shared index is the scenario's ONLY persisted representation, so its
-    // row must go with the build meta too — otherwise deleting a scenario would
-    // leave its blob behind until some other scenario happens to rebuild.
-    await ScenarioSharedIndexDao(db).gcStaleGenerations();
+    await _purgeScenarioRecords(id);
     return true;
   }
 
@@ -181,6 +258,36 @@ class ScenarioRepository {
   Future<List<ScenarioSource>> getSources(String scenarioId) =>
       sourcesDao.getByScenario(scenarioId);
 
+  /// The `(storageId, path)` a prospective source row is stored under.
+  ///
+  /// A source is path-based only: a tag membership is a VIEW over a scenario
+  /// (`TagViewResolver`), never a source row, so there is no sentinel identity
+  /// to encode here.
+  static ({String storageId, String path}) _storedIdentity({
+    required String storageId,
+    required String path,
+  }) =>
+      (storageId: storageId, path: path);
+
+  /// Canonical identity key of a prospective source row — the same key the
+  /// table's UNIQUE(scenario_id, storage_id, path) is enforced on. Import uses
+  /// it to drop a duplicate a hand-edited / foreign export may repeat, instead
+  /// of letting the constraint reject the row (or abort the whole scenario on
+  /// `skipErrors: false`).
+  static String sourceIdentityKey({
+    required String storageId,
+    required String path,
+  }) =>
+      canonicalKey(storageId, path);
+
+  /// Adds one source, idempotent on the table's business key
+  /// UNIQUE(scenario_id, storage_id, path).
+  ///
+  /// [sourcesDao.upsert] (`insertOnConflictUpdate`) only resolves PRIMARY-KEY
+  /// conflicts, so a duplicate row would THROW on the business key instead of
+  /// collapsing. Re-adding an already-stored source therefore converges on the
+  /// existing row (promoting it to recursive when the new spec is wider, exactly
+  /// like [addSources]) rather than throwing.
   Future<void> addSource({
     required String scenarioId,
     required String storageId,
@@ -188,14 +295,32 @@ class ScenarioRepository {
     bool recursive = false,
     ScenarioSourceKind kind = ScenarioSourceKind.folder,
   }) async {
+    final id = _storedIdentity(storageId: storageId, path: path);
     await db.transaction(() async {
+      final existing = await sourcesDao.getByScenario(scenarioId);
+      final key = canonicalKey(id.storageId, id.path);
+      ScenarioSource? stored;
+      for (final e in existing) {
+        if (canonicalKey(e.storageId, e.path) == key) {
+          stored = e;
+          break;
+        }
+      }
+      if (stored != null) {
+        // Recursion is the only dimension the UNIQUE key lets vary: promote a
+        // stored non-recursive row instead of dropping the wider scope.
+        if (!stored.recursive && recursive) {
+          await sourcesDao.upsert(stored.copyWith(recursive: true));
+        }
+        return;
+      }
       final sortOrder = await sourcesDao.nextSortOrder(scenarioId);
       await sourcesDao.upsert(
         ScenarioSource(
           id: 0,
           scenarioId: scenarioId,
-          storageId: storageId,
-          path: path,
+          storageId: id.storageId,
+          path: id.path,
           recursive: recursive,
           sourceKind: kind,
           sortOrder: sortOrder,
@@ -225,27 +350,20 @@ class ScenarioRepository {
   /// never downgraded by a later non-recursive spec.
   Future<void> addSources({
     required String scenarioId,
-    required List<
-            ({
-              String storageId,
-              String path,
-              bool recursive,
-              ScenarioSourceKind kind
-            })>
-        specs,
+    required List<ScenarioSourceSpec> specs,
   }) async {
     if (specs.isEmpty) return;
     await db.transaction(() async {
+      String keyOf(ScenarioSourceSpec spec) => sourceIdentityKey(
+            storageId: spec.storageId,
+            path: spec.path,
+          );
+
       // Collapse the batch first, recursive-wins, so within-batch duplicates
       // cannot later need an id-less upgrade.
-      final merged = <String, ({
-        String storageId,
-        String path,
-        bool recursive,
-        ScenarioSourceKind kind
-      })>{};
+      final merged = <String, ScenarioSourceSpec>{};
       for (final spec in specs) {
-        final key = canonicalKey(spec.storageId, spec.path);
+        final key = keyOf(spec);
         final prior = merged[key];
         if (prior == null || (!prior.recursive && spec.recursive)) {
           merged[key] = spec;
@@ -258,7 +376,7 @@ class ScenarioRepository {
       };
       var order = await sourcesDao.nextSortOrder(scenarioId);
       for (final spec in merged.values) {
-        final key = canonicalKey(spec.storageId, spec.path);
+        final key = keyOf(spec);
         final stored = storedByKey[key];
         if (stored != null) {
           if (!stored.recursive && spec.recursive) {
@@ -266,12 +384,16 @@ class ScenarioRepository {
           }
           continue;
         }
+        final id = _storedIdentity(
+          storageId: spec.storageId,
+          path: spec.path,
+        );
         await sourcesDao.upsert(
           ScenarioSource(
             id: 0,
             scenarioId: scenarioId,
-            storageId: spec.storageId,
-            path: spec.path,
+            storageId: id.storageId,
+            path: id.path,
             recursive: spec.recursive,
             sourceKind: spec.kind,
             sortOrder: order++,
@@ -360,13 +482,29 @@ class ScenarioRepository {
   Future<int> dedupeScenarioSources(String scenarioId) async {
     return db.transaction(() async {
       final all = await sourcesDao.getByScenario(scenarioId);
-      final keepIds = <int>{};
-      final seen = <String>{};
+      final keep = <String, ScenarioSource>{};
+      final promoted = <ScenarioSource>[];
       for (final s in all) {
-        if (seen.add(canonicalKey(s.storageId, s.path))) {
-          keepIds.add(s.id);
+        final key = canonicalKey(s.storageId, s.path);
+        final prior = keep[key];
+        if (prior == null) {
+          keep[key] = s;
+          continue;
+        }
+        // Recursion is a SCOPE, not a detail: a stored non-recursive row next
+        // to a recursive duplicate must be widened before the duplicate is
+        // deleted, or healing silently narrows the scenario (the same rule
+        // [addSources] applies within a batch).
+        if (!prior.recursive && s.recursive) {
+          final widened = prior.copyWith(recursive: true);
+          keep[key] = widened;
+          promoted.add(widened);
         }
       }
+      for (final s in promoted) {
+        await sourcesDao.upsert(s);
+      }
+      final keepIds = keep.values.map((s) => s.id).toSet();
       final deleteIds =
           all.map((s) => s.id).where((id) => !keepIds.contains(id)).toList();
       for (final id in deleteIds) {
@@ -380,19 +518,33 @@ class ScenarioRepository {
   /// (scenario_id, storage_id, path) — including raw slash variants such as
   /// `/a/b` vs `a/b` that the UNIQUE constraint (enforced on the canonical DB
   /// path via [canonicalDbPath]) would reject on write. For each canonical
-  /// group the lowest-id row survives and the rest are deleted. Idempotent and
-  /// safe to run on every startup (a compliant table is unaffected).
+  /// group the lowest-id row survives and the rest are deleted. A surviving row
+  /// is first WIDENED to recursive when any duplicate was recursive: recursion
+  /// is part of the source's meaning, so dropping the recursive copy would
+  /// silently narrow the scenario on the next launch. Idempotent and safe to run
+  /// on every startup (a compliant table is unaffected).
   Future<void> dedupeSources() async {
     await db.transaction(() async {
       final all = await sourcesDao.getAll();
-      final keepIds = <int>{};
-      final seen = <String>{};
+      final keep = <String, ScenarioSource>{};
+      final promoted = <ScenarioSource>[];
       for (final s in all) {
         final key = '${s.scenarioId}|${canonicalKey(s.storageId, s.path)}';
-        if (seen.add(key)) {
-          keepIds.add(s.id);
+        final prior = keep[key];
+        if (prior == null) {
+          keep[key] = s;
+          continue;
+        }
+        if (!prior.recursive && s.recursive) {
+          final widened = prior.copyWith(recursive: true);
+          keep[key] = widened;
+          promoted.add(widened);
         }
       }
+      for (final s in promoted) {
+        await sourcesDao.upsert(s);
+      }
+      final keepIds = keep.values.map((s) => s.id).toSet();
       final deleteIds =
           all.map((s) => s.id).where((id) => !keepIds.contains(id)).toList();
       for (final id in deleteIds) {
@@ -415,6 +567,12 @@ class ScenarioRepository {
     String? uiSortKey,
   }) async {
     final existing = await itemsDao.getByScenario(scenarioId);
+    // The single-add entry point has to honour the same idempotency the batch
+    // form enforces: the table's UNIQUE(scenario_id, storage_id, path) is NOT
+    // the PK, so an insertOnConflictUpdate of an already-present item throws
+    // instead of being a no-op (see [addExplicitItems]).
+    final key = canonicalKey(storageId, path);
+    if (existing.any((e) => canonicalKey(e.storageId, e.path) == key)) return;
     final maxAdd = existing
         .where((e) => e.batchId == batchId)
         .fold<int>(0, (max, e) => e.addOrder > max ? e.addOrder : max);
@@ -501,14 +659,31 @@ class ScenarioRepository {
   }
 
   /// Copies all explicit items (preserving batchId/addOrder/uiSortKey).
+  ///
+  /// Duplicate-tolerant, exactly like [copySources]/[addExplicitItems]: the
+  /// table's UNIQUE(scenario_id, storage_id, path) is NOT the PK, so an
+  /// `insertOnConflictUpdate` of an item the target already carries THROWS
+  /// instead of being a no-op (see [addExplicitItems]). The append/merge paths
+  /// (`ScenarioCommands.append`, `appendTarget`) do NOT clear the target first,
+  /// so a file present on both sides used to abort the whole command on its
+  /// first overlap. Rows already on the target AND legacy rows that repeat
+  /// within the source list collapse onto the canonical [canonicalKey] form —
+  /// the same key the table's constraint is enforced on (see [copySources]).
   Future<void> copyExplicitItems({
     required String sourceScenarioId,
     required String targetScenarioId,
   }) async {
-    final items = await itemsDao.getByScenario(sourceScenarioId);
-    for (final item in items) {
-      await itemsDao.upsert(item.copyWith(id: 0, scenarioId: targetScenarioId));
-    }
+    await db.transaction(() async {
+      final items = await itemsDao.getByScenario(sourceScenarioId);
+      final existing = await itemsDao.getByScenario(targetScenarioId);
+      final seen = {
+        for (final e in existing) canonicalKey(e.storageId, e.path),
+      };
+      for (final item in items) {
+        if (!seen.add(canonicalKey(item.storageId, item.path))) continue;
+        await itemsDao.upsert(item.copyWith(id: 0, scenarioId: targetScenarioId));
+      }
+    });
   }
 
   // ── Exclude Rules (F1: logical uniqueness enforced here) ──
@@ -537,8 +712,19 @@ class ScenarioRepository {
       if (existing != null) {
         await excludesDao.deleteRule(existing.id);
       }
+      // `id` MUST be zeroed. Logical uniqueness is the 6-tuple above, never the
+      // primary key, and `excludesDao.upsert` is `insertOnConflictUpdate` whose
+      // default conflict target IS the PK. A rule carrying the EXPORTING
+      // database's id (settings-transfer import — the coder serializes the
+      // whole rule) collides with an unrelated row here and the upsert silently
+      // rewrites that row's scenarioId/fields, i.e. hijacks another scenario's
+      // exclude. Every in-app caller already passes `id: 0`.
       await excludesDao.upsert(
-        rule.copyWith(scenarioId: scenarioId, createdAt: DateTime.now()),
+        rule.copyWith(
+          id: 0,
+          scenarioId: scenarioId,
+          createdAt: DateTime.now(),
+        ),
       );
     });
   }

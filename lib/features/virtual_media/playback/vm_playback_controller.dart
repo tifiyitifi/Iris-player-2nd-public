@@ -1291,6 +1291,10 @@ class VirtualMediaController {
         MediaType.unknown => ContentType.other,
       },
       lastModified: file.modifiedAt,
+      // Subtitle associations persisted at scan time (schema v50): a VM segment
+      // feed opens like an ordinary file and must offer the same external
+      // tracks as a browse.
+      subtitles: file.subtitles ?? const [],
     );
   }
 

@@ -318,6 +318,29 @@ void main() {
       expect((await repo.getSources(other.id)).length, 1);
     });
 
+    test('widens the survivor when a duplicate was recursive', () async {
+      final scn = await repo.createScenario(name: 'A');
+      final sid = scn.id;
+      // The lowest-id row is non-recursive; the later duplicate is recursive.
+      await db.customStatement(
+        "INSERT INTO scenario_sources (scenario_id, storage_id, path, recursive, source_kind, sort_order) "
+        "VALUES (?, 's1', 'a/b', 0, 'folder', 0)",
+        [sid],
+      );
+      await db.customStatement(
+        "INSERT INTO scenario_sources (scenario_id, storage_id, path, recursive, source_kind, sort_order) "
+        "VALUES (?, 's1', '/a/b', 1, 'folder', 1)",
+        [sid],
+      );
+
+      final removed = await repo.dedupeScenarioSources(sid);
+      expect(removed, 1);
+      final sources = await repo.getSources(sid);
+      expect(sources, hasLength(1));
+      expect(sources.single.recursive, isTrue,
+          reason: 'healing must not narrow the scenario scope');
+    });
+
     test('returns 0 on a compliant scenario', () async {
       final scn = await repo.createScenario(name: 'A');
       await repo.addSource(

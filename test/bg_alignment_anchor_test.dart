@@ -9,9 +9,9 @@ import 'package:iris/features/background_playback/services/background_lock_mappi
 /// derived from the fg progress and the anchor — never stored progress.
 void main() {
   group('resolveAlignmentAnchor / alignmentOffsetMs', () {
-    test('00:00 mode maps both origins (offset 0)', () {
+    test('same-clock mode maps both origins (offset 0)', () {
       final a = resolveAlignmentAnchor(
-        mode: BgAlignMode.fromFgHead,
+        mode: BgAlignMode.sameClock,
         currentFgMs: 120000,
         bgDurMs: 300000,
         percent: 30,
@@ -23,9 +23,9 @@ void main() {
           0);
     });
 
-    test('at-position mode anchors bg 00:00 at the current fg moment', () {
+    test('bg-head mode anchors bg 00:00 at the current fg moment', () {
       final a = resolveAlignmentAnchor(
-        mode: BgAlignMode.atFgPosition,
+        mode: BgAlignMode.bgHeadAtFg,
         currentFgMs: 120000,
         bgDurMs: 300000,
         percent: 30,
@@ -54,7 +54,7 @@ void main() {
 
     test('a negative fg moment floors at 0', () {
       final a = resolveAlignmentAnchor(
-        mode: BgAlignMode.atFgPosition,
+        mode: BgAlignMode.bgHeadAtFg,
         currentFgMs: -5,
         bgDurMs: 300000,
         percent: 30,
@@ -63,30 +63,97 @@ void main() {
     });
   });
 
-  group('modeForAlignDefault', () {
-    test('maps the persisted default one-to-one onto anchor modes', () {
-      expect(modeForAlignDefault(BgAlignDefault.fgHead),
-          BgAlignMode.fromFgHead);
-      expect(modeForAlignDefault(BgAlignDefault.fgPosition),
-          BgAlignMode.atFgPosition);
+  group('alignmentVirtualOffsetMs', () {
+    test('subtracts the aligned file prefix so the mirror sees the queue axis',
+        () {
+      // sameClock on the SECOND queue file: file-local offset 0, but the file
+      // starts 10min into the virtual axis, so the virtual offset is -600000.
+      // Publishing the file-local 0 was the 对齐偏颇: the mirror compared it
+      // against a virtual position and "fixed" the phantom 10min drift.
       expect(
-          modeForAlignDefault(BgAlignDefault.bgPercent), BgAlignMode.bgPercent);
+        alignmentVirtualOffsetMs(
+          fileLocalOffsetMs: 0,
+          fileVirtualStartMs: 600000,
+        ),
+        -600000,
+      );
+      // bgHeadAtFg on the same file: fg 10:20 ↔ bg(0) ⇒ virtual offset is the
+      // fg moment minus the file's start.
+      expect(
+        alignmentVirtualOffsetMs(
+          fileLocalOffsetMs: 620000,
+          fileVirtualStartMs: 600000,
+        ),
+        20000,
+      );
+    });
+
+    test('the first file needs no conversion', () {
+      expect(
+        alignmentVirtualOffsetMs(
+          fileLocalOffsetMs: 120000,
+          fileVirtualStartMs: 0,
+        ),
+        120000,
+      );
+    });
+  });
+
+  group('resolveAlignmentAnchor (尾部锚定)', () {
+    test('anchors the 副音 END on the video END', () {
+      final a = resolveAlignmentAnchor(
+        mode: BgAlignMode.tailAtFg,
+        currentFgMs: 600000,
+        bgDurMs: 1800000,
+        percent: 30,
+        fgDurMs: 3600000,
+      );
+      expect(a.fgAnchorMs, 3600000);
+      expect(a.bgAnchorMs, 1800000);
+      expect(
+        alignmentOffsetMs(fgAnchorMs: a.fgAnchorMs, bgAnchorMs: a.bgAnchorMs),
+        1800000,
+      );
+      // The seek target is the 副音's end minus the video's remainder.
+      expect(
+        bgAlignTargetMs(
+          mode: BgAlignMode.tailAtFg,
+          fgPosMs: 2400000,
+          bgDurMs: 1800000,
+          percent: 30,
+          fgDurMs: 3600000,
+        ),
+        600000,
+      );
+    });
+
+    test('degrades to the 同刻度 anchor when the fg duration is unknown', () {
+      final a = resolveAlignmentAnchor(
+        mode: BgAlignMode.tailAtFg,
+        currentFgMs: 600000,
+        bgDurMs: 1800000,
+        percent: 30,
+      );
+      expect(a.fgAnchorMs, 0);
+      expect(a.bgAnchorMs, 0);
     });
   });
 
   group('bgAlignDefaultFromName (legacy migration)', () {
-    test('a legacy ask keeps the new default (fgHead)', () {
-      expect(bgAlignDefaultFromName('ask'), BgAlignDefault.fgHead);
+    test('a legacy ask keeps the new default (sameClock)', () {
+      expect(bgAlignDefaultFromName('ask'), BgAlignDefault.sameClock);
     });
 
     test('legacy fromHead/fromMid map onto the new modes', () {
-      expect(bgAlignDefaultFromName('fromHead'), BgAlignDefault.fgPosition);
+      expect(bgAlignDefaultFromName('fromHead'), BgAlignDefault.bgHead);
       expect(bgAlignDefaultFromName('fromMid'), BgAlignDefault.bgPercent);
     });
 
-    test('current names decode directly; unknown/absent yield null', () {
-      expect(bgAlignDefaultFromName('fgHead'), BgAlignDefault.fgHead);
+    test('the frozen persisted keys and the current names both decode', () {
+      expect(bgAlignDefaultFromName('fgHead'), BgAlignDefault.sameClock);
+      expect(bgAlignDefaultFromName('fgPosition'), BgAlignDefault.bgHead);
       expect(bgAlignDefaultFromName('bgPercent'), BgAlignDefault.bgPercent);
+      expect(bgAlignDefaultFromName('sameClock'), BgAlignDefault.sameClock);
       expect(bgAlignDefaultFromName('nonsense'), isNull);
       expect(bgAlignDefaultFromName(null), isNull);
     });

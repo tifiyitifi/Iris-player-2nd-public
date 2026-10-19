@@ -44,17 +44,34 @@ class MediaNodeSyncService {
       final parentPath = canonicalDbPath(dirPath.join('/'));
       final dao = DbModule.mediaNodesDao;
 
-      final query = MediaNodePageQuery(
-        page: 1,
-        pageSize: 10000,
-        storageId: storage.id,
-        parentPath: parentPath.isEmpty ? null : parentPath,
-      );
-      final dbResult = await dao.getPagedNodes(query);
-      final dbRows = dbResult.items;
+      // Case is part of a file's identity on a case-sensitive filesystem
+      // (POSIX/SMB-exported trees, Android SAF). Folding there merged
+      // `photo.JPG` and `photo.jpg` into one existence key. On NTFS/SMB the
+      // opposite is true: a case-only rename is the SAME file, and an exact
+      // match would delete the old row and insert a new one (losing progress).
+      final bool foldCase =
+          pathRidesCaseInsensitiveFs(storage.basePath.join('/'));
+      String nameKey(String name) => foldCase ? name.toLowerCase() : name;
 
-      final fsByName = {for (final f in items) f.name: f};
-      final dbByName = {for (final r in dbRows) r.path.last: r};
+      // Direct children, exhausted page by page. A single 10k page silently
+      // stopped here, so in a directory with more direct children the rows
+      // beyond the first page were never compared and their stale entries were
+      // never deleted.
+      const pageSize = 10000;
+      final dbRows = <MediaNode>[];
+      for (var page = 1;; page++) {
+        final pageResult = await dao.getPagedNodes(MediaNodePageQuery(
+          page: page,
+          pageSize: pageSize,
+          storageId: storage.id,
+          parentPath: parentPath.isEmpty ? null : parentPath,
+        ));
+        dbRows.addAll(pageResult.items);
+        if (pageResult.items.length < pageSize) break;
+      }
+
+      final fsByName = {for (final f in items) nameKey(f.name): f};
+      final dbByName = {for (final r in dbRows) nameKey(r.path.last): r};
 
       // Upsert new / heal kind-mismatched rows (folders stored as file rows,
       // or files with a stale media type).
@@ -66,7 +83,37 @@ class MediaNodeSyncService {
         // pathConv keeps a SAF `content://` tree prefix as one segment so
         // media_nodes.path stays reversible for SAF rows.
         final fullPathList = pathConv(fullPath);
-        final existing = dbByName[f.name];
+        MediaNode? existing = dbByName[nameKey(f.name)];
+        // Case-only rename on a case-insensitive filesystem: the row IS the same
+        // file, so move it in place instead of deleting it (with its playback
+        // progress) and inserting a new one. A directory rename must move its
+        // whole subtree, which a prefix rewrite already does. A row for a
+        // non-playable name is stale either way — drop it at its stored path.
+        if (existing != null && existing.path.last != f.name) {
+          final row = existing;
+          if (!f.isDir && !f.isPlayable) {
+            await dao.deleteNode(storage.id, row.path.join('/'));
+            changed = true;
+            existing = null;
+            continue;
+          }
+          if (row.isDir) {
+            await dao.remapPathPrefix(
+              storageId: storage.id,
+              oldBase: row.path.join('/'),
+              newBase: fullPath,
+            );
+          } else {
+            await dao.renameNodePath(
+              storageId: storage.id,
+              oldPath: row.path.join('/'),
+              newPath: fullPath,
+              name: f.name,
+            );
+          }
+          changed = true;
+          existing = null;
+        }
         if (f.isDir) {
           if (existing == null || !existing.isDir) {
             dirUpserts.add(
@@ -87,7 +134,15 @@ class MediaNodeSyncService {
           final needsUpdate = existing == null ||
               existing.isDir ||
               existing.maybeMap(
-                file: (file) => file.mediaType != mediaType,
+                // Also (re)write a row whose subtitle associations were never
+                // captured — the lazy backfill for pre-v50 rows touched from
+                // the browser — or whose set no longer matches the listing in
+                // hand (a subtitle added/removed beside an unchanged video is
+                // invisible to the size/mtime comparison).
+                file: (file) =>
+                    file.mediaType != mediaType ||
+                    !MediaNodeDriftAdapter.sameSubtitleLists(
+                        file.subtitles, f.subtitles),
                 orElse: () => true,
               );
           if (needsUpdate) {
@@ -104,15 +159,18 @@ class MediaNodeSyncService {
                 // Persist the real SAF document URI so DB-resolved playback /
                 // probe never rebuilds a mangled path. Plain rows keep null.
                 uri: isSafPath(f.uri) ? f.uri : null,
+                subtitles: f.subtitles,
                 modifiedAt: f.lastModified,
                 isPresent: true,
               ).toCompanion(),
             );
           }
         } else {
-          // Non-playable file (JSON, ...) — remove any stale DB row.
+          // Non-playable file (JSON, ...) — remove any stale DB row. Use the
+          // row's OWN path: on a case-insensitive rename the listing name and
+          // the stored one differ only by case, but SQL matches exactly.
           if (existing != null) {
-            await dao.deleteNode(storage.id, fullPath);
+            await dao.deleteNode(storage.id, existing.path.join('/'));
             changed = true;
           }
         }
@@ -128,7 +186,7 @@ class MediaNodeSyncService {
 
       // Removed from fs but still in DB → delete (dir → whole subtree).
       for (final r in dbRows) {
-        if (fsByName.containsKey(r.path.last)) continue;
+        if (fsByName.containsKey(nameKey(r.path.last))) continue;
         final fullPath = r.path.join('/');
         if (r.isDir) {
           await dao.deleteByPathPrefix(storage.id, fullPath);

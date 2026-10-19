@@ -12,6 +12,7 @@ import 'package:iris/features/background_playback/view/segment_align_edit_panel.
 import 'package:iris/features/control_group/model/enum/player_control_group.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
+import 'package:iris/features/screen_lock/store/use_screen_lock_store.dart';
 import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart'
     show resolveControlBarIsolationHeight;
 import 'package:iris/globals.dart'
@@ -81,6 +82,12 @@ class ControlsOverlay extends HookWidget {
     final saveProgress = context.read<MediaPlayer>().saveProgress;
 
     final isShowControl = usePlayerUiStore().select(context, (state) => state.isShowControl);
+    // Screen lock hides the whole chrome (title bar + panel) regardless of the
+    // show/hover latches. The touch guard is applied at the tap layer too, but
+    // the frame the lock arms must not flash a visible bar before the player's
+    // hiding effect runs, so it is enforced HERE as well.
+    final bool screenLocked =
+        useScreenLockStore().select(context, (s) => s.locked);
 
     final contentColor = useMemoized(
         () => Theme.of(context).brightness == Brightness.dark
@@ -175,6 +182,7 @@ class ControlsOverlay extends HookWidget {
         [contentColor]);
 
     void onHover(PointerHoverEvent event) {
+      if (screenLocked) return;
       if (event.kind != PointerDeviceKind.touch) {
         // The SAME resolved bit the frame below is gated with, not a second
         // read: a hover landing in the gap before the next build must not be
@@ -230,15 +238,16 @@ class ControlsOverlay extends HookWidget {
         );
     // Shared with every affordance that rides WITH the panel (see
     // `resolveControlPanelVisible`).
-    final bool isShowSidePanel = resolveControlPanelVisibleFrom(
-      requireClick: requireClick,
-      isShowControl: isShowControl,
-      isHoverReveal: isHoverReveal,
-      isPanelClickArmed: isPanelClickArmed,
-      editing: editing,
-      isVideo: file?.type == ContentType.video,
-      dragActive: dragActive,
-    );
+    final bool isShowSidePanel = !screenLocked &&
+        resolveControlPanelVisibleFrom(
+          requireClick: requireClick,
+          isShowControl: isShowControl,
+          isHoverReveal: isHoverReveal,
+          isPanelClickArmed: isPanelClickArmed,
+          editing: editing,
+          isVideo: file?.type == ContentType.video,
+          dragActive: dragActive,
+        );
 
     // 副音 quick column state — the column is magnetically attached OUTSIDE the
     // panel, so the hide translation has to clear the WHOLE row, not just the
@@ -436,8 +445,9 @@ class ControlsOverlay extends HookWidget {
         AnimatedPositioned(
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeInOutCubicEmphasized,
-          top: (isShowControl && titleRevealed) ||
-                  file?.type != ContentType.video
+          top: !screenLocked &&
+                  ((isShowControl && titleRevealed) ||
+                      file?.type != ContentType.video)
               ? 0
               : kTitleBarHiddenOffset,
           left: 0,

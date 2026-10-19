@@ -11,7 +11,7 @@ import 'package:iris/features/media_library/model/db/dao/for_page/media_node_pag
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_result.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart'
     show SourcesQuerySource;
-import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dar.dart';
+import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_library_repository.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';

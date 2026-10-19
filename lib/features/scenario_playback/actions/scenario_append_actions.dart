@@ -31,23 +31,20 @@ class ScenarioAppendActions {
       scenarioId: sys.id,
       items: [
         for (final f in files)
-          if (f.path.isNotEmpty)
+          // A SAF single-picked file has no segment path; its identity is its
+          // document uri (the resolver resolves it through `nodesByUris`).
+          // Filtering on `path.isNotEmpty` alone silently dropped every SAF
+          // single pick from the scenario.
+          if (f.path.isNotEmpty || f.uri.isNotEmpty)
             (
               storageId: f.storageId,
-              path: canonicalOccurrencePath(f.path.join('/')),
+              path: f.path.isNotEmpty
+                  ? canonicalOccurrencePath(f.path.join('/'))
+                  : f.uri,
             ),
       ],
     );
-    await store.addSources(
-      specs: [
-        for (final dir in directories)
-          (
-            storageId: dir.storageId,
-            path: dir.path,
-            recursive: dir.recursive,
-          ),
-      ],
-    );
+    await store.addSources(specs: directories);
     await store.bumpPlaybackVersion();
     // Appends change the active scenario's resolved queue, so an OPEN queue
     // view must re-fetch in place (sourceScanRevision is the queue's single
@@ -123,8 +120,7 @@ class ScenarioAppendActions {
     PlaybackScenarioStore store,
     String scenarioId,
   ) async {
-    final result =
-        await store.resolvePageFor(scenarioId, page: 0, pageSize: 1);
+    final result = await store.resolvePageFor(scenarioId, page: 0, pageSize: 1);
     return result.totalItems;
   }
 }

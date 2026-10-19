@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/background_playback/view/background_quick_bar.dart';
+import 'package:iris/features/control_group/model/enum/player_control_group.dart';
+import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -16,9 +19,11 @@ import 'package:iris/pages/player/control_bar/control_bar_widgets/fullscreen_but
 import 'package:iris/pages/player/control_bar/control_bar_widgets/playlist_dock_mode_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/background_playback_menu_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/repeat_button.dart';
+import 'package:iris/pages/player/control_bar/control_bar_widgets/screen_lock_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/shuffle_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/subtitle_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/window_fit_mode_button.dart';
+import 'package:iris/utils/platform.dart';
 import 'package:provider/provider.dart';
 
 MediaPlayer _player() {
@@ -125,12 +130,50 @@ void main() {
       expect(hasWindowFit, isFalse);
     });
 
-    testWidgets('MobileControlLayout shows subtitle and the 副音 menu', (tester) async {
+    testWidgets(
+        'MobileControlLayout keeps the 副音 menu on the row off-phone',
+        (tester) async {
+      // A NARROW DESKTOP window also renders this layout: the move into the
+      // 副音 group is a PHONE-only change, so the desktop bars stay untouched.
       _setSurface(tester, const Size(400, 800));
       await tester.pumpWidget(_harness(MobileControlLayout(controls: _controls()), _player()));
       await tester.pumpAndSettle();
       expect(find.byType(BackgroundPlaybackMenuButton), findsOneWidget);
       expect(find.byType(SubtitleButton), findsOneWidget);
+      expect(find.byType(ScreenLockButton), findsNothing);
+    });
+
+    testWidgets('phone hands the 副音 slot to the screen-lock toggle',
+        (tester) async {
+      debugIsMobilePlatformOverride = true;
+      addTearDown(() => debugIsMobilePlatformOverride = null);
+      _setSurface(tester, const Size(400, 800));
+
+      await tester.pumpWidget(_harness(MobileControlLayout(controls: _controls()), _player()));
+      await tester.pumpAndSettle();
+
+      // The 副音 menu vacated the row (it lives in the 副音 group now) and the
+      // guard took its slot — see `ScreenLockButton`.
+      expect(find.byType(ScreenLockButton), findsOneWidget);
+      expect(find.byType(BackgroundPlaybackMenuButton), findsNothing);
+      expect(find.byType(SubtitleButton), findsOneWidget);
+    });
+
+    testWidgets('phone: the 副音 group closes with the 副音 menu', (tester) async {
+      debugIsMobilePlatformOverride = true;
+      addTearDown(() => debugIsMobilePlatformOverride = null);
+      useControlGroupStore().setGroup(PlayerControlGroup.background);
+      addTearDown(() => useControlGroupStore().setGroup(PlayerControlGroup.playback));
+      _setSurface(tester, const Size(400, 800));
+
+      await tester.pumpWidget(_harness(MobileControlLayout(controls: _controls()), _player()));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(BackgroundQuickBar), findsOneWidget);
+      expect(find.byType(BackgroundPlaybackMenuButton), findsOneWidget,
+          reason: 'the menu is the group\'s counterpart of More');
+      expect(find.byType(ScreenLockButton), findsNothing,
+          reason: 'the playback row is replaced by the 副音 group');
     });
 
     testWidgets('MobileControlLayout defaults to the spread (center) layout',

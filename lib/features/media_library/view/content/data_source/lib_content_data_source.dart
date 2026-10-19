@@ -5,8 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
-import 'package:iris/features/background_playback/background_playback_gate.dart';
-import 'package:iris/features/background_playback/view/bg_source_rule_editor.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_node.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
@@ -31,6 +29,7 @@ import 'package:iris/features/media_library/play_queue/play_queue_append_feedbac
 import 'package:iris/features/paginated_browser/data_source/paginated_browser_data_source.dart';
 import 'package:iris/features/paginated_browser/models/generic_browser_models.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseScopeMediaTypes;
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
@@ -486,12 +485,18 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
       final directories = <ScenarioSourceSpec>[
         for (final source in sources)
           if (source.path == null || source.path!.isEmpty)
-            (storageId: source.storageId, path: '', recursive: true)
+            (
+              storageId: source.storageId,
+              path: '',
+              recursive: true,
+              kind: ScenarioSourceKind.folder,
+            )
           else
             (
               storageId: source.storageId,
               path: source.path!.join('/'),
               recursive: true,
+              kind: ScenarioSourceKind.folder,
             ),
       ];
       return ScenarioPlaybackActions.runPlayActionWithNoMediaConfirm(
@@ -886,6 +891,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                           storageId: _store.state.currentStorageId!,
                           path: _store.state.currentParentPath ?? '',
                           recursive: true,
+                          kind: ScenarioSourceKind.folder,
                         ),
                       ],
                       sortField:
@@ -1143,6 +1149,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                   storageId: source.storageId,
                   path: source.path?.join('/') ?? '',
                   recursive: true,
+                  kind: ScenarioSourceKind.folder,
                 ));
               } else if (sel is NodeLibContentItem) {
                 if (sel.node.isDir) {
@@ -1150,6 +1157,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                     storageId: sel.node.storageId,
                     path: sel.node.path.join('/'),
                     recursive: true,
+                    kind: ScenarioSourceKind.folder,
                   ));
                 } else {
                   directFileItems
@@ -1228,6 +1236,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                   storageId: source.storageId,
                   path: source.path?.join('/') ?? '',
                   recursive: true,
+                  kind: ScenarioSourceKind.folder,
                 ));
               } else if (sel is NodeLibContentItem) {
                 if (sel.node.isDir) {
@@ -1235,6 +1244,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                     storageId: sel.node.storageId,
                     path: sel.node.path.join('/'),
                     recursive: true,
+                    kind: ScenarioSourceKind.folder,
                   ));
                 } else {
                   directFileItems
@@ -1486,6 +1496,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
               storageId: source.storageId,
               path: source.path?.join('/') ?? '',
               recursive: true,
+              kind: ScenarioSourceKind.folder,
             ),
           ],
           sortField: sortField,
@@ -1509,6 +1520,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
                 storageId: node.storageId,
                 path: node.path.join('/'),
                 recursive: true,
+                kind: ScenarioSourceKind.folder,
               ),
             ],
             sortField: sortField,
@@ -1547,6 +1559,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
             storageId: source.storageId,
             path: source.path?.join('/') ?? '',
             recursive: true,
+            kind: ScenarioSourceKind.folder,
           ),
         ],
       );
@@ -1563,6 +1576,7 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
               storageId: node.storageId,
               path: node.path.join('/'),
               recursive: true,
+              kind: ScenarioSourceKind.folder,
             ),
           ],
         );
@@ -1809,27 +1823,9 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
         icon: const Icon(Icons.library_add, size: 16),
         onPressed: (ctx, i) => _addAsSourceToLibrary(ctx, [i]),
       ),
-      // Folder quick-adds: a DB directory node becomes a 副音 source rule / a
-      // virtual-merge rule, prefilled with storage+folder defaults.
+      // Folder quick-adds: a DB directory node becomes a virtual-merge rule,
+      // prefilled with storage+folder defaults.
       if (item is NodeLibContentItem && item.node.isDir) ...[
-        if (BackgroundPlaybackGate.enabled)
-          GenericItemAction(
-            label: getLocalizations(context).lib_add_as_bg_source,
-            icon: const Icon(Icons.queue_music, size: 16),
-            onPressed: (ctx, i) {
-              final node = (i as NodeLibContentItem).node;
-              final storage = _lookupStorage(node.storageId);
-              openBgSourceRuleEditorForFolder(
-                ctx,
-                storageName: storage?.name ?? node.storageId,
-                folderName: node.name,
-                folderPath: relativeToStoragePath(
-                  node.path.join('/'),
-                  [storage?.basePath.join('/') ?? ''],
-                ),
-              );
-            },
-          ),
         if (VirtualMediaGate.enabled)
           GenericItemAction(
             label: getLocalizations(context).lib_add_as_vm_merge,
@@ -1946,6 +1942,8 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
       durationMs: file.durationMs,
       lastModified: file.modifiedAt,
       type: contentType,
+      // Subtitle associations persisted at scan time (schema v50).
+      subtitles: file.subtitles ?? const [],
     );
   }
 

@@ -1,7 +1,5 @@
-import 'dart:math';
-
+import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/models/file.dart';
-import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/utils/path_conv.dart';
 
 /// Canonical playback identity of a background candidate file.
@@ -12,6 +10,36 @@ import 'package:iris/utils/path_conv.dart';
 /// across queue refreshes.
 String backgroundMediaKey(FileItem file) =>
     canonicalProgressKey(file.storageId, file.path, uri: file.uri);
+
+/// Canonical playback identity of a candidate STREAM entry (the resolver's
+/// `MediaFile`), without building the playback `FileItem` for it.
+///
+/// MUST agree with [backgroundMediaKey] applied to the FileItem
+/// `backgroundFileItemFromMediaFile` builds for the same entry: the window uses
+/// this to locate the remembered/playing item across the WHOLE stream, and
+/// converting every candidate just to compute its key is the expensive half of a
+/// page slide (a playable URI is rebuilt per entry).
+///
+/// Agreement holds by construction: `canonicalProgressKey` ignores the uri
+/// whenever the path is non-empty, and for the path-less (SAF) case both sides
+/// carry the same raw uri.
+String backgroundItemMediaKey(MediaFile f) =>
+    canonicalProgressKey(f.storageId, f.path, uri: f.uri);
+
+/// The `media_nodes.path` form of a background candidate: its storage-relative
+/// path, or its SAF document uri when the path is empty.
+///
+/// A SAF single-picked file (`ACTION_OPEN_DOCUMENT`) has NO segment path, so the
+/// document uri is its identity — and the DB row stores exactly that as the
+/// canonical path (see `MediaNodeDriftAdapter.toCompanion` / [occurrencePath]).
+/// Every path-KEYED read and write (`media_nodes` lookup, duration write-back)
+/// must use this same form, or a write lands on the wrong single pick while the
+/// reader keys it by uri: the asymmetry that left every SAF row flagged unknown.
+///
+/// `canonicalProgressKey`'s uri fallback answers the KEY question
+/// ([backgroundMediaKey]); this answers the DB-path question for the same file.
+String backgroundOccurrencePath(FileItem file) =>
+    file.path.isNotEmpty ? file.path.join('/') : file.uri;
 
 /// Result of a user-initiated queue jump ([BackgroundPlaybackStore.jumpTo]).
 enum BgJumpOutcome {
@@ -29,85 +57,37 @@ enum BgJumpOutcome {
 
 /// Pure queue arithmetic for the background playback list (真单文件 only).
 ///
-/// Phase 1/2 semantics: the queue is a plain ordered list of real files; the
-/// player walks it with wrap rules chosen by [Repeat], skipping entries that
-/// equal the foreground's current file ([excludedKey], code-level guard —
-/// default ON, no UI in this iteration), and optional in-list shuffle.
+/// The queue is a plain ordered list of real files — a WINDOW over the scenario
+/// stream (see `BgQueueWindow`); the runtime walks it by GLOBAL scenario index
+/// and slides the window, skipping entries that equal the foreground's current
+/// file ([excludedKey], code-level guard, default ON). Shuffle is owned by the
+/// background scenario's own order, never by this logic.
 abstract final class BackgroundQueueLogic {
-  /// A shuffled copy of [source] (default shuffle semantics for 副音播放).
-  static List<FileItem> shuffled(List<FileItem> source, {Random? random}) {
-    final next = List<FileItem>.of(source);
-    next.shuffle(random ?? Random());
-    return next;
-  }
-
-  /// New index after stepping, or null when no step is possible.
-  ///
-  /// Rules:
-  /// - empty queue → null;
-  /// - [Repeat.none] never wraps past the ends (null at the boundary);
-  /// - otherwise steps directionally through the queue, wrapping modulo
-  ///   length, skipping every candidate whose media key equals
-  ///   [excludedKey]; after a full lap with nothing eligible → null
-  ///   (caller pauses rather than double-playing the foreground file);
-  /// - [Repeat.one] → the current index (caller replays the same file).
-  static int? stepIndex({
-    required List<FileItem> queue,
-    required int current,
-    required bool forward,
-    required Repeat repeat,
-    String? excludedKey,
-  }) {
-    final n = queue.length;
-    if (n == 0) return null;
-    if (repeat == Repeat.one) {
-      return (current >= 0 && current < n) ? current : 0;
-    }
-    // Repeat.none: walk directionally and NEVER wrap past an end. Skipping an
-    // excluded candidate must stop at the boundary instead of modulo-wrapping
-    // back to the other end (which would replay the head/tail).
-    if (repeat == Repeat.none) {
-      if (current < 0 || current >= n) return null;
-      final step = forward ? 1 : -1;
-      for (var i = current + step; i >= 0 && i < n; i += step) {
-        final key = backgroundMediaKey(queue[i]);
-        if (excludedKey != null && key == excludedKey) continue;
-        return i;
-      }
-      return null;
-    }
-    for (var offset = 1; offset <= n; offset++) {
-      final delta = forward ? offset : -offset;
-      final candidate = (current + delta) % n;
-      final idx = candidate < 0 ? candidate + n : candidate;
-      final key = backgroundMediaKey(queue[idx]);
-      if (excludedKey != null && key == excludedKey) continue;
-      return idx;
-    }
-    return null;
-  }
-
   /// Index a fresh or rewritten queue should START playing at, honouring the
-  /// same-file guard exactly the way [stepIndex] does.
+  /// same-file guard exactly the way a step does.
   ///
   /// The queue itself is the COMPLETE candidate pool — it deliberately keeps
-  /// the foreground's own file (see [BackgroundPlaybackStore.resolveCandidatePool]
-  /// for why) — so "may this play right now" is a question about the SELECTION,
-  /// never about the listing. Every entry point that lands on a queue
+  /// the foreground's own file (see [BackgroundScenarioPool], which explains
+  /// why the 音库 gesture requires it) — so "may this play right now" is a
+  /// question about the SELECTION, never about the listing. Every entry point that lands on a queue
   /// (enable / gate re-open / refresh / tag reconcile) funnels through here so
   /// the two concerns can never drift apart again.
   ///
-  /// Prefers [preferredKey] (the file that was playing) when it survived AND
-  /// can play, else the first playable entry, else the head. The head fallback
-  /// is deliberate: a pool that is entirely the foreground file is a legal
-  /// queue, and [BackgroundPlaybackStore.openGate] keeps what is loaded rather
-  /// than dropping the run.
+  /// Prefers the first entry of [preferredKeys] that survived AND can play,
+  /// else the first playable entry, else the head. The list is ORDERED — the
+  /// caller decides the precedence (the file that is playing now, then the
+  /// position the run was last left at) — and every candidate goes through the
+  /// SAME guard, so a remembered item that equals the foreground file can
+  /// never be selected here. The head fallback is deliberate: a pool that is
+  /// entirely the foreground file is a legal queue, and
+  /// [BackgroundPlaybackStore.openGate] keeps what is loaded rather than
+  /// dropping the run.
   ///
   /// Returns -1 only for an empty queue. A null [excludedKey] means the guard
   /// is lifted (`allowSameFgBgFile`), so nothing is filtered.
   static int pickStartIndex({
     required List<FileItem> queue,
-    String? preferredKey,
+    List<String> preferredKeys = const <String>[],
     String? excludedKey,
   }) {
     if (queue.isEmpty) return -1;
@@ -116,35 +96,14 @@ abstract final class BackgroundQueueLogic {
       return backgroundMediaKey(queue[i]) != excludedKey;
     }
 
-    if (preferredKey != null && preferredKey.isNotEmpty) {
-      final at = queue.indexWhere((f) => backgroundMediaKey(f) == preferredKey);
+    for (final key in preferredKeys) {
+      if (key.isEmpty) continue;
+      final at = queue.indexWhere((f) => backgroundMediaKey(f) == key);
       if (at >= 0 && playable(at)) return at;
     }
     for (var i = 0; i < queue.length; i++) {
       if (playable(i)) return i;
     }
     return 0;
-  }
-
-  /// Re-shuffles [queue] while anchoring [currentKey] (by media key) at the
-  /// head so toggling shuffle never jumps the user to an unrelated file.
-  /// Falls back to a plain shuffle when the anchor is absent.
-  static List<FileItem> reshuffleKeepingCurrent(
-    List<FileItem> queue,
-    String? currentKey, {
-    Random? random,
-  }) {
-    if (queue.isEmpty) return queue;
-    final anchorIndex = currentKey == null
-        ? -1
-        : queue.indexWhere((f) => backgroundMediaKey(f) == currentKey);
-    if (anchorIndex < 0) {
-      return shuffled(queue, random: random);
-    }
-    final rest = <FileItem>[
-      for (var i = 0; i < queue.length; i++)
-        if (i != anchorIndex) queue[i],
-    ]..shuffle(random ?? Random());
-    return [queue[anchorIndex], ...rest];
   }
 }

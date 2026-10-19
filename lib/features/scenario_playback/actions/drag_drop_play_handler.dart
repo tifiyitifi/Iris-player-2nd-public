@@ -22,6 +22,7 @@ import 'package:iris/features/scenario_playback/actions/scenario_append_actions.
 import 'package:iris/features/scenario_playback/actions/scenario_override_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/local.dart' show getLocalStorages;
@@ -477,7 +478,12 @@ abstract final class DragDropPlayHandler {
   }) async {
     final specs = <ScenarioSourceSpec>[
       for (final dir in dirs)
-        (storageId: dir.storageId, path: dir.path, recursive: true),
+        (
+          storageId: dir.storageId,
+          path: dir.path,
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
     ];
 
     if (shouldRunScanGate(

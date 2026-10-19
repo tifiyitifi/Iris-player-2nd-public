@@ -23,12 +23,14 @@ void main() {
 
   late AppDatabase db;
   late TagPlayRepository repo;
+  late VideoTagMembersDao membersDao;
 
   setUp(() {
     db = AppDatabase(NativeDatabase.memory());
+    membersDao = VideoTagMembersDao(db);
     repo = TagPlayRepository(
       tagsDao: VideoTagsDao(db),
-      membersDao: VideoTagMembersDao(db),
+      membersDao: membersDao,
       viewStatesDao: VideoTagViewStatesDao(db),
       presetsDao: VideoTagPinPresetsDao(db),
       db: db,
@@ -240,6 +242,35 @@ void main() {
       expect(snap.items.single.media.name, 'a');
     });
 
+    test('matches a member whose stored path is not canonical', () async {
+      final tag = await repo.createTag(name: 't');
+      // A pre-normalization row (canonicalization landed later): stored with a
+      // ROOTED path, while the library row is canonical. The lookup key must be
+      // canonical on both sides or the member is silently dropped.
+      await membersDao.addMember(
+        tagId: tag.id,
+        storageId: 's1',
+        canonicalPath: '/a.mp4',
+        addedAt: DateTime.utc(2026, 8, 1),
+      );
+
+      final r = TagViewResolver(
+        source: FakeSource(const []),
+        repo: repo,
+        // The library holds the canonical node — the fake echoes the queried
+        // (canonical) key, exactly like `nodesByMediaKeys`.
+        nodesByKeys: (keys) async => [for (final k in keys) _node(k)],
+      );
+      final snap = await r.resolve(
+        tagId: tag.id,
+        scenarioId: 'sc',
+        ignoreScenario: true,
+      );
+      expect(snap.length, 1, reason: 'the rooted member must not be dropped');
+      expect(snap.items.single.media.name, 'a.mp4');
+      expect(snap.items.single.media.storageId, 's1');
+    });
+
     test('empty membership stays empty even with ignoreScenario', () async {
       final tag = await repo.createTag(name: 't');
       final r = TagViewResolver(
@@ -285,6 +316,46 @@ void main() {
       );
       expect(snap.length, 1);
       expect(snap.items.single.media.name, 'a.mp4');
+    });
+
+    test('virtualIndex is the resolved stream position, not membership order',
+        () async {
+      final tag = await repo.createTag(name: 't');
+      // Membership order (addedAt desc) is the REVERSE of name asc, so the raw
+      // membership index can never be mistaken for the resolved position.
+      await repo.addMember(
+          tagId: tag.id,
+          storageId: 's1',
+          pathSegments: ['apple.mp4'],
+          at: DateTime.utc(2026, 8, 1));
+      await repo.addMember(
+          tagId: tag.id,
+          storageId: 's1',
+          pathSegments: ['mango.mp4'],
+          at: DateTime.utc(2026, 8, 2));
+      await repo.saveState(TagPlayViewState(
+        tagId: tag.id,
+        sortField: TagPlaySortField.name,
+        sortDirection: SortDirection.asc,
+      ));
+
+      final r = TagViewResolver(
+        source: FakeSource(const []),
+        repo: repo,
+        nodesByKeys: (keys) async => [for (final k in keys) _node(k)],
+      );
+
+      final snap = await r.resolve(
+        tagId: tag.id,
+        scenarioId: 'sc',
+        ignoreScenario: true,
+      );
+      expect(snap.vmStream.map((e) => e.media.name).toList(),
+          ['apple.mp4', 'mango.mp4']);
+      for (var i = 0; i < snap.vmStream.length; i++) {
+        expect(snap.vmStream[i].virtualIndex, i,
+            reason: 'virtualIndex must index the resolved stream');
+      }
     });
   });
 

@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:fvp/fvp.dart';
+import 'package:iris/features/media_library/services/external_subtitle_loader.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
-import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_play_queue_store.dart';
+import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_stream/media_stream.dart';
 import 'package:provider/provider.dart';
@@ -81,15 +84,38 @@ class SubtitleList extends HookWidget {
               title: Text(subtitle.name,
                   style: TextStyle(
                       color: Theme.of(context).colorScheme.onSurfaceVariant)),
-              onTap: () {
+              onTap: () async {
                 areaKeyLog.i('Set external subtitle: $subtitle');
-                final mediaStream = MediaStream();
-                final uri = file?.storageType == StorageType.ftp
-                    ? '${mediaStream.url}/${subtitle.uri}'
-                    : subtitle.uri;
-                player.player.setSubtitleTrack(
-                    SubtitleTrack.uri(uri, title: subtitle.name));
+                final storage = file == null
+                    ? null
+                    : useStorageStore().resolveStorageForNodeId(file.storageId);
+                final uri = subtitlePlayableUri(
+                  storage,
+                  subtitle,
+                  mediaStreamUrl: MediaStream().url ?? '',
+                );
+                areaKeyLog.i('External subtitle uri: $uri');
+                // The failure has to be reported AFTER the track list is gone
+                // (the pop is what makes the player actually show the file),
+                // and the list's own [context] stops being mounted the moment
+                // it is popped — so the ROOT navigator and the message text are
+                // captured while both are still valid. Reading them afterwards
+                // silently dropped the dialog, which is exactly the dead remote
+                // subtitle link this message exists for.
+                final navigator = Navigator.of(context, rootNavigator: true);
+                final t0 = getLocalizations(context);
                 Navigator.of(context).pop();
+                final loaded = await tryLoadExternalSubtitle(
+                  player.player,
+                  uri: uri,
+                  title: subtitle.name,
+                );
+                if (!loaded && navigator.mounted) {
+                  await showCopyableErrorDialog(
+                    navigator.context,
+                    message: t0.track_subtitle_load_failed(subtitle.name),
+                  );
+                }
               },
             );
           }),
@@ -145,6 +171,13 @@ class SubtitleList extends HookWidget {
               focusNode: isActive ? focusNode : null,
               title: Text(subtitle.name),
               onTap: () {
+                // Unlike the media_kit branch above, fvp has NO failure surface
+                // for this call: `setExternalSubtitle` is fire-and-forget and a
+                // remote (WebDAV/FTP) dead link simply never appears. The
+                // reactive effect in `use_fvp_player` only pre-checks the LOCAL
+                // (SAF) case. INTENTIONALLY left unhandled for now — any probe
+                // would be guesswork — and revisited only if users report a
+                // silently dead remote subtitle.
                 player.externalSubtitle.value = index;
                 Navigator.of(context).pop();
               },

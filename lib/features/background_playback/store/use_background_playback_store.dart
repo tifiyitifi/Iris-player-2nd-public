@@ -1,8 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
-import 'package:iris/features/background_playback/engine/bg_tag_sync_logic.dart';
 import 'package:iris/features/background_playback/model/background_playback_state.dart';
 import 'package:iris/features/background_playback/model/domain/media_ratio.dart';
 import 'package:iris/features/background_playback/model/domain/segment_edit_draft.dart';
@@ -29,9 +30,14 @@ import 'package:iris/features/background_playback/resolver/segment_snap.dart';
 import 'package:iris/features/background_playback/resolver/segment_span_math.dart';
 import 'package:iris/features/background_playback/resolver/vm_tiled_plan.dart';
 import 'package:iris/features/background_playback/services/background_alignment.dart';
+import 'package:iris/features/background_playback/services/background_scenario_pool.dart';
 import 'package:iris/features/background_playback/services/background_sync_logic.dart';
 import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
+import 'package:iris/features/scenario_playback/model/domain/playback_occurrence_id.dart';
+import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/meta_settings/data/value_codec.dart';
+import 'package:iris/models/db/db_module.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/meta_settings/model/enum/setting_value_type.dart';
 import 'package:iris/models/file.dart';
@@ -40,6 +46,7 @@ import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/persistent_store.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/path_conv.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyStore);
 
@@ -57,6 +64,93 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   // ── Session lifecycle ──
 
+  /// The ACTIVE background workspace's scenario id (the per-entry pairing
+  /// decides which one), or null when it cannot be resolved (store-free tests).
+  Future<String?> _bgScenarioId() async {
+    // Never construct the scenario store before the DB is wired: its onReady
+    // refresh would throw on an uninitialized repo (store-free tests, early
+    // boot). 副音 position persistence is best-effort by design.
+    if (!DbModule.isReady) return null;
+    try {
+      return (await ensureBackgroundPlaybackWorkspace()).id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Records the CURRENT 副音 item as the background scenario's occurrence.
+  ///
+  /// 副音 keeps NO media progress (the engine's `saveProgress` is a no-op); it
+  /// only remembers WHICH file of its list it was on, so a restart continues
+  /// with that file. Stored on the scenario (like the foreground's own current
+  /// item), so it is per entry and needs no per-file progress row.
+  Future<void> _persistCurrentOccurrence() async {
+    try {
+      final s = state;
+      if (s.currentIndex < 0 || s.currentIndex >= s.queue.length) return;
+      final scenarioId = await _bgScenarioId();
+      if (scenarioId == null) return;
+      final file = s.queue[s.currentIndex];
+      // SAF single-picked files carry no path: their identity is the document
+      // uri, matching [backgroundMediaKey] / MediaNode.occurrencePath. Storing
+      // the empty path would collapse every SAF file of one storage onto one
+      // occurrence and the resume lookup could never find the right one.
+      final occPath = file.path.isEmpty && file.uri.isNotEmpty
+          ? canonicalOccurrencePath(file.uri)
+          : canonicalOccurrencePath(file.path.join('/'));
+      await usePlaybackScenarioStore().setCurrentItemFor(
+        scenarioId,
+        occurrence: PlaybackOccurrenceId(
+          storageId: file.storageId,
+          path: occPath,
+          occurrenceIndex: 0,
+        ),
+      );
+    } catch (_) {
+      // Best-effort: a store-free context (no scenario DB) simply has nowhere
+      // to record the position; playback is unaffected.
+    }
+  }
+
+  /// The persisted 副音 position for the active background workspace, as a
+  /// canonical media key, or null when nothing is remembered (first run).
+  ///
+  /// Mirrors [backgroundMediaKey]: a SAF single-picked file has an EMPTY segment
+  /// path, so its identity is the persisted `uri`. A path-only key here would
+  /// never match the live file's [backgroundMediaKey] and the resume lookup
+  /// (`indexWhere`) would miss on every restart.
+  Future<String?> _persistedOccurrenceKey() async {
+    try {
+      final scenarioId = await _bgScenarioId();
+      if (scenarioId == null) return null;
+      final state = await usePlaybackScenarioStore().getState(scenarioId);
+      final occurrence = state?.currentPlaybackOccurrence;
+      if (occurrence == null) return null;
+      // The stored path is already the canonical occurrence form
+      // ([_persistCurrentOccurrence]), which `canonicalKey` normalizes exactly
+      // like `backgroundMediaKey` — including the SAF uri-as-path case.
+      return canonicalKey(occurrence.storageId, occurrence.path);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Mirrors the background scenario's repeat into the bg store's in-memory
+  /// field.
+  ///
+  /// `repeat` is a SCENARIO-mechanism concern (per entry), so the scenario is
+  /// authoritative. `shuffle` deliberately is NOT mirrored any more: 副音 keeps
+  /// its OWN shuffle ([BackgroundPlaybackState.shuffleSeed]) so toggling it
+  /// cannot reorder the foreground tag browser of the same tag. Best-effort.
+  Future<void> _syncPrefsFromScenario(String scenarioId) async {
+    try {
+      final scenario = await usePlaybackScenarioStore().getScenario(scenarioId);
+      if (scenario == null) return;
+      if (state.bgRepeat == scenario.repeatMode) return;
+      set(state.copyWith(bgRepeat: scenario.repeatMode));
+    } catch (_) {}
+  }
+
   /// Starts background playback from a concrete candidate list (never empty).
   /// Default shuffle applies here so the very first 副音 play is random.
   ///
@@ -72,6 +166,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// force-resumed by a 副音 activation.
   Future<void> enableWithQueue(
     List<FileItem> files, {
+    BgQueueWindow? window,
     BgApplyScope? applyScope,
     String? anchorKey,
     bool? focusControl,
@@ -81,13 +176,31 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       _log.w('enableWithQueue: empty candidate list refused');
       return;
     }
-    final ordered = state.shuffle
-        ? BackgroundQueueLogic.shuffled(files)
-        : List<FileItem>.of(files);
+    // repeat/shuffle are the background SCENARIO's (per entry): mirror them in
+    // before the queue is built.
+    final prefsScenarioId = await _bgScenarioId();
+    if (prefsScenarioId != null) {
+      await _syncPrefsFromScenario(prefsScenarioId);
+    }
+    // The queue is a WINDOW over the scenario stream, already in the scenario's
+    // order (its shuffle included), so it is never re-shuffled here. A
+    // caller-supplied list is treated as a window at the head.
+    final w = window ?? BgQueueWindow.ofList(List<FileItem>.of(files));
+    final ordered = w.files;
+    if (ordered.isEmpty) {
+      _log.w('enableWithQueue: empty window refused');
+      return;
+    }
     // The queue keeps the foreground's own file (it is the 音库 source for the
     // NEXT foreground); the same-file guard only decides where playback STARTS.
+    // Resume the REMEMBERED file (per entry) — the pool's window carries its
+    // key, a caller-supplied list falls back to the scenario occurrence — and
+    // run it through the SAME guard as every other landing: a remembered file
+    // that is the foreground right now would be the same media on two engines.
+    final remembered = w.focusKey ?? await _persistedOccurrenceKey();
     final startIndex = BackgroundQueueLogic.pickStartIndex(
       queue: ordered,
+      preferredKeys: [if (remembered != null) remembered],
       excludedKey: excludedForegroundKey(),
     );
     final bool focus = focusControl ?? state.autoFocusControl;
@@ -103,9 +216,32 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           scope == BgApplyScope.all ? null : (anchorKey ?? currentScopeKey()),
       bgOffMediaKeys: const <String>{},
       queue: ordered,
+      queueWindowStart: w.start,
+      queueTotal: w.total,
       currentIndex: startIndex,
       bgAutoPlay: autoplay,
-      alignMode: modeForAlignDefault(state.alignDefault),
+      // A fresh enable re-arms the duration probe: the two verdict sets are what
+      // gate which entries the probe observer will even try, and its fingerprint
+      // is keyed on this seq — without the reset a member that failed on the LAST
+      // run (file temporarily unreadable, storage offline) stayed excluded
+      // forever, red, until an app restart or an explicit per-row retry.
+      bgDurationFailedKeys: const <String>{},
+      bgDurationUnknownKeys: const <String>{},
+      bgDurationProbeSeq: state.bgDurationProbeSeq + 1,
+      // The anchoring mode is decided by the automatic rule inside the runtime
+      // observer (it needs the live foreground DURATION, which may not be parsed
+      // yet at enable time). Reset the display field to the neutral mode so a
+      // previous run's answer (e.g. 尾部锚定) cannot linger until then.
+      alignMode: BgAlignMode.sameClock,
+      // A fresh run must never inherit the previous run's authoritative offset:
+      // every other run start ([disable] / [stopGate] / [openGate] /
+      // [restartForCurrent]) clears it, and a stale offset combined with a fresh
+      // queue whose 副音 still sits at its head is what dragged the video back
+      // to 00:00 through the continuous drift correction.
+      alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       bgExhausted: false,
       mappedFile: null,
       mappedRate: null,
@@ -115,6 +251,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       mappedExitAdvanced: false,
     ));
     await save(state);
+    await _persistCurrentOccurrence();
   }
 
   /// Full stop (the quick bar's power switch / the float panel's X): the engine
@@ -131,6 +268,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       currentIndex: -1,
       scopeAnchorKey: null,
       alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       openQuickPanel: BgQuickPanel.none,
       mappedFile: null,
       mappedRate: null,
@@ -164,6 +304,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       displayTarget: ControlTarget.foreground,
       bgExhausted: false,
       alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       mappedFile: null,
       mappedRate: null,
       mappedFgPercent: null,
@@ -198,6 +341,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       controlTarget: ControlTarget.foreground,
       displayTarget: ControlTarget.foreground,
       alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       mappedFile: null,
       mappedRate: null,
       mappedFgPercent: null,
@@ -222,13 +368,23 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// PERMISSION, not a play command, so a caller that activates while the
   /// foreground is paused passes `false` — the run loads paused and the pair's
   /// transport is left untouched (the fg is never force-resumed).
-  void openGate({
+  ///
+  /// A [stepForward] that finds NO eligible next entry (`Repeat.none` at the
+  /// pool's end, or a queue whose every candidate is the foreground file) must
+  /// NOT restart the loaded track: it keeps the file, stays PAUSED and does not
+  /// bump [BackgroundPlaybackState.bgRunSeq] — the same verdict [step] reaches.
+  /// Bumping the run with a stale index is what made 「下一首」 at the end REPLAY
+  /// the last track.
+  Future<void> openGate({
     String? mediaKey,
     bool stepForward = false,
     bool autoplay = true,
-  }) {
+  }) async {
     if (!state.enabled) return;
-    final int nextIndex;
+    int nextIndex = state.currentIndex;
+    BgQueueWindow? slid;
+    // True when a [stepForward] re-activation ran out of eligible entries.
+    bool advanceBlocked = false;
     if (state.queue.isEmpty) {
       nextIndex = -1;
     } else if (state.currentIndex < 0) {
@@ -244,25 +400,74 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       // 下一首 re-activation walks the queue through the SAME step math as a
       // manual step, so the foreground double-play guard ([excludedForegroundKey])
       // applies here too. Repeat.one normalizes to all (a user re-activation
-      // always advances); a fully-excluded queue keeps the loaded track.
-      nextIndex = BackgroundQueueLogic.stepIndex(
-            queue: state.queue,
-            current: state.currentIndex,
-            forward: true,
-            repeat: Repeat.all,
-            excludedKey: excludedForegroundKey(),
-          ) ??
-          state.currentIndex;
-    } else {
-      nextIndex = state.currentIndex;
+      // always advances); Repeat.none is HONOURED — running off the end of the
+      // pool must stop rather than wrap to the head; a fully-excluded queue
+      // keeps the loaded track.
+      advanceBlocked = true;
+      final excluded = excludedForegroundKey();
+      final Repeat repeat =
+          state.bgRepeat == Repeat.one ? Repeat.all : state.bgRepeat;
+      // In-window fast path: no await is taken, so a plain re-activation lands
+      // synchronously (callers assert the state right after the call).
+      final candidates = _stepCandidates(forward: true, repeat: repeat);
+      final int n = state.queue.length;
+      final int start = state.queueWindowStart;
+      int? fastOffset;
+      var needsSlide = false;
+      for (final g in candidates) {
+        if (g < start || g >= start + n) {
+          needsSlide = true;
+          break;
+        }
+        final file = state.queue[g - start];
+        if (excluded != null && backgroundMediaKey(file) == excluded) continue;
+        fastOffset = g - start;
+        break;
+      }
+      if (fastOffset != null) {
+        nextIndex = fastOffset;
+        advanceBlocked = false;
+      } else if (needsSlide) {
+        // A slide resolves the game window through the DB. It MUST join the
+        // same chain as [step]/[jumpToOccurrence]: two presses (or a
+        // re-activation overlapping one) that both resolve before either
+        // writes computed the same target and advanced only once.
+        final landed = await _serializedMove(() async {
+          // Re-read from the state the previous move left behind.
+          final excludedNow = excludedForegroundKey();
+          final repeatNow =
+              state.bgRepeat == Repeat.one ? Repeat.all : state.bgRepeat;
+          for (final g
+              in _stepCandidates(forward: true, repeat: repeatNow)) {
+            final resolved = await _resolveGlobalIndex(g);
+            if (resolved == null) continue;
+            if (excludedNow != null &&
+                backgroundMediaKey(resolved.file) == excludedNow) {
+              continue;
+            }
+            return resolved;
+          }
+          return null;
+        });
+        if (landed != null) {
+          nextIndex = landed.offset;
+          slid = landed.window;
+          advanceBlocked = false;
+        }
+      }
     }
     final bool hasKey = mediaKey != null && mediaKey.isNotEmpty;
     set(state.copyWith(
       gateOpen: true,
-      bgAutoPlay: autoplay,
+      // An advance that found nothing keeps the loaded track and stays PAUSED
+      // (mirrors [step]'s verdict) instead of replaying it.
+      bgAutoPlay: advanceBlocked ? false : autoplay,
       controlTarget: state.autoFocusControl
           ? ControlTarget.background
           : state.controlTarget,
+      queue: slid?.files ?? state.queue,
+      queueWindowStart: slid?.start ?? state.queueWindowStart,
+      queueTotal: slid?.total ?? state.queueTotal,
       currentIndex: nextIndex,
       bgOffMediaKeys:
           hasKey ? (Set<String>.of(state.bgOffMediaKeys)..remove(mediaKey)) : state.bgOffMediaKeys,
@@ -270,9 +475,14 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           hasKey && state.applyScope == BgApplyScope.currentOnly
               ? mediaKey
               : state.scopeAnchorKey,
-      bgRunSeq: state.bgRunSeq + 1,
+      // No run restart when nothing moved: bumping the run with the stale index
+      // is what re-opened (replayed) the last track.
+      bgRunSeq: advanceBlocked ? state.bgRunSeq : state.bgRunSeq + 1,
       bgExhausted: false,
       alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       mappedFile: null,
       mappedRate: null,
       mappedFgPercent: null,
@@ -280,6 +490,10 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       mappedSilenceOn: false,
       mappedExitAdvanced: false,
     ));
+    // A 下一首 re-activation moved the file: remember it so a restart resumes
+    // there (the run position lives on the background scenario). A blocked one
+    // did not move, so there is nothing new to remember.
+    if (!advanceBlocked) await _persistCurrentOccurrence();
   }
 
   // ── A-中心-B 段编辑器 (session-only) ──
@@ -332,10 +546,10 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(bgAutoPlay: playing));
   }
 
-  /// Walks the queue (see [BackgroundQueueLogic.stepIndex]). [excludedKey] is
-  /// the foreground current file's key — the double-play guard. Returns false
-  /// when no eligible next item exists (caller pauses instead of looping onto
-  /// the foreground file).
+  /// Walks the queue by GLOBAL scenario index, sliding the window when the
+  /// target falls outside it. [excludedKey] is the foreground current file's
+  /// key — the double-play guard. Returns false when no eligible next item
+  /// exists (caller pauses instead of looping onto the foreground file).
   ///
   /// [userInitiated] marks a MANUAL switch (queue panel, control bar,
   /// keyboard via the router): it raises the one-shot [userBgSwitchSeq]
@@ -361,35 +575,133 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     // a natural-completion behavior only.
     final effectiveRepeat =
         state.bgRepeat == Repeat.one ? Repeat.all : state.bgRepeat;
-    final idx = BackgroundQueueLogic.stepIndex(
-      queue: state.queue,
-      current: state.currentIndex,
-      forward: forward,
-      repeat: effectiveRepeat,
-      excludedKey: excludedKey,
-    );
-    if (idx == null) {
+    // The queue is a WINDOW: resolve each candidate by its GLOBAL scenario
+    // index, sliding the window when it falls outside. The guard excludes a
+    // single file, so at most two candidates can matter. SERIALIZED: the
+    // candidate list is read from the state the PREVIOUS move left behind, so
+    // two presses that arrive before a slide resolve lands still advance two
+    // tracks instead of both resolving the same target (see [_serializedMove]).
+    return _serializedMove(() async {
+      for (final g
+          in _stepCandidates(forward: forward, repeat: effectiveRepeat)) {
+        final landed = await _resolveGlobalIndex(g);
+        if (landed == null) continue;
+        if (excludedKey != null &&
+            backgroundMediaKey(landed.file) == excludedKey) {
+          continue;
+        }
+        // A discrete step always bumps the event seq (even a single-item wrap
+        // that keeps the same index): the runtime observer uses it to keep the
+        // step out of the position mirror under BgStepMode.swapOnly.
+        set(state.copyWith(
+          queue: landed.window.files,
+          queueWindowStart: landed.window.start,
+          queueTotal: landed.window.total,
+          currentIndex: landed.offset,
+          bgStepSeq: state.bgStepSeq + 1,
+          bgUserAlignSeq:
+              userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
+          userBgSwitchSeq:
+              userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
+          userBgSwitchIndex:
+              userInitiated ? landed.offset : state.userBgSwitchIndex,
+        ));
+        await _persistCurrentOccurrence();
+        return true;
+      }
       // End of queue (repeat none) or every candidate collides with the
       // foreground file — stop advancing but keep the current media loaded.
       set(state.copyWith(bgAutoPlay: false));
       return false;
+    });
+  }
+
+  /// Global scenario indices a step visits, in order. The double-play guard
+  /// excludes at most one file, so two candidates are always enough; the cap
+  /// also bounds the wrap search over a huge stream.
+  List<int> _stepCandidates({
+    required bool forward,
+    required Repeat repeat,
+  }) {
+    final n = state.queue.length;
+    if (n == 0) return const [];
+    final total = state.queueTotal > 0 ? state.queueTotal : n;
+    final current = state.queueWindowStart + state.currentIndex;
+    if (repeat == Repeat.none) {
+      final g = current + (forward ? 1 : -1);
+      return (g >= 0 && g < total) ? [g] : const [];
     }
-    // A discrete step always bumps the event seq (even a single-item wrap that
-    // keeps the same index): the runtime observer uses it to keep the step out
-    // of the position mirror under BgStepMode.swapOnly.
-    // Session-only fields (currentIndex / bgStepSeq) — the persisted snapshot
-    // is unchanged, so this must not pay a secure-storage write on the step
-    // hot path.
-    set(state.copyWith(
-      currentIndex: idx,
-      bgStepSeq: state.bgStepSeq + 1,
-      bgUserAlignSeq:
-          userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
-      userBgSwitchSeq:
-          userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
-      userBgSwitchIndex: userInitiated ? idx : state.userBgSwitchIndex,
-    ));
-    return true;
+    final out = <int>[];
+    var g = current;
+    for (var i = 0; i < total && out.length < 2; i++) {
+      g += forward ? 1 : -1;
+      g = ((g % total) + total) % total;
+      out.add(g);
+    }
+    return out;
+  }
+
+  /// Resolves a GLOBAL scenario index to the file that holds it plus the window
+  /// it belongs to — reusing the window the runtime already holds when the
+  /// index is inside it, otherwise resolving (and thus sliding to) the
+  /// containing page.
+  Future<({BgQueueWindow window, int offset, FileItem file})?>
+      _resolveGlobalIndex(int g) async {
+    final n = state.queue.length;
+    final start = state.queueWindowStart;
+    if (g >= start && g < start + n) {
+      return (
+        window: BgQueueWindow(
+          files: state.queue,
+          start: start,
+          total: state.queueTotal,
+        ),
+        offset: g - start,
+        file: state.queue[g - start],
+      );
+    }
+    final w = await _resolveWindowContaining(g);
+    if (w == null) return null;
+    final off = g - w.start;
+    if (off < 0 || off >= w.files.length) return null;
+    return (window: w, offset: off, file: w.files[off]);
+  }
+
+  /// Resolves the scenario page containing global index [g]; null when the
+  /// background workspace cannot be resolved (store-free tests).
+  Future<BgQueueWindow?> _resolveWindowContaining(int g) async {
+    if (g < 0 || !DbModule.isReady) return null;
+    try {
+      return await BackgroundScenarioPool.shared.windowAt(g);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Tail of the chain that runs queue MOVES one at a time, plus the count of
+  /// moves that are in flight (0 = the chain is idle).
+  Future<void> _moveTail = Future<void>.value();
+  int _movePending = 0;
+
+  /// Runs [body] after every earlier move has finished. Errors are handed to
+  /// the caller but never wedge the chain: one failed move must not freeze
+  /// every later one.
+  ///
+  /// When the chain is IDLE, [body] runs immediately (synchronously up to its
+  /// first await): callers like `openGate`/`jumpTo` must land their state in the
+  /// same turn they were called, or an un-awaited caller reads the old value.
+  /// Only a move that arrives while another is in flight is deferred behind it.
+  Future<T> _serializedMove<T>(Future<T> Function() body) {
+    if (_movePending == 0) {
+      _movePending++;
+      final Future<T> result = body();
+      _moveTail = result.then<void>((_) {}, onError: (Object _) {});
+      return result.whenComplete(() => _movePending--);
+    }
+    _movePending++;
+    final Future<T> result = _moveTail.then((_) => body());
+    _moveTail = result.then<void>((_) {}, onError: (Object _) {});
+    return result.whenComplete(() => _movePending--);
   }
 
   /// Natural completion of the current media. [Repeat.one] replays the same
@@ -503,11 +815,15 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   // ── 对齐默认方案 ──
 
-  /// Remembers (or clears, with [BgAlignDefault.ask]) the "bg shorter than fg"
-  /// alignment choice so the prompt does not re-appear.
+  /// LEGACY: records the (now unused) persisted default alignment.
+  ///
+  /// The automatic rule ([resolveAutoAlignAnchor]) decides every fresh anchor,
+  /// so the UI no longer offers a choice and nothing reads this. It is kept —
+  /// along with the `bg.alignDefault` AUX row — so an upgraded install keeps
+  /// the value (no migration) and the settings row keeps matching.
   Future<void> setAlignDefault(BgAlignDefault value) async {
     set(state.copyWith(alignDefault: value));
-    await _writeAux(_kAuxAlignDefault, value.name);
+    await _writeAux(_kAuxAlignDefault, value.key);
   }
 
   // ── 作用范围: 仅当前 / 智能 / 全部 ──
@@ -858,6 +1174,12 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       lockSeekSeq: state.lockSeekSeq + 1,
       bgSystemSeekSeq: state.bgSystemSeekSeq + 1,
     ));
+    // A lock rollover IS a queue move: record the position so a restart
+    // resumes on the track the lock is actually on, and so the next reconcile
+    // window matches the live item. Session-only state; the write is
+    // best-effort (see [_persistCurrentOccurrence]) and awaited so a caller
+    // that needs the record settled can await this method.
+    await _persistCurrentOccurrence();
   }
 
   // ── 快速控制栏 (第 3 轮问题 5) ──
@@ -902,6 +1224,47 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       return;
     }
     showQuickPanel(panel);
+  }
+
+  // ── 时长探测 (副音队列的 duration 解析) ──
+
+  /// Publishes one duration probe pass's outcome for the CURRENT queue.
+  ///
+  /// [failed] are the keys the probe could not resolve (or whose write-back hit
+  /// no `media_nodes` row); [unknown] are the keys still missing a duration
+  /// (probe in flight, or a network storage the probe skips). The queue list
+  /// flags the two differently and the position mapping stands down for both.
+  /// Session-only, no write.
+  void setBgDurationProbeState({
+    required Set<String> failed,
+    required Set<String> unknown,
+    required bool probing,
+  }) {
+    final same = state.bgDurationFailedKeys.length == failed.length &&
+        state.bgDurationFailedKeys.containsAll(failed) &&
+        state.bgDurationUnknownKeys.length == unknown.length &&
+        state.bgDurationUnknownKeys.containsAll(unknown) &&
+        state.bgDurationProbing == probing;
+    if (same) return;
+    set(state.copyWith(
+      bgDurationFailedKeys: Set<String>.unmodifiable(failed),
+      bgDurationUnknownKeys: Set<String>.unmodifiable(unknown),
+      bgDurationProbing: probing,
+    ));
+  }
+
+  /// 「重新读取时长」: forget [mediaKey]'s failure and ask the probe observer for
+  /// one more pass (the failed-set entry would otherwise suppress a retry).
+  /// Session-only, no write.
+  void retryBgDuration(String mediaKey) {
+    if (mediaKey.isEmpty) return;
+    final failed = Set<String>.of(state.bgDurationFailedKeys)..remove(mediaKey);
+    final unknown = Set<String>.of(state.bgDurationUnknownKeys)..remove(mediaKey);
+    set(state.copyWith(
+      bgDurationFailedKeys: failed,
+      bgDurationUnknownKeys: unknown,
+      bgDurationProbeSeq: state.bgDurationProbeSeq + 1,
+    ));
   }
 
   /// Whether starting 副音 takes the shared controls (第 3 轮追加需求).
@@ -1151,9 +1514,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(mappedExitAdvanced: false));
   }
 
-  // ── Candidate source rules moved to the `bg_source_rules` Drift table ──
-  // (see BgSourceRuleRepository / BgSourceBootstrap); the store no longer
-  // holds them.
+  // ── Candidate sources are owned by the background SCENARIO ──
+  // (see BackgroundScenarioPool); the store holds no source definition.
 
   Future<void> setRate(double value) async {
     if (value <= 0) return;
@@ -1184,29 +1546,107 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// is the user's call (`allowSameFgBgFile`).
   Future<BgJumpOutcome> jumpTo(int index, {bool userInitiated = false}) async {
     if (!state.enabled) return BgJumpOutcome.ignored;
-    if (index < 0 || index >= state.queue.length) {
-      return BgJumpOutcome.ignored;
-    }
+    // SERIALIZED with step/jumpToOccurrence: a queue-row tap that arrives while
+    // a slide is resolving must not race the slide's set (the later write used
+    // to win, so the row the user actually tapped was lost).
+    return _serializedMove(() async {
+      if (index < 0 || index >= state.queue.length) {
+        return BgJumpOutcome.ignored;
+      }
+      final excluded = excludedForegroundKey();
+      if (excluded != null &&
+          backgroundMediaKey(state.queue[index]) == excluded) {
+        _log.i('jumpTo: refused — that file is the foreground right now');
+        return BgJumpOutcome.refusedForegroundFile;
+      }
+      // Same abandon-latch as [step]: a jump during a mapped segment swaps the
+      // 副音 track without a second advance on segment exit.
+      if (state.mappedFile != null) _abandonMappedForUserStep();
+      // Session-only fields — nothing persistent changed, so skip the write.
+      set(state.copyWith(
+        currentIndex: index,
+        bgAutoPlay: true,
+        bgStepSeq: state.bgStepSeq + 1,
+        bgUserAlignSeq:
+            userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
+        userBgSwitchSeq:
+            userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
+        userBgSwitchIndex: userInitiated ? index : state.userBgSwitchIndex,
+      ));
+      await _persistCurrentOccurrence();
+      return BgJumpOutcome.jumped;
+    });
+  }
+
+  /// User taps a scenario row in the 副音 browser: play the file at the row's
+  /// GLOBAL scenario index, sliding the window onto it when it falls outside
+  /// the window the runtime currently holds. Same-file guard as [jumpTo].
+  Future<BgJumpOutcome> jumpToOccurrence({
+    required int virtualIndex,
+    required String mediaKey,
+    bool userInitiated = false,
+  }) async {
+    if (!state.enabled) return BgJumpOutcome.ignored;
+    if (virtualIndex < 0) return BgJumpOutcome.ignored;
     final excluded = excludedForegroundKey();
-    if (excluded != null && backgroundMediaKey(state.queue[index]) == excluded) {
-      _log.i('jumpTo: refused — that file is the foreground right now');
+    if (excluded != null && excluded == mediaKey) {
+      _log.i('jumpToOccurrence: refused — that file is the foreground now');
       return BgJumpOutcome.refusedForegroundFile;
     }
     // Same abandon-latch as [step]: a jump during a mapped segment swaps the
     // 副音 track without a second advance on segment exit.
     if (state.mappedFile != null) _abandonMappedForUserStep();
-    // Session-only fields — nothing persistent changed, so skip the write.
-    set(state.copyWith(
-      currentIndex: index,
-      bgAutoPlay: true,
-      bgStepSeq: state.bgStepSeq + 1,
-      bgUserAlignSeq:
-          userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
-      userBgSwitchSeq:
-          userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
-      userBgSwitchIndex: userInitiated ? index : state.userBgSwitchIndex,
-    ));
-    return BgJumpOutcome.jumped;
+    // SERIALIZED like [step]: the window↔offset pair is derived from what the
+    // previous move left behind, so a jump issued while a slide is resolving
+    // lands on the row the user tapped instead of on a stale page.
+    return _serializedMove(() async {
+      final n = state.queue.length;
+      final start = state.queueWindowStart;
+      BgQueueWindow? slid;
+      final int offset;
+      final FileItem file;
+      if (virtualIndex >= start && virtualIndex < start + n) {
+        offset = virtualIndex - start;
+        file = state.queue[offset];
+      } else {
+        final w = await _resolveWindowContaining(virtualIndex);
+        if (w == null) return BgJumpOutcome.ignored;
+        offset = virtualIndex - w.start;
+        if (offset < 0 || offset >= w.files.length) {
+          return BgJumpOutcome.ignored;
+        }
+        slid = w;
+        file = w.files[offset];
+      }
+      // The caller's [mediaKey] is the row it DISPLAYED; the index is only a
+      // position in a stream that can shift between the resolve that produced
+      // that row and this one (a membership write moves every later index by
+      // one). Playing the neighbouring track because of that is worse than
+      // refusing, so the identity is verified before the queue moves.
+      if (backgroundMediaKey(file) != mediaKey) {
+        _log.w('jumpToOccurrence: row $virtualIndex no longer holds '
+            '$mediaKey — refused');
+        return BgJumpOutcome.ignored;
+      }
+      // ONE set: a sliding jump must never publish the intermediate "new window +
+      // OLD index" for a frame (a stream subscriber would read the wrong current
+      // file, or a null one when the new window is shorter).
+      set(state.copyWith(
+        queue: slid?.files ?? state.queue,
+        queueWindowStart: slid?.start ?? state.queueWindowStart,
+        queueTotal: slid?.total ?? state.queueTotal,
+        currentIndex: offset,
+        bgAutoPlay: true,
+        bgStepSeq: state.bgStepSeq + 1,
+        bgUserAlignSeq:
+            userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
+        userBgSwitchSeq:
+            userInitiated ? state.userBgSwitchSeq + 1 : state.userBgSwitchSeq,
+        userBgSwitchIndex: userInitiated ? offset : state.userBgSwitchIndex,
+      ));
+      await _persistCurrentOccurrence();
+      return BgJumpOutcome.jumped;
+    });
   }
 
   /// Tiled entrance: selects the queue entry for a VM segment and queues a
@@ -1231,6 +1671,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       tiledSeekSeq: state.tiledSeekSeq + 1,
       bgSystemSeekSeq: state.bgSystemSeekSeq + 1,
     ));
+    // Same rule as [requestLockTarget]: a tiled entrance moves the queue, so
+    // the recorded position must follow it.
+    await _persistCurrentOccurrence();
   }
 
   /// Notes a SYSTEM bg seek (alignment landing, replay) that the position
@@ -1256,13 +1699,26 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// so the runtime observer restarts its per-run alignment chain (re-align).
   /// Session-only queue fields — the persisted prefs are untouched, so skip
   /// the write (same rule as [step]).
+  ///
+  /// The landing goes through [BackgroundQueueLogic.pickStartIndex] like every
+  /// other queue entry point: the queue deliberately keeps the foreground's own
+  /// file, so a blind `currentIndex: 0` ran that file on two engines when the
+  /// pool head WAS the foreground.
   void restartForCurrent() {
     if (!state.enabled) return;
     set(state.copyWith(
-      currentIndex: state.queue.isEmpty ? -1 : 0,
+      currentIndex: state.queue.isEmpty
+          ? -1
+          : BackgroundQueueLogic.pickStartIndex(
+              queue: state.queue,
+              excludedKey: excludedForegroundKey(),
+            ),
       bgRunSeq: state.bgRunSeq + 1,
       bgExhausted: false,
       alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
       mappedFile: null,
       mappedRate: null,
       mappedFgPercent: null,
@@ -1270,6 +1726,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       mappedSilenceOn: false,
       mappedExitAdvanced: false,
     ));
+    unawaited(_persistCurrentOccurrence());
   }
 
   /// Publishes the file-local bg seek WINDOW (仅当前 + 高同步 only; null =
@@ -1311,10 +1768,46 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// and stops re-deriving one from position samples, so the user's alignment
   /// outranks the linkage level (see [BackgroundPlaybackState.alignOffsetMs]).
   /// Session-only, no write.
+  ///
+  /// The value is FILE-LOCAL (the aligned file's axis). Bumping
+  /// [BackgroundPlaybackState.alignOffsetSeq] asks the runtime observer to
+  /// re-pin its queue-VIRTUAL counterpart ([setAlignVirtualOffset]) — even when
+  /// the numeric value repeats.
   void setAlignOffset(int? offsetMs) {
     if (!state.enabled) return;
-    if (state.alignOffsetMs == offsetMs) return;
-    set(state.copyWith(alignOffsetMs: offsetMs));
+    set(state.copyWith(
+      alignOffsetMs: offsetMs,
+      alignOffsetSeq: state.alignOffsetSeq + 1,
+      // A null offset tears the whole alignment down; a fresh one KEEPS the
+      // previous pin (and the file it was pinned on) until the runtime
+      // re-derives it, so the mirror never loses its `offsetReady` for a frame.
+      alignVirtualOffsetMs:
+          offsetMs == null ? null : state.alignVirtualOffsetMs,
+      alignOffsetAnchorIndex:
+          offsetMs == null ? null : state.alignOffsetAnchorIndex,
+      alignOffsetAnchorKey: offsetMs == null ? null : state.alignOffsetAnchorKey,
+    ));
+  }
+
+  /// Records the runtime observer's queue-VIRTUAL conversion of
+  /// [alignOffsetMs], the queue index it was derived on and the aligned FILE's
+  /// media key (see [BackgroundPlaybackState.alignVirtualOffsetMs] /
+  /// [BackgroundPlaybackState.alignOffsetAnchorKey]). Session-only, no write.
+  void setAlignVirtualOffset({
+    required int? offsetMs,
+    required int? anchorIndex,
+    required String? anchorKey,
+  }) {
+    if (state.alignVirtualOffsetMs == offsetMs &&
+        state.alignOffsetAnchorIndex == anchorIndex &&
+        state.alignOffsetAnchorKey == anchorKey) {
+      return;
+    }
+    set(state.copyWith(
+      alignVirtualOffsetMs: offsetMs,
+      alignOffsetAnchorIndex: anchorIndex,
+      alignOffsetAnchorKey: anchorKey,
+    ));
   }
 
   /// Requests a cross-file CONTINUATION under [BgExhaustedAction.nextBg]: the
@@ -1354,34 +1847,82 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     };
     set(state.copyWith(bgRepeat: next));
     await save(state);
+    // The background SCENARIO owns repeat (per entry).
+    final scenarioId = await _bgScenarioId();
+    if (scenarioId != null) {
+      try {
+        await usePlaybackScenarioStore().setRepeatFor(scenarioId, next);
+      } catch (_) {}
+    }
   }
 
-  /// Toggles in-list shuffle, anchoring the current file at the head when
-  /// turning shuffle ON so the jump never surprises the user.
+  /// Toggles in-list shuffle, anchoring the current file across the reorder so
+  /// the jump never surprises the user.
+  ///
+  /// 副音's candidate stream IS the reserved 「副音备选」tag's VIEW, but its
+  /// ORDER must not be written into that shared view state: the foreground tag
+  /// browser of the same tag would follow. The shuffle is a background-local
+  /// permutation instead ([BackgroundPlaybackState.shuffleSeed], applied by
+  /// `resolveBackgroundCandidates`), so only 副音's queue/panel reorder.
   Future<void> toggleShuffle() async {
     final on = !state.shuffle;
-    var queue = state.queue;
-    var index = state.currentIndex;
-    if (on) {
-      final cur = currentFile;
-      queue = BackgroundQueueLogic.reshuffleKeepingCurrent(
-        state.queue,
-        cur == null ? null : backgroundMediaKey(cur),
-      );
-      // The head moved under the cursor: follow it, otherwise the stale index
-      // points at whatever song landed on the old slot (an instant skip).
-      index = queue.isEmpty ? -1 : 0;
-    }
-    set(state.copyWith(shuffle: on, queue: queue, currentIndex: index));
+    final seed = on
+        ? DateTime.now().millisecondsSinceEpoch & 0x7fffffff
+        : 0;
+    set(state.copyWith(shuffle: on, shuffleSeed: seed));
+    // The order changed, so the window's global offsets are invalidated:
+    // re-resolve it while keeping the file that is playing current.
+    await _reloadWindowKeepingCurrent();
     await save(state);
+  }
+
+  /// Re-resolves the queue window from the pool, keeping the file that is
+  /// playing current. Used after a scenario-order change (shuffle toggle), where
+  /// the window's global offsets are invalidated.
+  Future<void> _reloadWindowKeepingCurrent() async {
+    if (!state.enabled || !DbModule.isReady) return;
+    final cur = currentFile;
+    try {
+      // Centre the page on the file that is playing: the order changed, the
+      // playing item did not. The anchor is the media KEY, never the numeric
+      // index — the index was taken in the OLD order (the whole reason this
+      // reload exists), so centring on it pointed the page at unrelated
+      // content and dropped the playing file onto the page head.
+      final w = await BackgroundScenarioPool.shared.window(
+        aroundKey: cur == null ? null : backgroundMediaKey(cur),
+      );
+      if (w.files.isEmpty) return;
+      final index = BackgroundQueueLogic.pickStartIndex(
+        queue: w.files,
+        preferredKeys: [
+          if (cur != null) backgroundMediaKey(cur),
+          if (w.focusKey != null) w.focusKey!,
+        ],
+        excludedKey: excludedForegroundKey(),
+      );
+      set(state.copyWith(
+        queue: w.files,
+        queueWindowStart: w.start,
+        queueTotal: w.total,
+        currentIndex: index,
+      ));
+    } catch (_) {}
   }
 
   // ── Queue refresh (candidate sources may change while playing) ──
 
   /// Replaces the queue from a fresh candidate resolve. When the current file
-  /// still exists (by media key) it stays current and keeps playing;
-  /// otherwise playback restarts at the head of the new list.
-  Future<void> replaceQueue(List<FileItem> candidates) async {
+  /// still exists (by media key) it stays current and keeps playing.
+  ///
+  /// When the current file has LEFT the pool, playback is PAUSED and the queue
+  /// lands on the new head instead of silently switching tracks: the pool is
+  /// the user's list of what 副音 may play, and removing the playing entry does
+  /// not mean "play the next one now". The user presses play (or picks a row)
+  /// to continue; nothing audible changes underneath them.
+  Future<void> replaceQueue(
+    List<FileItem> candidates, {
+    BgQueueWindow? window,
+  }) async {
     if (!state.enabled) {
       _log.w('replaceQueue: not enabled — ignored');
       return;
@@ -1393,35 +1934,41 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       _log.w('replaceQueue: empty candidate list — keeping the current queue');
       return;
     }
-    final ordered = state.shuffle
-        ? BackgroundQueueLogic.shuffled(candidates)
-        : List<FileItem>.of(candidates);
+    // Like [enableWithQueue]: a WINDOW over the scenario stream, already in the
+    // scenario's order; a caller-supplied list is a window at the head.
+    final w = window ?? BgQueueWindow.ofList(List<FileItem>.of(candidates));
+    final ordered = w.files;
+    if (ordered.isEmpty) return;
     final cur = currentFile;
-    // Keep playing what was playing; otherwise open something that is not the
-    // foreground's own file (the pool legitimately contains it).
+    final curKey = cur == null ? null : backgroundMediaKey(cur);
+    final bool currentLeftPool = curKey != null &&
+        !ordered.any((f) => backgroundMediaKey(f) == curKey);
+    // Keep playing what was playing; the remembered position (the window's
+    // focus) is only a fallback, and BOTH go through the same-file guard. The
+    // pool's window is centred on the playing item when the caller knows it
+    // (`window(around:)`), so the two agree unless the file left the pool.
     final index = BackgroundQueueLogic.pickStartIndex(
       queue: ordered,
-      preferredKey: cur == null ? null : backgroundMediaKey(cur),
+      preferredKeys: [
+        if (curKey != null) curKey,
+        if (w.focusKey != null) w.focusKey!,
+      ],
       excludedKey: excludedForegroundKey(),
     );
-    set(state.copyWith(queue: ordered, currentIndex: index));
+    set(state.copyWith(
+      queue: ordered,
+      queueWindowStart: w.start,
+      queueTotal: w.total,
+      currentIndex: index,
+      // The playing file left the pool: stop instead of switching to the head.
+      bgAutoPlay: currentLeftPool ? false : state.bgAutoPlay,
+    ));
+    if (currentLeftPool) {
+      _log.i('replaceQueue: the playing file left the pool — paused at the '
+          'new head instead of switching');
+    }
     await save(state);
-  }
-
-  /// Appends the candidates a live run is missing, keeping everything already
-  /// queued in place (see [BgQueueSyncMode.append]).
-  ///
-  /// The [BgQueueSyncMode.append] counterpart of [replaceQueue]: no reorder, no
-  /// re-shuffle, and therefore no risk of moving the file that is playing. A
-  /// resolve that adds nothing returns without touching the store, so an
-  /// unrelated tag write costs no `set` and no persist.
-  Future<void> appendCandidates(List<FileItem> candidates) async {
-    if (!state.enabled) return;
-    if (candidates.isEmpty) return;
-    final next = appendedBgQueue(queue: state.queue, candidates: candidates);
-    if (next.length == state.queue.length) return;
-    set(state.copyWith(queue: next));
-    await save(state);
+    await _persistCurrentOccurrence();
   }
 
   /// How a live run folds a tag-membership change into its queue
@@ -1709,6 +2256,15 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       fgVolumePercent: fg,
       bgVolumePercent: bg,
       rate: rate,
+      // Shuffle is on by default. A snapshot without a local seed (a legacy
+      // one, whose order used to live in the shared tag view; or a fresh
+      // install) gets a RANDOM one, which is what "a random first 副音 play"
+      // means once the permutation is background-local.
+      shuffleSeed: s.shuffle
+          ? (s.shuffleSeed == 0
+              ? (Random().nextInt(0x7ffffffe) + 1)
+              : s.shuffleSeed)
+          : 0,
       // Session-only state always starts clean.
       displayTarget: ControlTarget.foreground,
       openQuickPanel: BgQuickPanel.none,
@@ -1724,6 +2280,11 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       userBgSwitchSeq: 0,
       userBgSwitchIndex: -1,
       bgUserAlignSeq: 0,
+      alignOffsetMs: null,
+      alignVirtualOffsetMs: null,
+      alignOffsetAnchorIndex: null,
+      alignOffsetAnchorKey: null,
+      alignOffsetSeq: 0,
       // The 作用范围 preference survives only when the user asked it to.
       applyScope: s.scopePersist ? s.applyScope : BgApplyScope.currentOnly,
       scopeAnchorKey: null,
@@ -1731,6 +2292,12 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       segmentEditMode: false,
       segmentEditDraft: null,
       segmentEditStageOnly: false,
+      // 时长探测 is per-session: the queue's durations are re-resolved (and
+      // re-probed) on the next run.
+      bgDurationFailedKeys: const <String>{},
+      bgDurationUnknownKeys: const <String>{},
+      bgDurationProbing: false,
+      bgDurationProbeSeq: 0,
     );
   }
 }

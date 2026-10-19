@@ -12,6 +12,7 @@ import 'package:iris/pages/player/control_bar/control_bar_widgets/playlist_dock_
 import 'package:iris/pages/player/control_bar/control_bar_widgets/rate_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/repeat_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/rotate_button.dart';
+import 'package:iris/pages/player/control_bar/control_bar_widgets/screen_lock_button.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/shuffle_button.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_bar_align.dart';
 import 'package:iris/features/background_playback/view/background_quick_bar.dart';
@@ -56,6 +57,14 @@ class ControlBarControls {
 
   bool get showFit => file?.type != ContentType.audio;
 
+  /// Mobile-only screen-lock entry (phone + tablet video). A desktop pointer
+  /// cannot mis-touch the surface the way a palm can, and an audio item has
+  /// no full-screen video to guard. Carried by the playback ROW on phones (it
+  /// took the slot the 副音 menu button vacated); desktop keeps the 副音 menu
+  /// there and never arms the guard.
+  bool get showScreenLock =>
+      isMobilePlatform && file?.type == ContentType.video;
+
   /// Desktop-only 窗口适应模式 toggle (gate-ON era; legacy mode keeps the
   /// autoResize settings checkbox). Videos only — a fixed-size audio cover
   /// has nothing to fit.
@@ -83,6 +92,14 @@ class ControlBarControls {
         color: color,
         overlayColor: overlayColor,
       );
+
+  /// Mobile-only screen-lock toggle. It occupies the slot the 副音 menu button
+  /// used to hold on the playback row (that menu now lives in the 副音 control
+  /// group), so it follows the same condition the old More-menu entry did —
+  /// phone + tablet video only. Desktop never arms the touch guard, and it keeps
+  /// the 副音 menu in that slot instead.
+  Widget get screenLock => ScreenLockButton(
+      showControl: showControl, color: color, overlayColor: overlayColor);
 
   Widget get subtitle => SubtitleButton(
       color: color, overlayColor: overlayColor, showControlForHover: showControlForHover);
@@ -144,9 +161,15 @@ class ControlBarControls {
 
   /// Right group of the desktop bar — restores subtitle lost vs legacy.
   /// Playlist dock toggle lives ONLY in the side panel ([CircleSliderLayout]).
+  ///
+  /// The screen-lock toggle rides the same slot the phone bar puts it in (after
+  /// the 副音 menu, before the queue): an Android tablet at desktop width — where
+  /// the bar renders this group — must still be able to arm the touch guard.
+  /// On the desktop app the condition is false, so the arrangement is unchanged.
   List<Widget> get desktopRightButtons => [
         if (!isCollapsed(ControlBarSlot.subtitle)) subtitle,
         if (!isCollapsed(ControlBarSlot.backgroundMenu)) backgroundPlaybackMenu,
+        if (showScreenLock) screenLock,
         if (!isCollapsed(ControlBarSlot.playQueue)) playQueue,
         if (!isCollapsed(ControlBarSlot.storage)) storage,
         if (isDesktop && !isCollapsed(ControlBarSlot.fullscreen)) fullscreen,

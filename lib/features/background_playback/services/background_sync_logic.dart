@@ -359,6 +359,24 @@ BgMirrorAction resolveBgMirrorAction({
   return BgMirrorAction.fgDrivesBg;
 }
 
+/// Whether a bg-master mirror target may actually be issued on this sample.
+///
+/// A CONTINUOUS drift correction (a settled sample with NO real 副音 move) may
+/// only pull the follower FORWARD. A backward target means 副音's own reported
+/// position sits behind the pair's anchor — the state right after an activation
+/// whose alignment seek has not landed yet, where 副音 still reports its head —
+/// and seeking the video there rewinds it: the 「开启副音把播放进度归 0」 report.
+/// Only a REAL 副音 move ([fromRealBgMove]: a user seek/step landing, carried by
+/// [BgMirrorAction.bgDrivesFg] from a `bgJump` sample) may move the video
+/// backward. Under 仅当前 the clamp would otherwise turn such a behind-target
+/// into a hard `seek(0)`, so the guard runs BEFORE the clamp.
+bool bgMasterMaySeekFg({
+  required bool fromRealBgMove,
+  required int fgTarget,
+  required int fgMs,
+}) =>
+    fromRealBgMove || fgTarget >= fgMs;
+
 /// Whether an ARMED system-seek latch may be consumed on this sample.
 ///
 /// The latch is armed when a system bg seek is ISSUED; it must only be
@@ -368,12 +386,20 @@ BgMirrorAction resolveBgMirrorAction({
 /// sample after the bump, before the position updates) misread the landing as
 /// a user jump and mirrored it onto the foreground — the "enabling 副音 skips
 /// the episode" report.
+///
+/// [seekIssued] is false when the arming caller SKIPPED the seek because the
+/// resolved target was already satisfied (a zero target — there is nothing to
+/// send). Nothing can land, so nothing must be waited for: without this the
+/// latch could only expire on the 900ms deadline, and the mirror — which
+/// returns early while a system seek is "in flight" — stood frozen for that
+/// whole window (「开启副音后镜像冻结 ~900ms」).
 bool shouldConsumeSystemSeekLatch({
   required bool armed,
   required bool bgJump,
   required bool deadlineExpired,
+  bool seekIssued = true,
 }) =>
-    armed && (bgJump || deadlineExpired);
+    armed && (!seekIssued || bgJump || deadlineExpired);
 
 /// Whether a position sample represents a deliberate jump (seek) rather than
 /// normal playback advance.

@@ -96,6 +96,34 @@ void main() {
     });
   });
 
+  group('statFactsOrUnknown', () {
+    test('a successful stat passes its facts through', () async {
+      final dir = Directory.systemTemp.createTempSync('iris-stat-test');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final f = File('${dir.path}${Platform.pathSeparator}a.bin')
+        ..writeAsBytesSync(<int>[1, 2, 3]);
+
+      final facts = await statFactsOrUnknown(f.stat);
+
+      expect(facts.size, 3);
+      expect(facts.modified, isNotNull);
+    });
+
+    test('a THROWING stat degrades to unknown instead of aborting the caller',
+        () async {
+      Object? reported;
+      final facts = await statFactsOrUnknown(
+        () async => throw const FileSystemException('stat failed'),
+        onError: (e) => reported = e,
+      );
+      expect(facts.size, 0);
+      expect(facts.modified, isNull);
+      expect(reported, isA<FileSystemException>());
+    });
+  });
+
   group('getLocalFilesResult', () {
     test('a missing directory stays a non-error empty result on this host', () async {
       final storage = LocalStorage(

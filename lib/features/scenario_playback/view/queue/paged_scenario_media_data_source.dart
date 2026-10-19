@@ -545,9 +545,10 @@ class PagedScenarioMediaDataSource
     // `seq` is deliberately a different number: the chunk's stable identity,
     // which does not renumber when rows are filtered in or out.
     //
-    // Tag view: the list is the tag's own dense snapshot, and its items carry
-    // the SCENARIO's `virtualIndex`, so the row ordinal in this dense list is
-    // the number that matches how the tag view is paged.
+    // Tag view: the list is the tag's own dense snapshot. Its items now carry
+    // the tag-view position (the resolver renumbers after its own sort/shuffle),
+    // but the ordinal is still read from the page offset so a row that failed to
+    // rebuild (absent from `_items`) cannot shift the numbering.
     final number = _tagActive
         ? _currentPage * pageSize + _items.indexOf(item) + 1
         : item.virtualIndex + 1;

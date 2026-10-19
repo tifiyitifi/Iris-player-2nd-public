@@ -7,7 +7,6 @@ import 'package:iris/features/app_identity/view/app_identity_manager_page.dart'
     show showAppIdentityManager;
 import 'package:iris/features/background_playback/model/background_playback_state.dart';
 import 'package:iris/features/background_playback/model/enum/align_ring_assignment.dart';
-import 'package:iris/features/background_playback/model/enum/bg_align_default.dart';
 import 'package:iris/features/background_playback/model/enum/bg_cross_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_gate_stop_behavior.dart';
@@ -27,11 +26,9 @@ import 'package:iris/features/background_playback/resolver/fg_display_window.dar
 import 'package:iris/features/background_playback/resolver/segment_snap.dart';
 import 'package:iris/features/background_playback/view/bg_segment_guide_dialog.dart'
     show showBgSegmentGuideDialog;
-import 'package:iris/features/background_playback/store/bg_source_prefs.dart';
+import 'package:iris/features/background_playback/view/bg_align_auto_rule_dialog.dart'
+    show showBgAlignAutoRuleDialog;
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
-import 'package:iris/features/background_playback/view/background_sources_sheet.dart'
-    show showBackgroundSourcesSheet;
-import 'package:iris/models/db/db_module.dart';
 import 'package:iris/features/virtual_media/view/vm_manager_page.dart'
     show showVirtualMediaManager;
 import 'package:iris/features/virtual_media/view/vm_mark_color_dialog.dart'
@@ -54,8 +51,6 @@ import 'package:iris/features/media_library/scan/view/scan_rescan_reminder_dialo
 import 'package:iris/features/meta_settings/engine/browse_media_scope.dart';
 import 'package:iris/features/meta_settings/engine/playback_resume.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
-import 'package:iris/hooks/player/step_seek_mode.dart';
-import 'package:iris/models/enums/step_seek_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/meta_settings/view/setting_texts.dart';
@@ -268,18 +263,6 @@ abstract final class EditorBindings {
                     s.useMetadataSettings && MetaSettingsModule.ready),
             t),
         open: _openVideoCachePresetDialog,
-      ),
-
-      // ── Play · step-seek strategy (`playback.` AUX) ──
-      'playback_step_seek_mode': _tile(
-        icon: Icons.fast_forward_rounded,
-        titleKey: 'playback_step_seek_mode',
-        subtitle: (s, t) => _stepSeekModeLabel(
-            resolveStepSeekMode(s,
-                metadataEnabled:
-                    s.useMetadataSettings && MetaSettingsModule.ready),
-            t),
-        open: _openStepSeekModeDialog,
       ),
 
       // ── General ──
@@ -634,8 +617,6 @@ abstract final class EditorBindings {
 
       // ── Play · 副音播放 rows (`background_playback.*`): values live in the
       //     background-playback store, never the `app.` snapshot ──
-      'bg_sources': (context, def) => const _BgSourcesTile(),
-      'bg_fallback_banner': (context, def) => const _BgFallbackBannerTile(),
       'bg_start_armed': _bgSwitchTile(
         icon: Icons.power_settings_new_rounded,
         titleKey: 'set_bg_start_armed',
@@ -660,15 +641,18 @@ abstract final class EditorBindings {
         valueOf: (s) => s.mappingEnabled,
         apply: (bg, v) => bg.setMappingEnabled(v),
       ),
-      'bg_align_default': _bgEnumTile<BgAlignDefault>(
-        icon: Icons.tune_rounded,
-        titleKey: 'set_bg_align_default',
-        subtitleKey: 'set_bg_align_default_desc',
-        defKey: 'background_playback.alignDefault',
-        values: BgAlignDefault.values,
-        valueOf: (s) => s.alignDefault,
-        apply: (bg, v) => bg.setAlignDefault(v),
-      ),
+      'bg_align_default': (context, def) => ListTile(
+            leading: const Icon(Icons.rule_rounded),
+            title: Text(
+              SettingTexts.title(
+                  'set_bg_align_default', getLocalizations(context)),
+            ),
+            subtitle: Text(
+              SettingTexts.subtitle(
+                  'set_bg_align_default_desc', getLocalizations(context)),
+            ),
+            onTap: () => showBgAlignAutoRuleDialog(context),
+          ),
       'bg_ratio_explicit_save': _bgSwitchTile(
         icon: Icons.save_rounded,
         titleKey: 'set_bg_ratio_explicit_save',
@@ -1290,23 +1274,6 @@ abstract final class EditorBindings {
     );
   }
 
-  static void _openStepSeekModeDialog(BuildContext context) {
-    final t = getLocalizations(context);
-    final store = useAppStore();
-    showEnumRadioDialog<StepSeekMode>(
-      context: context,
-      title: SettingTexts.title('playback_step_seek_mode', t),
-      values: StepSeekMode.values,
-      currentValue: resolveStepSeekMode(
-        store.state,
-        metadataEnabled:
-            store.state.useMetadataSettings && MetaSettingsModule.ready,
-      ),
-      labelOf: (v) => _stepSeekModeLabel(v, t),
-      onSelected: (v) => unawaited(store.updateStepSeekMode(v)),
-    );
-  }
-
   // Shared enum→label helpers: the row subtitle and its dialog must report the
   // SAME localized name (previously duplicated as inline switches).
   static String _browseScopeLabel(BrowseMediaScope scope, AppLocalizations t) =>
@@ -1354,12 +1321,6 @@ abstract final class EditorBindings {
         VideoCachePreset.low => t.set_cache_preset_low,
         VideoCachePreset.balanced => t.set_cache_preset_balanced,
         VideoCachePreset.high => t.set_cache_preset_high,
-      };
-
-  static String _stepSeekModeLabel(StepSeekMode v, AppLocalizations t) =>
-      switch (v) {
-        StepSeekMode.precise => t.set_step_seek_mode_precise,
-        StepSeekMode.adaptive => t.set_step_seek_mode_adaptive,
       };
 
   /// Builds a reactive tile whose subtitle recomputes from live state on

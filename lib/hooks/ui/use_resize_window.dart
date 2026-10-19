@@ -43,8 +43,9 @@ void useResizeWindow() {
   final autoResize = useAppStore().select(context, (state) => state.autoResize);
   // Metadata era: WindowFitMode (窗口适应模式) replaces the legacy autoResize
   // blob knob as the window-sizing authority.
-  final metadataGate = useAppStore().select(context, (s) => s.useMetadataSettings) &&
-      MetaSettingsModule.ready;
+  final bool metadataOn =
+      useAppStore().select(context, (s) => s.useMetadataSettings);
+  final metadataGate = metadataOn && MetaSettingsModule.ready;
   final windowFitMode = useAppStore().select(context, (s) => s.windowFitMode);
   final isFullScreen =
       usePlayerUiStore().select(context, (state) => state.isFullScreen);
@@ -70,6 +71,8 @@ void useResizeWindow() {
   final playlistPanelMode = useAppStore().select(context, (s) => s.playlistPanelMode);
   final playlistPanelVisible = useAppStore().select(context, (s) => s.playlistPanelVisible);
   final playlistPanelWidth = useAppStore().select(context, (s) => s.playlistPanelWidth);
+  final legacyStorage =
+      useAppStore().select(context, (s) => s.useLegacyStoragePersistence);
 
   final currentPlay = usePlayQueueStore().select(context, (state) {
     final index =
@@ -177,6 +180,8 @@ void useResizeWindow() {
           mode: playlistPanelMode,
           visible: playlistPanelVisible,
           isFullScreen: isFullScreen,
+          useMetadataSettings: metadataOn,
+          legacyStorage: legacyStorage,
         );
         final double dockChrome = dockVisible
             ? clampPlaylistPanelWidth(playlistPanelWidth, workArea.width) +
@@ -243,6 +248,8 @@ void useResizeWindow() {
           mode: playlistPanelMode,
           visible: playlistPanelVisible,
           isFullScreen: isFullScreen,
+          useMetadataSettings: metadataOn,
+          legacyStorage: legacyStorage,
         );
         final double dockChrome = dockVisibleForResize
             ? clampPlaylistPanelWidth(
@@ -341,6 +348,7 @@ void useResizeWindow() {
     playlistPanelMode,
     playlistPanelVisible,
     playlistPanelWidth,
+    legacyStorage,
     isDragging,
   ]);
 }

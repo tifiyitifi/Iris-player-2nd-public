@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/meta_settings/data/value_codec.dart';
@@ -17,7 +16,6 @@ import 'package:iris/models/db/app_database.dart'
     show SettingValuesTableCompanion;
 import 'package:iris/models/enums/breadcrumb_start_side.dart'
     show BreadcrumbStartSide;
-import 'package:iris/models/enums/step_seek_mode.dart' show StepSeekMode;
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart' show WebDavScanMode;
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -38,8 +36,6 @@ import 'package:iris/features/virtual_media/rule/vm_tick_color.dart'
     show sanitizeVmTickColorArgb;
 import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart'
     show kVmTickExtentMaxPx, kVmTickExtentMinPx, sanitizeVmTickExtentPx;
-import 'package:iris/features/tag_play/playback/tag_play_controller.dart';
-import 'package:iris/features/tag_play/store/use_tag_play_store.dart';
 import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/keyboard_form_geometry.dart';
@@ -530,15 +526,6 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     set(state.copyWith(videoCachePreset: v));
     await _savePlaybackRow(
         'videoCachePreset', v.name, SettingValueType.enumeration);
-  }
-
-  /// Sets the step-seek (← / →) scheduling strategy; persisted as a
-  /// `playback.stepSeekMode` AUX row. The media_kit hook re-reads it live, so a
-  /// change takes effect on the next burst without reopening the video.
-  Future<void> updateStepSeekMode(StepSeekMode v) async {
-    set(state.copyWith(stepSeekMode: v));
-    await _savePlaybackRow(
-        'stepSeekMode', v.name, SettingValueType.enumeration);
   }
 
   // ── Keyboard OSD (PotPlayer-style) ──────────────────────────────────────
@@ -1327,7 +1314,6 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     final String? raw = rows['resumeOnStartup'];
     final String? dropRaw = rows['dropAppendPercent'];
     final String? cacheRaw = rows['videoCachePreset'];
-    final String? stepModeRaw = rows['stepSeekMode'];
     return base.copyWith(
       resumeOnStartup: raw == null
           ? base.resumeOnStartup
@@ -1345,12 +1331,6 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
           : VideoCachePreset.values.firstWhere(
               (v) => v.name == cacheRaw,
               orElse: () => base.videoCachePreset,
-            ),
-      stepSeekMode: stepModeRaw == null
-          ? base.stepSeekMode
-          : StepSeekMode.values.firstWhere(
-              (v) => v.name == stepModeRaw,
-              orElse: () => base.stepSeekMode,
             ),
     );
   }

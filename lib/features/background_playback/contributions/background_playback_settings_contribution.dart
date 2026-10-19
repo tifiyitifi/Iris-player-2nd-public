@@ -46,29 +46,6 @@ abstract final class BackgroundPlaybackSettingsContribution {
           sortOrder: 67,
         ),
         SettingDef(
-          key: 'background_playback.sourceManage',
-          section: SettingsSection.play,
-          valueType: SettingValueType.json,
-          widgetKind: SettingWidgetKind.custom,
-          editorKey: 'bg_sources',
-          titleKey: 'set_bg_sources',
-          subtitleKey: 'set_bg_sources_desc',
-          iconKey: 'bg_sources',
-          sortOrder: 70,
-        ),
-        SettingDef(
-          key: 'background_playback.fallbackBanner',
-          section: SettingsSection.play,
-          valueType: SettingValueType.bool,
-          defaultValue: 'true',
-          widgetKind: SettingWidgetKind.custom,
-          editorKey: 'bg_fallback_banner',
-          titleKey: 'set_bg_fallback_banner',
-          subtitleKey: 'set_bg_fallback_banner_desc',
-          iconKey: 'bg_fallback_banner',
-          sortOrder: 97,
-        ),
-        SettingDef(
           key: 'background_playback.followFgSwitch',
           section: SettingsSection.play,
           valueType: SettingValueType.bool,
@@ -117,12 +94,14 @@ abstract final class BackgroundPlaybackSettingsContribution {
           iconKey: 'bg_video_layout',
           sortOrder: 74,
         ),
+        // Informational row only: default anchoring is AUTOMATIC
+        // (`resolveAutoAlignAnchor`), so no option is offered — tapping opens
+        // an explanation of the rule (the persisted `bg.alignDefault` AUX row
+        // is kept but no longer drives anything).
         SettingDef(
           key: 'background_playback.alignDefault',
           section: SettingsSection.play,
-          valueType: SettingValueType.enumeration,
-          defaultValue: 'fgHead',
-          enumValues: ['fgHead', 'fgPosition', 'bgPercent'],
+          valueType: SettingValueType.json,
           widgetKind: SettingWidgetKind.custom,
           editorKey: 'bg_align_default',
           titleKey: 'set_bg_align_default',

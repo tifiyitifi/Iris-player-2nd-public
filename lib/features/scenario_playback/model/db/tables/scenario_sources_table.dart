@@ -28,5 +28,8 @@ class ScenarioSourcesTable extends Table {
   DateTimeColumn get createdAt => dateTime().nullable()();
 
   @override
-  List<String> get customConstraints => ['UNIQUE(scenario_id, storage_id, path)'];
+  List<String> get customConstraints => [
+        // The business key is (scenario, storage, path).
+        'UNIQUE(scenario_id, storage_id, path)',
+      ];
 }

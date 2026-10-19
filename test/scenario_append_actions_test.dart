@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_append_actions.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/app_database.dart';
@@ -13,6 +14,7 @@ import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
+import 'package:iris/utils/path_conv.dart';
 
 /// F-009 / D16 / D12: the shared append action supports mixed file + directory
 /// appends; the plain variant early-returns only when BOTH are empty, while
@@ -80,7 +82,12 @@ void main() {
     await ScenarioAppendActions.appendToDefaultScenario(
       [fileItem('s', 'b.mp4')],
       directories: const [
-        (storageId: 's', path: 'a', recursive: true),
+        (
+          storageId: 's',
+          path: 'a',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
     );
 
@@ -101,11 +108,66 @@ void main() {
     await ScenarioAppendActions.appendToDefaultScenario(
       const [],
       directories: const [
-        (storageId: 's', path: 'd', recursive: false),
+        (
+          storageId: 's',
+          path: 'd',
+          recursive: false,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
     );
     final srcs = await store.getSources(sys.id);
     expect(srcs.where((s) => s.path == 'd').first.recursive, isFalse);
+  });
+
+  test('a path-less SAF single pick is appended by its uri, not dropped',
+      () async {
+    // Two picks of ONE storage: both must land and both must RESOLVE. The old
+    // `path.isNotEmpty` filter threw every SAF single pick away, and the
+    // scenario table's UNIQUE(scenario_id, storage_id, path) collapsed them.
+    const u1 = 'content://doc/one';
+    const u2 = 'content://doc/two';
+    for (final (uri, name) in const [(u1, 'one.mp4'), (u2, 'two.mp4')]) {
+      await DbModule.mediaNodesDao.insertNode(MediaNode.file(
+        id: 'saf:$uri',
+        storageId: 's',
+        path: const <String>[],
+        name: name,
+        mediaType: MediaType.video,
+        uri: uri,
+      ));
+    }
+
+    await ScenarioAppendActions.appendToDefaultScenario([
+      const FileItem(
+        storageId: 's',
+        name: 'one.mp4',
+        uri: u1,
+        type: ContentType.video,
+      ),
+      const FileItem(
+        storageId: 's',
+        name: 'two.mp4',
+        uri: u2,
+        type: ContentType.video,
+      ),
+    ]);
+
+    // Stored in the DB-canonical form (the scenario DAO canonicalizes, like
+    // `media_nodes.path`).
+    expect(
+      await explicitPaths(),
+      containsAll(<String>[canonicalDbPath(u1), canonicalDbPath(u2)]),
+    );
+
+    // The chain must resolve: the explicit path is looked up in `media_nodes`
+    // (a path-less SAF row is keyed by that same canonical uri).
+    final page =
+        await usePlaybackScenarioStore().resolvePage(page: 0, pageSize: 10);
+    expect(
+      page.items.map((e) => e.media.name).toSet(),
+      containsAll(<String>{'one.mp4', 'two.mp4'}),
+    );
   });
 
   test('append honors dir.recursive and empty-path storage root (v2-D1/F-009)',
@@ -116,7 +178,12 @@ void main() {
     await ScenarioAppendActions.appendToDefaultScenario(
       const [],
       directories: const [
-        (storageId: 's', path: '', recursive: true),
+        (
+          storageId: 's',
+          path: '',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
     );
     final srcs = await store.getSources(sys.id);
@@ -134,8 +201,9 @@ void main() {
         body: Builder(
           builder: (context) => Center(
             child: TextButton(
-              onPressed: () => ScenarioAppendActions
-                  .appendToDefaultScenarioWithFeedback(context, const []),
+              onPressed: () =>
+                  ScenarioAppendActions.appendToDefaultScenarioWithFeedback(
+                      context, const []),
               child: const Text('open'),
             ),
           ),

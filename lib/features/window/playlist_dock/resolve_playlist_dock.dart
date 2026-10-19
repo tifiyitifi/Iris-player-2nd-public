@@ -13,8 +13,15 @@ bool isDockIntentVisible({
   required PlaylistPanelMode mode,
   required bool visible,
   required bool isFullScreen,
+  required bool useMetadataSettings,
+  required bool legacyStorage,
 }) {
   if (!isDesktop) return false;
+  // The desktop dock is a meta-era feature: it exists only while the metadata
+  // subsystem is ON AND the legacy-storage backend is OFF. Either legacy state
+  // (master gate OFF, or the legacy-storage switch ON) means "no side panel" —
+  // there is no queue surface for the dock to show there.
+  if (!useMetadataSettings || legacyStorage) return false;
   if (mode != PlaylistPanelMode.dockedRight) return false;
   if (!visible) return false;
   // Video fullscreen: only floating list, never side dock (spec §3).
@@ -36,6 +43,8 @@ bool shouldShowPlaylistDock({
   required bool visible,
   required bool isFullScreen,
   required SideFullscreenBehavior behavior,
+  required bool useMetadataSettings,
+  required bool legacyStorage,
 }) {
   // `maxWidth`/`behavior` kept for call-site compatibility; width no longer
   // gates the dock (see above).
@@ -44,6 +53,8 @@ bool shouldShowPlaylistDock({
     mode: mode,
     visible: visible,
     isFullScreen: isFullScreen,
+    useMetadataSettings: useMetadataSettings,
+    legacyStorage: legacyStorage,
   );
 }
 
@@ -64,7 +75,8 @@ double clampPlaylistPanelWidth(double raw, double maxWidth) {
 // Strictly scoped: this only affects [PlaylistPanelMode.dockedRight] while
 // [isFullScreen] is true. Window fullscreen ([isWindowMaximized]) and windowed
 // mode keep the existing side-by-side Row dock untouched; floating popup mode
-// keeps its own route. Legacy mode (metadata gate OFF) never enables it.
+// keeps its own route. Legacy mode (metadata gate OFF) and the legacy-storage
+// backend never enable it.
 
 /// Right-edge hover activation strip width, expressed as a percentage of the
 /// playback-area width. A percentage (not px) keeps the summon target ergonomic
@@ -130,9 +142,11 @@ bool isFullscreenDockOverlayEnabled({
   required bool useMetadataSettings,
   required PlaylistPanelMode mode,
   required bool isFullScreen,
+  required bool legacyStorage,
 }) {
   if (!isDesktop) return false;
   if (!useMetadataSettings) return false;
+  if (legacyStorage) return false;
   if (mode != PlaylistPanelMode.dockedRight) return false;
   return isFullScreen;
 }

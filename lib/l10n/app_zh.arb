@@ -237,6 +237,9 @@
   "transfer_export_pass_empty": "导出网络存储必须设置口令",
   "transfer_export_pass_numeric_bad": "数字口令需至少4位数字",
   "transfer_export_pass_too_short": "口令至少4位",
+  "transfer_export_partial_title": "部分内容导出失败",
+  "transfer_export_partial_body": "以下部分未能导出。仍要导出其余部分吗？保存的文件将不含这些内容。",
+  "transfer_export_partial_continue": "导出其余部分",
   "transfer_import_decrypt_title": "输入口令解密",
   "transfer_import_pass_label": "口令",
   "transfer_import_pass_empty": "口令不能为空",
@@ -784,7 +787,7 @@
   "set_window_fit_mode_desc": "打开视频时把窗口调整为该视频分辨率，或保持当前窗口大小（仅桌面）",
 
   "set_snake_fine_window_desc": "锚点前后 ± 秒（共用）",
-  "set_seek_step_seconds_desc": "统一的一档步进：双击、垂直滑动与拨环边角共用",
+  "set_seek_step_seconds_desc": "双击、垂直滑动与拨环边角共用的一档步进。该值是最低目标：media-kit 后端落点为最近的关键帧，实际前进量可大于步长（优先播放体验）",
   "set_keyboard_shortcut_scheme_desc": "对齐 PotPlayer 的 Windows 按键。元数据系统关闭时回退 IRIS 经典方案",
   "set_desktop_control_bar_layout_desc": "三行：顶部位置/时长 + 全宽进度条，再加按钮行。元数据系统关闭时回退单行栏",
   "set_warning_dialog_prefs_desc": "选择哪些可恢复的警告可以不再提示。破坏性与错误对话框始终显示",
@@ -1507,7 +1510,6 @@
   "lib_open_with": "用其它应用打开",
   "lib_play_append": "追加播放",
   "lib_add_as_source": "添加为源",
-  "lib_add_as_bg_source": "添加为音源",
   "lib_add_as_vm_merge": "添加为虚拟合并",
   "lib_create_library": "创建媒体库",
   "lib_batch_create": "批量创建媒体库",
@@ -1712,6 +1714,8 @@
   "control_group_floating_show_portrait": "竖屏显示",
   "control_group_floating_show_desktop": "电脑显示",
   "control_group_button_tip": "切换底部控制组",
+  "screen_lock_lock": "锁定屏幕",
+  "screen_lock_unlock": "解锁",
   "control_group_playback": "播放控制组",
   "control_group_background": "副音控制组",
   "phone_mode_normal": "普通控制",
@@ -2205,6 +2209,10 @@
   "track_subtitle": "字幕",
   "track_audio": "音频",
   "track_sync_reset": "复位",
+  "track_sync_earlier": "{seconds} 秒前",
+  "track_sync_later": "{seconds} 秒后",
+  "track_sync_step": "±{seconds} 秒",
+  "track_subtitle_load_failed": "无法加载字幕「{name}」：文件可能不在服务器上，或被服务器拒绝提供。",
   "osd_dock_shown": "播放列表侧边已显示",
   "osd_dock_hidden": "播放列表侧边已隐藏",
   "osd_dock_docked": "播放列表：侧边停靠",
@@ -2565,12 +2573,18 @@
   "update_download_interrupted": "下载已中断。",
   "update_download_size_mismatch": "下载的文件与预期大小不符。",
   "update_download_hash_mismatch": "下载的文件与公布的校验值不符。",
+  "update_checksum_unavailable": "本次发布没有提供校验值清单，因此只按公布的体积校验。",
+  "update_checksum_unlisted": "本次发布的校验值清单里没有 {file}，已拒绝下载。发布页上的安装包可能不完整或被改动，请稍后重试。",
+  "update_verification_unavailable": "本次发布既没有提供校验值清单，也没有给出 {file} 的体积，无法校验，已取消下载。请稍后重试。",
   "update_download_not_writable": "IRIS 无法把更新包写入本机。可能是可用空间不足，或更新目录不可写。这与网络无关——请清理空间后重试。",
   "update_install_confirm_title": "安装更新",
   "update_install_confirm_body": "IRIS 将退出并开始安装更新，当前播放进度会先保存。",
+  "update_install_confirm_body_portable": "IRIS 将退出，便携更新工具会覆盖程序文件，完成后自动重新打开 IRIS；userdata 数据保留。",
   "update_install_failed": "无法启动安装程序。",
+  "update_handoff_integrity_failed": "已下载的安装包与校验结果不再一致，因此未执行安装。该文件已被删除，请重新下载。",
   "update_install_needs_permission_title": "需要授权",
   "update_install_needs_permission_body": "请允许 IRIS 安装本次更新，然后重试。",
+  "update_install_path_unsupported": "IRIS 无法启动便携更新工具：目录路径中含有 Windows 命令解释器会展开的字符（如 % ! & ^ 或括号），因此无法自动交接更新。请手动运行 IRIS 目录下的 portable_update_by_zip.ps1，并指定更新包：\n{path}",
   "update_open_settings": "打开设置",
   "update_will_download": "将下载：{name} · {size}",
   "@update_will_download": {
@@ -2583,6 +2597,25 @@
   "@update_use_universal": {
     "placeholders": {
       "size": {"type": "String"}
+    }
+  },
+  "update_portable_blocked_title": "无法自动更新",
+  "update_portable_blocked_updater_missing": "这个便携包里没有便携更新脚本（portable_update_by_zip.ps1），IRIS 无法覆盖自身程序文件。请从发布页重新下载完整的便携包。",
+  "update_portable_blocked_package_unusable": "下载的更新包不完整或已损坏，已删除，本次没有执行更新。请重新下载。",
+  "update_portable_blocked_not_writable": "程序所在目录不可写（常见于解压到 Program Files 等只读位置），IRIS 无法覆盖自身文件。请把整个 IRIS 文件夹移到可写位置后再试。",
+  "update_report_applied_title": "更新完成",
+  "update_report_applied_body": "已更新到 v{version}。",
+  "@update_report_applied_body": {
+    "placeholders": {
+      "version": {"type": "String"}
+    }
+  },
+  "update_report_incomplete_title": "上次更新未完成",
+  "update_report_incomplete_body": "上次尝试更新到 v{version}，但 IRIS 仍以旧版本启动，说明程序文件没有被覆盖。更新包保留在 {folder}，可双击程序目录下的 portable_update_by_zip.bat 手动完成更新。",
+  "@update_report_incomplete_body": {
+    "placeholders": {
+      "version": {"type": "String"},
+      "folder": {"type": "String"}
     }
   },
   "set_legacy_compat_row": "Legacy 兼容",
@@ -2610,6 +2643,12 @@
   "dlg_known_issues_vm_multiselect_body": "场景播放队列中，虚拟合并条目（带 [vm] 前缀的行）不参与多选：不显示勾选框，批量排除、从 Tag 移除与键盘批量移除都会跳过它，点击播放不受影响。需要排除或取消打标签时，请改对组成该合并项的单个真实文件操作。",
   "dlg_known_issues_scenario_sort_header": "场景播放队列：按修改时间排序会先按目录分组",
   "dlg_known_issues_scenario_sort_body": "场景播放队列开启「同目录连续」时，会先按目录、再按所选字段排序，因此按修改时间排序并不是整条队列的全局时间顺序：只有同一文件夹内的文件才按时间排序，而 PotPlayer 的播放列表是整张列表按日期排序——这就是两者顺序不一致的原因。在排序菜单里取消勾选「同目录连续」即可改为整表的扁平排序。时间取扫描时记录的文件修改时间（毫秒精度），从未扫描、没有时间的条目恒排在最后。",
+  "dlg_known_issues_seek_step_header": "步进定位按关键帧量化（media_kit / mpv）",
+  "dlg_known_issues_seek_step_body": "快速步进（← / →、双击）使用 mpv 原生的 relative + keyframes 定位——也就是 mpv 方向键自己所走的寻址路径：落点为最近的关键帧，因此步进秒数是“最小目标”而非精确距离。当视频的关键帧间隔大于步长时，按一下会前进一个完整的关键帧间隔（如关键帧间隔 4s 的视频，3s 步长实际跳约 4s）。mpv 的行为完全相同。若要求“精确 N 秒”，只能使用精确定位——它会从上一个关键帧开始逐帧解码，画面明显卡顿；IRIS 有意选择播放体验优先于定位精确。",
+  "dlg_known_issues_bg_anchor_header": "副音对齐的自动锚定规则",
+  "dlg_known_issues_bg_anchor_body": "开启副音、或在副音列表/面板切换到另一个副音文件时，锚定由两个真实时长自动决定：副音比视频长 → 同刻度（视频 10:00 ↔ 副音 10:00，副音会一直播到视频结束之后）；副音比视频短、且视频剩余时间能装进副音 → 把副音末尾对齐视频末尾（副音不会再提前播完，代价是跳过副音开头相应的时长，可能从文件中间开始）；其余情况 → 副音从 00:00 对齐视频当前位置。默认锚定不再提供选项，对齐弹窗只说明这条规则，其中的手动方案均为即时更新；手动「更新对齐」只对当前会话生效，重启后回到自动规则。尾部锚定同时会跳过「副音即将播完」的提示，因为此时副音与视频同时结束。",
+  "dlg_known_issues_bg_anchor_vm_header": "副音尾部锚定与虚拟媒体段切换",
+  "dlg_known_issues_bg_anchor_vm_body": "副音锚定始终针对当前的真实文件，不适用虚拟媒体的合并规则。尾部锚定会带来一个非 0 的偏移；当虚拟媒体切换到另一个物理段（或视频自动进入下一集）时，前景文件发生变化，该偏移随之失效，副音可能与视频错位。请用对齐弹窗里的「更新对齐」手动重新锚定；跨文件切换后的自动重锚定属于「作用域」规则，目前尚未实现。",
   "play_backend_mediakit": "Media Kit",
   "play_backend_fvp": "FVP",
   "play_landscape_controls": "手机横屏控制",
@@ -2682,28 +2721,57 @@
   "bg_ratio_live_hint": "实时模式：拖动立即生效，抬手时保存。",
   "bg_ratio_no_current_media": "当前没有播放媒体，只能调整全局比例。",
   "bg_align_title": "副音对齐",
-  "bg_align_mode_from_fg_head": "同一时间轴（00:00 ↔ 00:00）：副音跟随视频时钟",
-  "bg_align_mode_at_position": "副音 00:00 对齐到视频当前位置",
-  "bg_align_section_align": "对齐设置",
-  "bg_align_section_other": "其它设置",
-  "bg_align_scope_update": "更新对齐",
-  "bg_align_scope_default": "默认对齐",
-  "bg_align_default_current": "当前默认：{value}",
-  "@bg_align_default_current": {
+  "bg_align_mode_same_clock": "同一刻度：副音跳到视频当前位置，之后与视频 1:1 同步",
+  "bg_align_mode_bg_head": "副音从 00:00：副音开头对齐视频当前位置",
+  "bg_align_mode_tail": "副音末尾对齐视频末尾（跳过副音开头 {skip}）",
+  "@bg_align_mode_tail": {
     "placeholders": {
-      "value": {
+      "skip": {
         "type": "String"
       }
     }
   },
-  "bg_align_default_effect_hint": "下次对齐时生效，不影响当前播放。",
+  "bg_align_auto_applied": "本次自动锚定：{mode}",
+  "@bg_align_auto_applied": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_align_section_align": "对齐设置",
+  "bg_align_section_other": "其它设置",
+  "bg_align_scope_update": "更新对齐",
+  "bg_align_scope_default": "默认对齐",
+  "bg_align_inactive_hint": "副音未激活，暂时不能对齐。",
+  "bg_align_auto_rule_title": "默认锚定方式",
+  "bg_align_auto_rule": "每次开启副音或切换到另一个副音文件时，由两个真实时长自动决定：副音不短于视频 → 同刻度；副音更短、且视频剩余时长能装进副音 → 副音末尾对齐视频末尾；其余 → 副音从 00:00 对齐视频当前位置。无需手动选择。",
   "bg_align_percent_adjust_hint": "先在这里调好比例，再点上面的百分比方案。",
   "bg_align_hint_hide_forever": "不再显示（可在 设置 → 警告对话框 中恢复）",
-  "bg_align_mode_bg_percent_value": "从副音的 {percent}% 开始",
+  "bg_align_mode_bg_percent_value": "副音从 {percent}%：该点对齐视频当前位置",
   "@bg_align_mode_bg_percent_value": {
     "placeholders": {
       "percent": {
         "type": "int"
+      }
+    }
+  },
+  "bg_align_preview": "对齐后：视频 {fg} → 副音 {bg}",
+  "@bg_align_preview": {
+    "placeholders": {
+      "fg": {
+        "type": "String"
+      },
+      "bg": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_align_preview_beyond": "对齐后：副音将超出末尾（{bg}），会从头开始或接下一首",
+  "@bg_align_preview_beyond": {
+    "placeholders": {
+      "bg": {
+        "type": "String"
       }
     }
   },
@@ -2713,15 +2781,34 @@
   "bg_exhausted_section_note": "用于单一视频内副音先播完的处理，与作用范围无关。",
   "bg_exhausted_next_bg": "接下一首副音，从上一首结束的视频位置开始",
   "bg_exhausted_stop_restore": "暂停副音，恢复视频原音",
-  "bg_align_default_fg_head": "同一时间轴",
-  "bg_align_default_fg_position": "副音从 00:00 开始",
-  "bg_align_default_bg_percent": "从记录比例",
   "bg_exhausted_next_bg_short": "接下一首副音",
   "bg_exhausted_stop_restore_short": "暂停并恢复原音",
   "bg_queue_sync_rebuild": "重建列表",
-  "bg_queue_sync_append": "只追加新的",
+  "bg_queue_sync_append": "仅响应新增",
   "bg_queue_same_file_title": "前景正在播放该视频",
   "bg_queue_same_file_body": "这个视频就是前景正在播放的那一个，不能同时作为副音播放。它会保留在列表里，等你切到别的视频后即可使用。若要允许同时播放，请开启『允许前景与副音同一文件』。",
+  "bg_duration_unknown": "时长未知",
+  "bg_duration_probing": "正在读取时长…",
+  "bg_duration_failed": "时长读取失败",
+  "bg_duration_failed_title": "副音时长不可用",
+  "bg_duration_failed_body": "无法读取「{name}」的时长，缺少它副音无法与视频对齐。请确认文件仍可访问后重试。",
+  "@bg_duration_failed_body": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_duration_network": "网络存储不探测时长",
+  "bg_duration_retry": "重新读取时长",
+  "bg_duration_unknown_body": "尚未取得「{name}」的时长，副音暂时无法与视频对齐。网络存储不会自动探测。",
+  "@bg_duration_unknown_body": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "bg_align_update_to_current": "更新到当前",
   "bg_align_auto_pause_label": "对齐副音播完前先询问",
   "bg_align_auto_pause_desc": "对齐后副音剩余时间少于该值时，弹出对齐窗口。结束动作为『继续播放下一首副音』时自动续播、不再弹出。",
@@ -2738,14 +2825,6 @@
   "bg_align_head_option": "副音 00:00 —— 对齐视频当前位置",
   "bg_align_percent_prefix": "从副音的",
   "bg_align_percent_suffix": "% 开始，对齐视频当前位置",
-
-  "bg_align_from_head": "从头开始（对齐视频当前位置）",
-  "bg_align_from_mid": "按记住的比例",
-  "bg_align_ask": "每次询问",
-  "bg_align_remember": "记住该方案，不再提示",
-  "bg_align_remember_hint": "勾选后，副音较短时不再弹窗。随时可用「恢复每次询问」或在 设置 → 副音对齐默认方案 中恢复。",
-  "bg_align_restore_ask": "恢复「每次询问」",
-  "bg_align_fg_head_option": "视频从头开始 — 副音也从 00:00 开始",
   "bg_continuation_title": "副音跨文件继续",
   "bg_continuation_intro": "副音文件已在视频播放完之前结束。正在按副音列表循环继续：",
   "bg_continuation_from_align": "本次对齐使当前视频位置没有副音。若为自然播放结束，会经过以下副音：",
@@ -2766,9 +2845,6 @@
   "bg_continuation_omitted": "…（已省略更早的项）",
   "dlg_warn_bg_continuation_title": "副音跨文件继续说明",
   "dlg_warn_bg_continuation_desc": "副音文件先于视频播放完时，说明副音列表的经过与继续位置",
-  "dlg_warn_bg_source_manage_title": "音源管理为暂存编辑",
-  "dlg_warn_bg_source_manage_desc": "此处的副音音源修改为暂存：不点 ✓ 不会保存，点放弃则保持当前音源不变",
-  "bg_sources_storage_id_hint": "存储 ID",
   "bg_step_swap_only": "上/下一集：仅切换副音（视频位置不动）",
   "bg_step_follow_link": "上/下一集：同时带动视频（跟随联动）",
   "bg_step_mode_swap_only": "仅换副音",
@@ -2780,7 +2856,7 @@
   "set_bg_exhausted_action": "副音文件播完时",
   "set_bg_exhausted_action_desc": "用于『单一视频内副音先播完』（与作用范围无关）：接队列中的下一首副音，按副音列表循环，保证始终有副音；或暂停副音并恢复视频原音。",
   "set_bg_queue_sync_mode": "新加入音库 tag 的视频",
-  "set_bg_queue_sync_mode_desc": "运行中的副音列表在开启副音时生成，之后才打 tag 的视频要等列表更新才会出现。重建会重新读取来源规则并保留正在播放的视频；只追加则仅把新视频加到列表末尾，不动已有项。仅在副音运行中生效。",
+  "set_bg_queue_sync_mode_desc": "运行中的副音列表是开启副音时解析出的一个窗口，之后才打 tag 的视频要等列表更新才会出现。重建在列表发生变化（重排、移除或新增）时重新读取来源并保留正在播放的视频；仅响应新增则只在新视频加入时重建同一个窗口（同样保留正在播放的视频，绝不物化整个大列表）。仅在副音运行中生效。",
   "bg_switch_on": "开启副音",
   "bg_switch_off": "关闭副音",
   "bg_gate_play": "对当前视频播放副音",
@@ -2810,8 +2886,8 @@
   "set_bg_keep_warm": "启动时保有副音播放器",
   "set_bg_keep_warm_desc": "提前为后台副音播放做载入，开启副音时瞬间生效。代价是全程占用一个空闲播放器。",
   "set_bg_keep_warm_off_notice": "该功能用于提前为后台副音播放做载入。不常用副音播放可以取消；取消后开启副音会稍有等待，并可能出现闪屏。",
-  "set_bg_align_default": "副音对齐默认方案",
-  "set_bg_align_default_desc": "每次副音对齐时采用的方案。可在对齐窗口中即时更新并保存为默认。",
+  "set_bg_align_default": "副音默认锚定",
+  "set_bg_align_default_desc": "由两个时长自动决定，无需选择。点开查看规则。",
   "set_bg_fg_window_zoom": "APB 前景缩放倍率",
   "set_bg_fg_window_zoom_desc": "当前景远长于副音文件时，前景轴只显示「副音长度 × 该倍率」的范围，避免 A–B 映射被压缩成一个点。1 表示不缩放（范围 1.0–10.0）。",
   "set_bg_fg_window_push_bg": "q 点推动副音映射",
@@ -2913,16 +2989,6 @@
   "bg_layout_fullscreen": "全屏",
   "bg_layout_pip": "画中画（即将推出）",
   "bg_layout_split": "分屏（即将推出）",
-  "set_bg_sources": "副音来源",
-  "set_bg_sources_desc": "按顺序解析的副音候选来源——标签成员、目录、单文件，或目录∩标签。匹配的媒体需已扫描入库",
-  "bg_sources_count_zero": "默认",
-  "bg_sources_empty_default": "尚未配置规则——副音候选来自内置默认（「副音备选」标签）。添加规则后将覆盖默认。",
-  "bg_sources_empty_hint": "点击“添加来源”可加入 标签 / 目录 / 文件 / 目录+标签 规则",
-  "bg_sources_add": "添加来源",
-  "bg_sources_remove": "移除来源",
-  "bg_sources_move_up": "上移",
-  "bg_sources_move_down": "下移",
-  "bg_sources_tags_error": "标签加载失败",
   "bg_src_kind_tag": "标签",
   "bg_src_kind_path": "目录",
   "bg_src_kind_file": "文件",
@@ -3017,15 +3083,6 @@
       "path": {"type": "String"}
     }
   },
-  "bg_source_manage_open": "音源管理",
-  "bg_source_manage_title": "副音音源管理",
-  "bg_source_manage_staged_hint": "此处修改暂不生效——点 ✓ 才应用，点放弃则保持当前音源不变",
-  "bg_source_manage_load_failed": "无法加载副音音源。",
-  "bg_source_manage_save_failed": "部分修改保存失败，音源列表可能只更新了一部分。",
-  "bg_source_manage_confirm": "确认",
-  "bg_source_manage_discard": "放弃",
-  "set_bg_fallback_banner": "显示“无激活来源”提示",
-  "set_bg_fallback_banner_desc": "当没有任何来源规则激活、改用内置源时，在副音来源里显示可关闭的提示条",
   "bg_mapping_missing_title": "映射文件不可用",
   "bg_mapping_missing_body": "该映射段保存的副音文件缺失或未扫描：{name}。已改用自然副音播放。",
   "@bg_mapping_missing_body": {
@@ -3244,8 +3301,6 @@
   "dlg_warn_bg_align_exit_desc": "确认在未保存 A–B 窗口的情况下退出对齐编辑器",
   "dlg_warn_bg_align_silence_title": "静音（无文件）保存",
   "dlg_warn_bg_align_silence_desc": "首次说明：保存静音片段会不带副音文件地存储该区间",
-  "dlg_warn_bg_align_default_hint_title": "默认对齐提示",
-  "dlg_warn_bg_align_default_hint_desc": "对齐编辑器内显示已存默认值及下次生效说明的行内提示",
   "dlg_warn_bg_align_percent_hint_title": "比例滑杆提示",
   "dlg_warn_bg_align_percent_hint_desc": "对齐编辑器百分比滑杆下方的行内说明",
   "dlg_warn_bg_align_snap_title": "卡值使用说明",
@@ -3310,10 +3365,6 @@
   "set_cache_preset_low": "低",
   "set_cache_preset_balanced": "均衡",
   "set_cache_preset_high": "高",
-  "set_playback_step_seek_mode": "步进定位模式",
-  "set_playback_step_seek_mode_desc": "连按 ← / →（及手机双击）时的调度方式。自适应模式在按住期间不丢弃任何一次步进，松手后直接跳到最后一个目标并立即恢复正常播放；两种模式每次按键都精确定位。仅对 Media Kit 后端生效。",
-  "set_step_seek_mode_precise": "精确（丢弃最旧）",
-  "set_step_seek_mode_adaptive": "自适应（不丢步进）",
   "startup_failed_title": "启动失败",
   "startup_failed_body": "IRIS 无法完成启动。你的数据没有被修改。\n\n$error",
   "@startup_failed_body": {

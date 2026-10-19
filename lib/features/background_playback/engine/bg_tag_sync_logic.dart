@@ -11,7 +11,8 @@ enum BgTagSyncAction {
   /// file where it survived.
   rebuild,
 
-  /// Added only the candidates the queue is missing.
+  /// The pool GAINED a member: the running window is reconciled (see the
+  /// `append` mode — it folds into a window rebuild, keeping the playing file).
   append,
 }
 
@@ -41,11 +42,22 @@ BgTagSyncAction resolveBgTagSyncAction({
   required bool enabled,
   required bool gateOpen,
   bool shuffled = false,
+  int total = 0,
+  int knownTotal = 0,
 }) {
   if (!enabled || !gateOpen) return BgTagSyncAction.none;
   // An empty resolve must not empty a live queue — same contract as
   // `BackgroundPlaybackStore.replaceQueue`.
   if (candidates.isEmpty) return BgTagSyncAction.none;
+  // The PAGE can be identical while the STREAM changed length: a member added or
+  // removed outside the window leaves the page content equal, so a `none`
+  // verdict kept a stale `queueTotal` — the total the step math wraps and slides
+  // against, which then skipped the last item (or wrapped early). [total] is the
+  // freshly resolved stream size, [knownTotal] the running queue's (0 = unknown,
+  // e.g. a caller with no window, where the comparison cannot be made).
+  if (total > 0 && knownTotal > 0 && total != knownTotal) {
+    return BgTagSyncAction.rebuild;
+  }
   return switch (mode) {
     BgQueueSyncMode.rebuild => (shuffled
             ? holdsSameMedia(queue, candidates)

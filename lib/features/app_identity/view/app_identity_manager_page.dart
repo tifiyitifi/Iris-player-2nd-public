@@ -179,6 +179,15 @@ class AppIdentityManagerPage extends HookWidget {
           // Best-effort: a leftover workspace row is harmless clutter.
         }
       }
+      // The paired 副音 workspace dies with the entry too.
+      final bgWsId = e.backgroundWorkspaceScenarioId;
+      if (bgWsId != null && bgWsId.isNotEmpty) {
+        try {
+          await usePlaybackScenarioStore().deleteEntryBackgroundWorkspace(bgWsId);
+        } catch (_) {
+          // Best-effort: a leftover background row is harmless clutter.
+        }
+      }
       await removePlatformArtifacts(e);
       // The card is gone; drop its badge locally instead of a fresh query.
       if (pinnedIds.value.contains(e.id)) {

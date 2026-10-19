@@ -1,4 +1,3 @@
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/windows/desktop_keyboard/executor/potplayer_key_executor.dart';
 
@@ -39,21 +38,5 @@ void main() {
       ),
       isFalse,
     );
-  });
-
-  group('shouldReleaseStepHold', () {
-    test('releasing ← / → collapses the held step burst', () {
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.arrowLeft), isTrue);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.arrowRight), isTrue);
-    });
-
-    test('other repeatable keys keep their own release handling', () {
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.arrowUp), isFalse);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.arrowDown), isFalse);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.keyX), isFalse);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.keyC), isFalse);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.space), isFalse);
-      expect(shouldReleaseStepHold(LogicalKeyboardKey.equal), isFalse);
-    });
   });
 }

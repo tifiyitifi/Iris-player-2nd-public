@@ -20,6 +20,7 @@ import 'package:iris/features/media_library/view/content/store/use_media_lib_con
 import 'package:iris/features/media_library/view/tab/dialogs/media_libs_tile_trailing_dialog.dart';
 import 'package:iris/features/media_library/view/tab/store/libs/use_media_libs_page_store.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
@@ -331,6 +332,7 @@ class MediaLibTile extends HookWidget {
           storageId: source.storageId,
           path: segments.join('/'),
           recursive: true,
+          kind: ScenarioSourceKind.folder,
         ));
       }
     }
@@ -362,6 +364,8 @@ class MediaLibTile extends HookWidget {
             : file.mediaType == MediaType.audio
                 ? ContentType.audio
                 : ContentType.other,
+        // Subtitle associations persisted at scan time (schema v50).
+        subtitles: file.subtitles ?? const [],
       );
     }
     // D27: missing file-kind source → placeholder explicit (greyed, un-tappable).

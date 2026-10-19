@@ -11,12 +11,14 @@ void main() {
       bool meta = true,
       PlaylistPanelMode mode = PlaylistPanelMode.dockedRight,
       bool full = true,
+      bool legacy = false,
     }) =>
         isFullscreenDockOverlayEnabled(
           isDesktop: desktop,
           useMetadataSettings: meta,
           mode: mode,
           isFullScreen: full,
+          legacyStorage: legacy,
         );
 
     test('enabled only for meta desktop docked picture-fullscreen', () {
@@ -33,6 +35,10 @@ void main() {
 
     test('legacy (metadata gate OFF) never enables the overlay', () {
       expect(enabled(meta: false), isFalse);
+    });
+
+    test('legacy-storage backend never enables the overlay', () {
+      expect(enabled(legacy: true), isFalse);
     });
 
     test('mobile is excluded', () {

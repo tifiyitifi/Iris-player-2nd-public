@@ -5,6 +5,7 @@ import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/models/db/app_database.dart';
+import 'package:iris/utils/path_conv.dart';
 
 /// Contract for the deep-probe write path (`updateFileMediaInfo`).
 ///
@@ -110,5 +111,44 @@ void main() {
       "SELECT COUNT(*) AS c FROM media_nodes WHERE path = 'missing.mp4'",
     ).getSingle();
     expect(count.data['c'], 0);
+  });
+
+  test('addresses a legacy scheme-collapsed SAF row (content:/ vs content://)',
+      () async {
+    // A SAF single pick whose row was written before the scheme-preserving fix
+    // (repaired once by MigrationV23) lives under the COLLAPSED key, while every
+    // live caller queries the `content://` form. The write-back must resolve
+    // both, or the duration/dims of a pre-fix single pick is silently dropped.
+    const canonical =
+        'content://com.android.providers.media.documents/document/video%3A101';
+    await dao.insertNode(MediaNode.file(
+      id: 'legacy-saf',
+      storageId: 'st1',
+      path: const [canonical],
+      pathDepth: 1,
+      name: 'video:101',
+      mediaType: MediaType.video,
+    ));
+    await db.customUpdate(
+      'UPDATE media_nodes SET path = ? WHERE storage_id = ? AND path = ?',
+      variables: [
+        Variable.withString(collapsedSafSchemePath(canonical)!),
+        Variable.withString('st1'),
+        Variable.withString(canonical),
+      ],
+      updates: {db.mediaNodesTable},
+    );
+
+    final rows = await dao.updateFileMediaInfo(
+      storageId: 'st1',
+      path: canonical,
+      durationMs: 1234,
+    );
+
+    expect(rows, 1, reason: 'the collapsed legacy row must be addressed');
+    final stored = await db.customSelect(
+      "SELECT duration_ms FROM media_nodes WHERE path LIKE 'content:/%'",
+    ).getSingle();
+    expect(stored.data['duration_ms'], 1234);
   });
 }

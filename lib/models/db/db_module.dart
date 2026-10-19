@@ -2,15 +2,13 @@ import 'dart:async';
 
 import 'package:iris/features/background_playback/model/db/dao/bg_mapping_segments_dao.dart';
 import 'package:iris/features/background_playback/model/db/dao/bg_mappings_dao.dart';
-import 'package:iris/features/background_playback/model/db/dao/bg_source_rules_dao.dart';
 import 'package:iris/features/background_playback/model/db/repositories/background_mapping_repository.dart';
-import 'package:iris/features/background_playback/model/db/repositories/bg_source_rule_repository.dart';
 import 'package:iris/features/media_library/model/db/dao/media_lib_sources_dao.dart';
 import 'package:iris/features/media_library/model/db/dao/media_libs_dao.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/dao/scan_queue_dao.dart';
 import 'package:iris/features/media_library/model/db/dao/scan_states_dao.dart';
-import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dar.dart';
+import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/library_repository.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_library_repository.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
@@ -110,9 +108,8 @@ class DbModule {
   static late final BgMappingSegmentsDao bgMappingSegmentsDao;
   static late final BackgroundMappingRepository bgMappingRepo;
 
-  // 副音 candidate-source rules (v28)
-  static late final BgSourceRulesDao bgSourceRulesDao;
-  static late final BgSourceRuleRepository bgSourceRuleRepo;
+  // 副音 candidate-source rules (v28) retired: 副音 now resolves from its
+  // background scenario. See BackgroundScenarioPool.
 
   static MediaNodeRepository get nodeRepository => mediaNodeRepo;
 
@@ -129,6 +126,11 @@ class DbModule {
   /// `AppStore.applyConfiguredBackends`) before touching DB-backed stores, so
   /// the query backend never races the DB wiring.
   static Future<void> get ready => _ready.future;
+
+  /// Whether [init] has finished. Synchronous probe for callers that must NOT
+  /// touch a DB-backed store before it is wired (e.g. the 副音 store's
+  /// best-effort position persistence, which is a no-op in store-free tests).
+  static bool get isReady => _ready.isCompleted;
 
   static Future<void> init(AppDatabase db) async {
     // DAOs
@@ -186,7 +188,6 @@ class DbModule {
 
     mediaFacade = MediaLibraryFacade(
       libraryRepo: libraryRepo,
-      nodeRepo: mediaNodeRepo,
       scanRepo: scanStateRepo,
     );
 
@@ -219,9 +220,6 @@ class DbModule {
       segmentsDao: bgMappingSegmentsDao,
       db: db,
     );
-
-    bgSourceRulesDao = BgSourceRulesDao(db);
-    bgSourceRuleRepo = BgSourceRuleRepository(rulesDao: bgSourceRulesDao);
 
     // Metadata-settings subsystem: seeds defs/flags mirrors; must complete
     // before any store loads so the gate path (if enabled) can route.

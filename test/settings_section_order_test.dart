@@ -77,7 +77,6 @@ void main() {
         'background_playback.keepWarmPlayer',
         'background_playback.startArmed',
         'background_playback.autoFocusControl',
-        'background_playback.sourceManage',
         'background_playback.followFgSwitch',
         'background_playback.allowSameFile',
         'background_playback.rateLock',
@@ -104,7 +103,6 @@ void main() {
         'background_playback.itemSwitch',
         'background_playback.segmentSwitch',
         'background_playback.alignAutoPauseRemainSec',
-        'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
         'background_playback.queueSyncMode',
       ]);

@@ -109,9 +109,6 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// exposed as a meta row only.
     @Default(false) bool allowSameFgBgFile,
 
-    /// Ordered, toggleable candidate-source rules live in the
-    /// `bg_source_rules` Drift table (see `BgSourceRuleRepository`), NOT here.
-
     /// Mapping timeline switches (E 节).
     ///
     /// [mappingEnabled]: use the current foreground file's saved timeline
@@ -251,11 +248,12 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
 
     /// ── 对齐默认方案 ──
     ///
-    /// The persisted default alignment applied whenever a 副音 file is
-    /// (re)aligned; mirrors [BgAlignMode]. Persisted as the `bg.alignDefault`
-    /// AUX row.
+    /// LEGACY: the persisted default alignment, kept for data compatibility
+    /// only. The UI no longer offers a choice and nothing reads it — every
+    /// fresh anchor is decided by `resolveAutoAlignAnchor`. Persisted as the
+    /// `bg.alignDefault` AUX row.
     @JsonKey(includeToJson: false, includeFromJson: false)
-    @Default(BgAlignDefault.fgHead)
+    @Default(BgAlignDefault.sameClock)
     BgAlignDefault alignDefault,
 
     /// Media the user explicitly closed 副音 for, keyed by media key.
@@ -306,7 +304,7 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// Session: bumped ONLY by a USER-initiated switch (`step`/`jumpTo` with
     /// `userInitiated`) — the runtime observer re-applies the alignment mode on
     /// the newly opened file so a manual switch lands where the setting says
-    /// (e.g. `fromFgHead` → `bgPos = fgPos`). System moves ([bgStepSeq],
+    /// (e.g. `sameClock` → `bgPos = fgPos`). System moves ([bgStepSeq],
     /// completion chains) never raise it. Never persisted.
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(0)
@@ -513,7 +511,7 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// Every (re-)alignment derives its anchor from the live foreground moment;
     /// there is no stored anchor.
     @JsonKey(includeToJson: false, includeFromJson: false)
-    @Default(BgAlignMode.fromFgHead)
+    @Default(BgAlignMode.sameClock)
     BgAlignMode alignMode,
 
     /// Session: the AUTHORITATIVE lock offset (`fgAnchor - bgAnchor`, ms) set by
@@ -525,6 +523,54 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// mirror. Cleared on a run restart / gate close. Never persisted.
     @JsonKey(includeToJson: false, includeFromJson: false)
     int? alignOffsetMs,
+
+    /// Session: the queue-VIRTUAL counterpart of [alignOffsetMs] — the same
+    /// `fg - bgVirtual` offset expressed on the 副音 queue's axis, which is what
+    /// the position mirror, the seek window and the cross-file continuation
+    /// actually compare against.
+    ///
+    /// [alignOffsetMs] is FILE-LOCAL (the aligned file's axis), so it only maps
+    /// onto the virtual axis through THAT file's prefix: the pin is
+    /// `alignOffsetMs - prefix`, where the prefix is the aligned file's virtual
+    /// start IN THE CURRENT window ([alignOffsetAnchorKey] is what locates it).
+    /// It is therefore RE-DERIVED whenever the window's composition or durations
+    /// change — a cross-file continuation keeps the pair but moves the queue,
+    /// and a rebuild (shuffle / candidate re-resolve / tag sync) moves the
+    /// aligned file to a different prefix, so a stale pin would shift the pair
+    /// by that difference — a phantom drift the 高同步 correction then keeps
+    /// "fixing". The one case that keeps the previous value is the aligned file
+    /// having LEFT the window, where its prefix is unknowable. Cleared with
+    /// [alignOffsetMs].
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    int? alignVirtualOffsetMs,
+
+    /// Session: the queue index [alignVirtualOffsetMs] was pinned on — the index
+    /// of [alignOffsetAnchorKey] in the window at pin time. Cleared with
+    /// [alignOffsetMs].
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    int? alignOffsetAnchorIndex,
+
+    /// Session: the media KEY of the aligned 副音 file — the file
+    /// [alignOffsetMs] is expressed on, and therefore the file whose PREFIX the
+    /// queue-VIRTUAL pin must be derived from.
+    ///
+    /// The prefix is a property of the CURRENT window, and the window is rebuilt
+    /// underneath a live run (a shuffle toggle, a candidate re-resolve, a tag
+    /// sync). The numeric [alignOffsetAnchorIndex] is meaningless across such a
+    /// rebuild — the index was taken in the OLD order — so the key is what lets
+    /// the runtime find the aligned file's NEW index and re-derive the pin.
+    /// Keeping the old pin instead left the pair off by the prefix difference,
+    /// which the 高同步 correction then kept "fixing" (repeated wrong seeks).
+    /// Cleared with [alignOffsetMs].
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    String? alignOffsetAnchorKey,
+
+    /// Session: bumped by every user/auto alignment (`setAlignOffset`) so the
+    /// runtime observer re-pins [alignVirtualOffsetMs] even when the file-local
+    /// value repeats (sameClock landing on 0 again after a queue switch).
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(0)
+    int alignOffsetSeq,
 
     /// Session: one-shot cross-file CONTINUATION request under
     /// [BgExhaustedAction.nextBg]. Bumped by a natural 副音 completion
@@ -540,6 +586,36 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(false)
     bool bgContinuationFromAlign,
+
+    /// ── 时长探测 (副音队列的 duration 解析) ──
+    ///
+    /// Media keys of the live queue whose duration the probe could NOT resolve
+    /// (probe empty, or the write-back hit no `media_nodes` row). The queue list
+    /// flags those rows in red and offers a retry; the position mapping refuses
+    /// to act on them (see [BgQueueTimeline.unknownIndices]). Session-only:
+    /// cleared by a new probe pass, never persisted.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(<String>{})
+    Set<String> bgDurationFailedKeys,
+
+    /// Media keys of the live queue whose duration is still unknown and NOT
+    /// (yet) a failure — a probe in flight, or a network storage the probe
+    /// deliberately skips. Session-only.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(<String>{})
+    Set<String> bgDurationUnknownKeys,
+
+    /// Whether a duration probe pass is currently in flight (drives the
+    /// queue list's "正在读取时长…" state). Session-only.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(false)
+    bool bgDurationProbing,
+
+    /// Session: bumped by the queue list's「重新读取时长」action so the probe
+    /// observer runs one more pass for the current queue. Never persisted.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(0)
+    int bgDurationProbeSeq,
 
     /// MANDATORY remaining-副音 threshold, in seconds (default 5; clamped to
     /// 1..120 — it can never be disabled). When the aligned 副音 has less than
@@ -627,16 +703,40 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(false) bool bgMuted,
     @Default(1.0) double rate,
     @Default(true) bool shuffle,
+
+    /// Seed of 副音's OWN shuffle order, applied to the resolved candidate
+    /// stream (see `shuffleBySeed`). 0 = not shuffled.
+    ///
+    /// Deliberately a background-local value: the candidate stream IS the
+    /// reserved tag's view, and writing the shuffle into that shared view state
+    /// reordered the FOREGROUND tag browser of the same tag. The permutation
+    /// lives here instead, so only 副音's queue/panel see it.
+    @Default(0) int shuffleSeed,
     @Default(Repeat.all) Repeat bgRepeat,
     @Default(<FileItem>[]) List<FileItem> queue,
+
+    /// Scenario virtual index of [queue]'s FIRST item.
+    ///
+    /// The 副音 queue is a WINDOW over the background scenario's resolved
+    /// stream, not the whole list: a 500k-item list never has to be
+    /// materialized. Step/jump walk the window and SLIDE it (re-resolve the
+    /// page) whenever the target index falls outside. Persisted alongside
+    /// [queue] so the snapshot stays internally consistent.
+    @Default(0) int queueWindowStart,
+
+    /// Total item count of the background scenario's resolved stream, i.e. the
+    /// size of the space [queueWindowStart] indexes into. 0 = unknown (a
+    /// caller-supplied list); step then falls back to the window length.
+    @Default(0) int queueTotal,
 
     /// How a live run absorbs a membership change of a tag its sources read
     /// from (`bg.queueSyncMode` AUX row). [queue] is a snapshot resolved at
     /// start time, so a newly tagged media only reaches the open queue panel
     /// once something reconciles it; this picks HOW the running queue is
-    /// rewritten — [BgQueueSyncMode.rebuild] re-resolves and keeps the playing
-    /// file, [BgQueueSyncMode.append] only adds what is missing. Default
-    /// [BgQueueSyncMode.rebuild].
+    /// rewritten — [BgQueueSyncMode.rebuild] re-resolves the window on any
+    /// change (reorder, removal or growth), [BgQueueSyncMode.append] only on a
+    /// growth. Both keep the file that is playing (the queue is a WINDOW over
+    /// the scenario). Default [BgQueueSyncMode.rebuild].
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(BgQueueSyncMode.rebuild)
     BgQueueSyncMode queueSyncMode,

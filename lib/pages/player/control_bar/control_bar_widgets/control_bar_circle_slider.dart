@@ -9,6 +9,8 @@ import 'package:iris/features/background_playback/services/bg_vm_visibility.dart
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/control_group/domain/center_zone.dart';
 import 'package:iris/features/control_group/domain/center_zone_actions.dart';
+import 'package:iris/features/control_group/domain/center_zone_icons.dart';
+import 'package:iris/features/control_group/view/center_zone_sector_icons.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_scrubber_live_seek_throttle.dart';
 import 'package:iris/features/virtual_media/interaction/ui/vm_dual_time.dart';
@@ -140,10 +142,21 @@ class ControlBarCircleSlider extends HookWidget {
     final autoPlay = useAppStore().select(context, (state) => state.autoPlay);
 
     // Centre sectors are relative to the screen centre: the panel's 9-grid
-    // anchor decides which horizontal side is "inward". Read imperatively —
-    // the value only matters when a tap fires, not for painting.
-    final bool inwardOnLeft =
-        resolveSidePanelAlignment(useAppStore().state).x > 0;
+    // anchor decides which horizontal side is "inward". Subscribed so the
+    // sector icons re-seat when the panel flips sides.
+    final bool inwardOnLeft = useAppStore()
+        .select(context, (AppState s) => resolveSidePanelAlignment(s).x > 0);
+    // Center-sector hint icons: field-scoped so position ticks don't rebuild.
+    final CircleSliderCenterAction centerInward = useAppStore()
+        .select(context, (AppState s) => s.centerZoneInwardAction);
+    final CircleSliderCenterAction centerOutward = useAppStore()
+        .select(context, (AppState s) => s.centerZoneOutwardAction);
+    final CircleSliderCenterAction centerTop = useAppStore()
+        .select(context, (AppState s) => s.centerZoneTopAction);
+    final CircleSliderCenterAction centerBottom = useAppStore()
+        .select(context, (AppState s) => s.centerZoneBottomAction);
+    final bool desktopPhoneMode = useAppStore()
+        .select(context, (AppState s) => s.desktopCenterZonePhoneMode);
 
     final progress = context.select<
         MediaPlayer,
@@ -555,34 +568,67 @@ class ControlBarCircleSlider extends HookWidget {
                       centerZoneHitFactor: centerHitFactor,
                       centerGapRadius: centerGapRadius,
                     ),
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            centerCurrent,
-                            style: _centerCurrentStyle(centerBase),
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                centerCurrent,
+                                style: _centerCurrentStyle(centerBase),
+                              ),
+                              if (centerSubCurrent != null)
+                                Text(
+                                  centerSubCurrent,
+                                  style: _centerSubStyle(centerBase),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              Text(
+                                centerTotal,
+                                style: _centerTotalStyle(centerBase),
+                              ),
+                              if (centerSubTotal != null)
+                                Text(
+                                  centerSubTotal,
+                                  style: _centerSubStyle(centerBase),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
                           ),
-                          if (centerSubCurrent != null)
-                            Text(
-                              centerSubCurrent,
-                              style: _centerSubStyle(centerBase),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          Text(
-                            centerTotal,
-                            style: _centerTotalStyle(centerBase),
-                          ),
-                          if (centerSubTotal != null)
-                            Text(
-                              centerSubTotal,
-                              style: _centerSubStyle(centerBase),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                        ],
-                      ),
+                        ),
+                        // Sector hint icons on the X arms' free span; `none`
+                        // sectors stay empty. Resolution shares the tap rule.
+                        Builder(
+                          builder: (BuildContext context) {
+                            final Map<CenterZone,
+                                    CircleSliderCenterAction> actions =
+                                resolveCenterZoneActionMap(
+                              inward: centerInward,
+                              outward: centerOutward,
+                              top: centerTop,
+                              bottom: centerBottom,
+                              desktopPhoneMode: desktopPhoneMode,
+                            );
+                            return CenterZoneSectorIcons(
+                              center: Offset(size / 2, size / 2),
+                              orbitRadius: centerZoneIconOrbitRadius(
+                                hitRadius: radius * centerHitFactor,
+                                gapRadius: centerGapRadius,
+                              ),
+                              icons: <CenterZone, IconData?>{
+                                for (final MapEntry<CenterZone,
+                                        CircleSliderCenterAction> e
+                                    in actions.entries)
+                                  e.key: centerZoneActionIcon(e.value),
+                              },
+                              inwardOnLeft: inwardOnLeft,
+                            );
+                          },
+                        ),
+                      ],
                     ),
                   ),
                 ),

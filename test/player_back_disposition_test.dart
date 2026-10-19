@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/pages/player/player_back_disposition.dart';
 import 'package:iris/store/use_player_ui_store.dart';
@@ -34,6 +33,26 @@ void main() {
         PlayerBackDisposition.leavePlayer,
       );
     });
+
+    test('screen locked → release the lock, never leave', () {
+      expect(
+        resolvePlayerBackDisposition(
+          isShowGestureTips: false,
+          isScreenLocked: true,
+        ),
+        PlayerBackDisposition.unlockScreen,
+      );
+    });
+
+    test('lock outranks the guide', () {
+      expect(
+        resolvePlayerBackDisposition(
+          isShowGestureTips: true,
+          isScreenLocked: true,
+        ),
+        PlayerBackDisposition.unlockScreen,
+      );
+    });
   });
 
   testWidgets('back arrow closes the guide instead of leaving the player',
@@ -53,6 +72,8 @@ void main() {
             seenGuideAtPop = usePlayerUiStore().state.isShowGestureTips;
             switch (resolvePlayerBackDisposition(
                 isShowGestureTips: seenGuideAtPop!)) {
+              case PlayerBackDisposition.unlockScreen:
+                return;
               case PlayerBackDisposition.closeGestureGuide:
                 usePlayerUiStore().updateIsShowGestureTips(false);
                 return;

@@ -120,4 +120,38 @@ void main() {
       );
     });
   });
+
+  group('bgMasterMaySeekFg (drift never rewinds the video)', () {
+    test('a drift correction may pull the follower forward', () {
+      expect(
+        bgMasterMaySeekFg(fromRealBgMove: false, fgTarget: 8000, fgMs: 5000),
+        isTrue,
+      );
+      expect(
+        bgMasterMaySeekFg(fromRealBgMove: false, fgTarget: 5000, fgMs: 5000),
+        isTrue,
+      );
+    });
+
+    test('a drift correction must never rewind the video', () {
+      // 副音 still reports its head right after an activation whose alignment
+      // seek has not landed: mapping that onto the video is `seek(0)` — the
+      // 「开启副音把播放进度归 0」 report.
+      expect(
+        bgMasterMaySeekFg(fromRealBgMove: false, fgTarget: 0, fgMs: 5000),
+        isFalse,
+      );
+      expect(
+        bgMasterMaySeekFg(fromRealBgMove: false, fgTarget: -1200, fgMs: 5000),
+        isFalse,
+      );
+    });
+
+    test('a REAL 副音 move may rewind the video', () {
+      expect(
+        bgMasterMaySeekFg(fromRealBgMove: true, fgTarget: 0, fgMs: 5000),
+        isTrue,
+      );
+    });
+  });
 }

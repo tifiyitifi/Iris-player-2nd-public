@@ -94,28 +94,27 @@ void main() {
   AppLocalizations labels(WidgetTester tester) =>
       getLocalizations(tester.element(find.byType(Scaffold)));
 
-  testWidgets('folder trailing offers the two folder quick-adds',
+  testWidgets('folder trailing offers the virtual-merge quick-add',
       (tester) async {
     setMetaDriven(on: true);
     final found = await trailingLabels(tester, testStorage(), dirItem());
     final t = labels(tester);
-    expect(found, contains(t.lib_add_as_bg_source));
     expect(found, contains(t.lib_add_as_vm_merge));
   });
 
-  testWidgets('plain file trailing offers neither quick-add', (tester) async {
+  testWidgets('plain file trailing offers no virtual-merge quick-add',
+      (tester) async {
     setMetaDriven(on: true);
     final found = await trailingLabels(tester, testStorage(), fileItem());
     final t = labels(tester);
-    expect(found, isNot(contains(t.lib_add_as_bg_source)));
     expect(found, isNot(contains(t.lib_add_as_vm_merge)));
   });
 
-  testWidgets('quick-adds disappear when the features are off', (tester) async {
+  testWidgets('the quick-add disappears when the feature is off',
+      (tester) async {
     setMetaDriven(on: false);
     final found = await trailingLabels(tester, testStorage(), dirItem());
     final t = labels(tester);
-    expect(found, isNot(contains(t.lib_add_as_bg_source)));
     expect(found, isNot(contains(t.lib_add_as_vm_merge)));
   });
 }

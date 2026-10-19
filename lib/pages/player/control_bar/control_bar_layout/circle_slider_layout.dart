@@ -10,7 +10,10 @@ import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/sideway_panel_layout.dart';
 import 'package:iris/globals.dart'
-    show sidePanelKeyNotifier, sidePanelLayoutWidthNotifier;
+    show
+        sidewayQuickColumnAttachedNotifier,
+        sidePanelKeyNotifier,
+        sidePanelLayoutWidthNotifier;
 import 'package:iris/hooks/use_published_global_key.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -121,6 +124,37 @@ class CircleSliderLayout extends HookWidget {
         // live at a time (the APB align editor is mutually exclusive and
         // publishes under its own notifier).
         sidePanelLayoutWidthNotifier.value = null;
+      };
+    }, const <Object?>[]);
+
+    // Same shape for the 副音 quick COLUMN's attachment. Only the LayoutBuilder
+    // below knows it (the feature gate, the standalone switch, the active control
+    // group and the cross-axis budget all fold into `showsSidewayQuickColumn`),
+    // and the floating bottom-group switch button — a sibling in the player
+    // Stack — must stand down while the column occupies that strip. A private
+    // notifier plus a post-frame mirror, never a direct write: marking an outside
+    // listener dirty from inside the LayoutBuilder's layout callback is the
+    // `_RenderLayoutBuilder was mutated in performLayout` family (see
+    // [sidePanelLayoutWidthNotifier]).
+    final ValueNotifier<bool> quickColumnAttached =
+        useMemoized(() => ValueNotifier<bool>(false), const <Object?>[]);
+    useEffect(() {
+      final ValueNotifier<bool> flag = quickColumnAttached;
+      void publish() {
+        final bool next = flag.value;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (sidewayQuickColumnAttachedNotifier.value != next) {
+            sidewayQuickColumnAttachedNotifier.value = next;
+          }
+        });
+      }
+
+      publish();
+      flag.addListener(publish);
+      return () {
+        flag.removeListener(publish);
+        // Retract on unmount: with no side panel there is no attached column.
+        sidewayQuickColumnAttachedNotifier.value = false;
       };
     }, const <Object?>[]);
 
@@ -380,6 +414,12 @@ class CircleSliderLayout extends HookWidget {
                             forceVisible: true,
                             color: controls.color,
                             overlayColor: controls.overlayColor,
+                            // Phones keep the 副音 menu in the 副音 group here
+                            // too (their playback row hands the slot to the
+                            // screen-lock toggle); desktop leaves the row alone.
+                            trailingAction: isMobilePlatform
+                                ? controls.backgroundPlaybackMenu
+                                : null,
                           )
                         : BalancedButtonWrap(
                             alignment: sidewayButtonAlignForAnchor(panelAnchor),
@@ -395,7 +435,13 @@ class CircleSliderLayout extends HookWidget {
                               controls.shuffle,
                               if (controls.showFit) controls.fit,
                               controls.rotateOrVolume,
-                              controls.backgroundPlaybackMenu,
+                              // The 副音 menu lives in the 副音 group on phones.
+                              if (!isMobilePlatform)
+                                controls.backgroundPlaybackMenu,
+                              // Screen-lock toggle takes the same slot as on
+                              // the linear phone bar (see MobileControlLayout):
+                              // the side type must offer the guard too.
+                              if (controls.showScreenLock) controls.screenLock,
                               controls.playQueue,
                               controls.storage,
                               if (isDesktop) controls.fullscreen,
@@ -442,6 +488,12 @@ class CircleSliderLayout extends HookWidget {
           showingBackgroundGroup: showingBackgroundGroup,
           quickAvail: quickAvail,
         );
+        // Publish for the floating group-switch button (see the effect above).
+        // Written here, mirrored post-frame: never notify outside listeners from
+        // inside this layout callback.
+        if (quickColumnAttached.value != showQuickBar) {
+          quickColumnAttached.value = showQuickBar;
+        }
 
         // STRUCTURAL STABILITY (flutter/flutter #177693 / #188500, the
         // #182444 family): the tooltip-bearing [panel] lives under the

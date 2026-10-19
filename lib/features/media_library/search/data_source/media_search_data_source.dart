@@ -733,6 +733,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       sizeInBytes: file.sizeInBytes,
       durationMs: file.durationMs,
       uri: file.uri,
+      subtitles: file.subtitles,
       origin: SearchResultOrigin.dbSource,
       available: file.isPresent,
     );
@@ -1172,6 +1173,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
           : item.mediaType == MediaType.audio
               ? ContentType.audio
               : ContentType.other,
+      subtitles: item.subtitles ?? const [],
     );
   }
 

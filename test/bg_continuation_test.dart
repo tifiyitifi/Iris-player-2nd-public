@@ -15,7 +15,7 @@ void main() {
     test('00:00↔00:00 anchors at zero', () {
       expect(
         resolveAlignmentOffsetMs(
-          mode: BgAlignMode.fromFgHead,
+          mode: BgAlignMode.sameClock,
           currentFgMs: 5000,
           bgDurMs: 10000,
           percent: 30,
@@ -27,7 +27,7 @@ void main() {
     test('bg 00:00 at the current fg moment uses the fg moment as offset', () {
       expect(
         resolveAlignmentOffsetMs(
-          mode: BgAlignMode.atFgPosition,
+          mode: BgAlignMode.bgHeadAtFg,
           currentFgMs: 5000,
           bgDurMs: 10000,
           percent: 30,
@@ -111,6 +111,31 @@ void main() {
         timeline: timeline(const [3000]),
       );
       expect(t, (index: 0, localMs: 2000));
+    });
+
+    test('without the loop mode a past-the-list target CLAMPS onto its tail',
+        () {
+      // `wrap: false` (the list repeat is not `all`) has nowhere to continue to,
+      // so the mapping can only clamp onto the LAST entry's end. The caller reads
+      // the UNCLAMPED virtual target to tell that state apart from a landing and
+      // stops there instead of resuming onto the same tail (which would
+      // re-complete forever).
+      final t = resolveBgContinuation(
+        fgMs: 8000,
+        offsetMs: 0,
+        timeline: timeline(const [3000, 4000]),
+        wrap: false,
+      );
+      expect(t, (index: 1, localMs: 4000));
+      expect(
+        bgVirtualTargetMs(fgMs: 8000, offsetMs: 0),
+        greaterThanOrEqualTo(7000),
+      );
+    });
+
+    test('bgVirtualTargetMs is the unclamped fg − offset', () {
+      expect(bgVirtualTargetMs(fgMs: 8000, offsetMs: 2000), 6000);
+      expect(bgVirtualTargetMs(fgMs: 0, offsetMs: 5000), -5000);
     });
   });
 }

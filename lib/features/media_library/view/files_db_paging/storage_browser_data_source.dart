@@ -5,8 +5,6 @@ import 'package:collection/collection.dart';
 import 'package:flutter/material.dart' hide Chip;
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/utils/get_localizations.dart';
-import 'package:iris/features/background_playback/background_playback_gate.dart';
-import 'package:iris/features/background_playback/view/bg_source_rule_editor.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
 import 'package:iris/features/media_library/model/media_lib/media_library_source.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
@@ -28,6 +26,7 @@ import 'package:iris/features/paginated_browser/models/generic_browser_models.da
 import 'package:iris/features/paginated_browser/utils/breadcrumbs.dart';
 import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
@@ -772,6 +771,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                           storageId: storage.id,
                           path: _currentPath.join('/'),
                           recursive: true,
+                          kind: ScenarioSourceKind.folder,
                         ),
                       ],
                       sortField:
@@ -941,6 +941,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                     storageId: storage.id,
                     path: item.path.join('/'),
                     recursive: true,
+                    kind: ScenarioSourceKind.folder,
                   ),
                 ],
                 sortField: sortField,
@@ -967,6 +968,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                   storageId: storage.id,
                   path: item.path.join('/'),
                   recursive: true,
+                  kind: ScenarioSourceKind.folder,
                 ),
               ],
             );
@@ -989,22 +991,8 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
         icon: const Icon(Icons.library_add, size: 16),
         onPressed: (ctx, i) => _addToLibrary(ctx, [item]),
       ),
-      // Folder quick-adds: turn this folder into a 副音 source rule / a
-      // virtual-merge rule, prefilled with storage+folder defaults.
-      if (item.isDir && BackgroundPlaybackGate.enabled)
-        GenericItemAction(
-          label: t.lib_add_as_bg_source,
-          icon: const Icon(Icons.queue_music, size: 16),
-          onPressed: (ctx, i) => openBgSourceRuleEditorForFolder(
-            ctx,
-            storageName: storage.name,
-            folderName: i.name,
-            folderPath: relativeToStoragePath(
-              i.path.join('/'),
-              [storage.basePath.join('/')],
-            ),
-          ),
-        ),
+      // Folder quick-adds: turn this folder into a virtual-merge rule,
+      // prefilled with storage+folder defaults.
       if (item.isDir && VirtualMediaGate.enabled)
         GenericItemAction(
           label: t.lib_add_as_vm_merge,
@@ -1115,6 +1103,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                       storageId: storage.id,
                       path: d.path.join('/'),
                       recursive: true,
+                      kind: ScenarioSourceKind.folder,
                     ))
                 .toList();
             await ScenarioPlaybackActions.runPlayActionWithNoMediaConfirm(
@@ -1161,6 +1150,7 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                       storageId: storage.id,
                       path: d.path.join('/'),
                       recursive: true,
+                      kind: ScenarioSourceKind.folder,
                     ))
                 .toList();
             if (playable.isEmpty && dirs.isEmpty) {

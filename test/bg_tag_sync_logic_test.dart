@@ -21,6 +21,8 @@ void main() {
       bool enabled = true,
       bool gateOpen = true,
       bool shuffled = false,
+      int total = 0,
+      int knownTotal = 0,
     }) =>
         resolveBgTagSyncAction(
           mode: mode,
@@ -29,6 +31,8 @@ void main() {
           enabled: enabled,
           gateOpen: gateOpen,
           shuffled: shuffled,
+          total: total,
+          knownTotal: knownTotal,
         );
 
     test('a stopped or disabled run is never rewritten', () {
@@ -51,6 +55,49 @@ void main() {
           BgTagSyncAction.none,
         );
       }
+    });
+
+    test('a stream that changed length outside the page forces a rebuild', () {
+      // The page is byte-identical, but the pool GAINED a member BEYOND it. A
+      // `none` verdict left `queueTotal` stale, and `_stepCandidates` computes
+      // its wrap/slide from that total — so the extra item was unreachable (and,
+      // on a shrink, the last one wrapped too early).
+      expect(
+        resolve(
+          mode: BgQueueSyncMode.rebuild,
+          queue: [a, b],
+          candidates: [a, b],
+          knownTotal: 2,
+          total: 3,
+        ),
+        BgTagSyncAction.rebuild,
+      );
+      expect(
+        resolve(
+          mode: BgQueueSyncMode.append,
+          queue: [a, b],
+          candidates: [a, b],
+          knownTotal: 2,
+          total: 3,
+        ),
+        BgTagSyncAction.rebuild,
+      );
+      // Equal totals keep the page-content rule in charge.
+      expect(
+        resolve(
+          mode: BgQueueSyncMode.rebuild,
+          queue: [a, b],
+          candidates: [a, b],
+          knownTotal: 3,
+          total: 3,
+        ),
+        BgTagSyncAction.none,
+      );
+      // Unknown totals (a caller with no window) keep the old behaviour.
+      expect(
+        resolve(mode: BgQueueSyncMode.rebuild, queue: [a, b], candidates: [a, b]),
+        BgTagSyncAction.none,
+      );
     });
 
     test('rebuild replaces the queue when the pool gained a member', () {

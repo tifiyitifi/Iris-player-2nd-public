@@ -806,6 +806,9 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
       size: file.sizeInBytes ?? 0,
       type: _convertMediaType(file.mediaType),
       lastModified: file.modifiedAt,
+      // Subtitle associations persisted at scan time (schema v50) so a
+      // scenario-resolved entry offers the same external tracks as a browse.
+      subtitles: file.subtitles ?? const [],
     );
   }
 

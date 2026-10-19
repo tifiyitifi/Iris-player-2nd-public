@@ -1,9 +1,7 @@
 import 'dart:io';
 
-import 'package:iris/features/app_update/model/release_info.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path/path.dart' as p;
 
 final _log = AreaKeyLog(LogKeys.appUpdate);
 
@@ -23,6 +21,13 @@ enum InstallFailure {
 
   /// Android: the app is not allowed to install packages yet.
   needsPermission,
+
+  /// The hand-off would have to pass a path through `cmd.exe`, which expands
+  /// `%VAR%`, `!`, `&`, `^` and re-reads `( )`/quotes: a directory the user
+  /// controls (a Windows profile with `&` in the name, an archive extracted
+  /// under one) made the command ambiguous. Refused with instructions to run the
+  /// updater by hand instead of launching something unintended.
+  pathUnsupported,
 }
 
 /// The portable edition's updater, shipped next to the executable.
@@ -33,11 +38,89 @@ enum InstallFailure {
 /// hand.
 const String portableUpdaterScriptName = 'portable_update_by_zip.ps1';
 
-/// Absolute path of the portable updater next to the executable, or null.
-String? findPortableUpdater() {
-  final exeDir = p.dirname(Platform.resolvedExecutable);
-  final script = File(p.join(exeDir, portableUpdaterScriptName));
-  return script.existsSync() ? script.path : null;
+/// Console title of the updater window the hand-off opens.
+///
+/// Also the `start` title argument, which is not decoration: `start` reads its
+/// first quoted token as the window title, so passing one keeps the command
+/// itself unambiguous.
+const String portableUpdaterTitle = 'IRIS Portable Update';
+
+/// One prepared updater launch, split out so it can be asserted without
+/// spawning a process.
+class PortableUpdaterCommand {
+  const PortableUpdaterCommand({
+    required this.executable,
+    required this.arguments,
+  });
+
+  final String executable;
+  final List<String> arguments;
+}
+
+/// Characters `cmd.exe` re-interprets inside a command line.
+///
+/// `%VAR%` expands, `!` expands under delayed expansion, `&`/`|`/`<`/`>`/`( )`
+/// separate or group commands, `^` is the escape character and `"` toggles
+/// quoting. `start`'s own argument parsing makes it worse: the first quoted
+/// token is read as a window title.
+const String cmdUnsafePathChars = r'%!^&|<>()"';
+
+/// Whether [path] can survive the `cmd.exe /c start` hand-off untouched.
+bool isCmdSafePortableUpdaterPath(String path) =>
+    path.isNotEmpty && !path.split('').any(cmdUnsafePathChars.contains);
+
+/// The command that hands a downloaded ZIP to the portable updater.
+///
+/// Routed through `cmd.exe /c start` rather than launching `powershell.exe`
+/// directly, and that is the whole point of this function:
+///
+///  * `ProcessStartMode.detached` is Win32 `DETACHED_PROCESS`, which gives the
+///    child **no console at all**. This process is a GUI-subsystem executable
+///    with no console of its own to hand over, and in that state
+///    `powershell.exe` exits immediately **without executing a single line of
+///    the script** (measured: exit 0 in ~0.1 s, no file touched, five runs out
+///    of five). The hand-off was therefore a silent no-op, and the app then went
+///    on to shut itself down — which is exactly what "it just closes" was.
+///  * `cmd.exe /c start` allocates a console for the script, so the update runs
+///    and the user can watch it (and read the error, on the rare path where
+///    there is one). The console is the script's own; the app exits either way.
+///
+/// `-LogPath` is passed alongside so the run leaves a file behind even if no
+/// console could be created.
+///
+/// Returns NULL when either path contains a character `cmd.exe` would expand or
+/// re-parse (see [isCmdSafePortableUpdaterPath]): the caller must fall back to
+/// telling the user to run the updater by hand rather than hand the console an
+/// ambiguous command line.
+PortableUpdaterCommand? portableUpdaterCommand({
+  required String scriptPath,
+  required String zipPath,
+  required String? logPath,
+}) {
+  if (!isCmdSafePortableUpdaterPath(scriptPath) ||
+      !isCmdSafePortableUpdaterPath(zipPath) ||
+      (logPath != null && !isCmdSafePortableUpdaterPath(logPath))) {
+    _log.w('portable updater paths cannot be passed through cmd.exe safely');
+    return null;
+  }
+  return PortableUpdaterCommand(
+    executable: 'cmd.exe',
+    arguments: [
+      '/c',
+      'start',
+      portableUpdaterTitle,
+      'powershell.exe',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scriptPath,
+      '-ZipPath',
+      zipPath,
+      if (logPath != null) ...['-LogPath', logPath],
+      '-NonInteractive',
+    ],
+  );
 }
 
 /// Hands a downloaded Android package to the system installer.
@@ -102,30 +185,29 @@ Future<void> launchWindowsInstaller(File installer) async {
 /// until the current files are replaced, and the current build's script knows
 /// how to preserve `userdata`.
 ///
-/// The script is launched detached and takes over from here — it waits for this
+/// The updater is launched detached and takes over from here — it waits for this
 /// process to disappear before touching anything, so the caller must shut the
-/// app down right after.
-///
-/// Launched directly, like the installer above: `powershell.exe` is an
-/// executable, not a batch file, so a shell in front of it would only add a
-/// parser that can mangle a user profile path.
+/// app down right after. The console it opens belongs to the script, so it
+/// outlives this process.
 Future<void> launchPortableSelfUpdate({
   required String scriptPath,
   required File zip,
+  required String? logPath,
 }) async {
+  final command = portableUpdaterCommand(
+    scriptPath: scriptPath,
+    zipPath: zip.path,
+    logPath: logPath,
+  );
+  if (command == null) {
+    // A path `cmd.exe` would expand or re-parse: refuse rather than launch a
+    // command line whose meaning depends on the user's directory name.
+    throw const UpdateInstallException(InstallFailure.pathUnsupported);
+  }
   try {
     await Process.start(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        scriptPath,
-        '-ZipPath',
-        zip.path,
-        '-NonInteractive',
-      ],
+      command.executable,
+      command.arguments,
       mode: ProcessStartMode.detached,
     );
   } catch (error) {
@@ -133,8 +215,3 @@ Future<void> launchPortableSelfUpdate({
     throw const UpdateInstallException(InstallFailure.cannotLaunch);
   }
 }
-
-/// Which package [asset] is, for the confirmation copy.
-bool isWindowsPortablePackage(ReleaseAsset asset) =>
-    asset.name.startsWith('IRIS-windows-') &&
-    !asset.name.startsWith('IRIS-windows-installer-');

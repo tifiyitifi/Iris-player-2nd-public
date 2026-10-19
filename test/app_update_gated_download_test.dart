@@ -93,6 +93,7 @@ Future<_Harness> _startTransfer(
   AssetDownloader downloader, {
   void Function(_Harness harness)? onDialogPop,
   bool Function()? stillWanted,
+  String? notice,
 }) async {
   late final _Harness harness;
   final counter = _RouteCounter(
@@ -115,6 +116,7 @@ Future<_Harness> _startTransfer(
                   asset: _asset,
                   downloader: downloader,
                   stillWanted: stillWanted,
+                  notice: notice,
                 );
                 harness.result = await harness.download!.run(
                   navigator: Navigator.of(context, rootNavigator: true),
@@ -172,6 +174,36 @@ void main() {
     expect(harness.pushes, 1);
     expect(harness.pops, 1);
     expect(harness.cancelled, isFalse);
+    expect(harness.result, package);
+  });
+
+  testWidgets('the window says the digest is not being checked when the '
+      'release published no index', (tester) async {
+    final directory = Directory.systemTemp.createTempSync('iris-gated');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final package = _packageIn(directory);
+    final release = Completer<void>();
+
+    final harness = await _startTransfer(
+      tester,
+      ({required asset, expectedSha256, onProgress, onAbort}) async {
+        onProgress!((received: 0, total: asset.size));
+        await release.future;
+        return package;
+      },
+      notice: t.update_checksum_unavailable,
+    );
+
+    await tester.pump(_slow);
+    await tester.pump();
+
+    // Fail-open is allowed; silent is not. The reader has to be able to see that
+    // this transfer is only being checked against its size.
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text(t.update_checksum_unavailable), findsOneWidget);
+
+    release.complete();
+    await tester.pumpAndSettle();
     expect(harness.result, package);
   });
 

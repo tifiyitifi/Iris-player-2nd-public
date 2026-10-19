@@ -14,6 +14,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
+import 'package:iris/hooks/player/media_info_writeback.dart';
 import 'package:iris/hooks/player/seek_clamp.dart';
 import 'package:iris/hooks/player/seek_tuning.dart';
 import 'package:iris/models/file.dart';
@@ -34,11 +35,14 @@ import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/utils/check_data_source_type.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_playback_uri.dart';
 import 'package:iris/features/webdav_discovery/view/webdav_playback_error_dialog.dart';
+import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/utils/platform.dart';
+import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 import 'package:media_stream/media_stream.dart';
 import 'package:saf_util/saf_util.dart';
 import 'package:video_player/video_player.dart';
@@ -46,6 +50,53 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 final areaKeyLog = AreaKeyLog(LogKeys.legacyPlayer);
 // CLOSE_DEBUG_LOG: playback diagnostics for the "jumps to end" investigation.
 final diagLog = AreaKeyLog(LogKeys.player);
+
+/// Whether a seek with attribution [src] is a STEP seek (← / → / double-tap)
+/// and must use the fvp backend's per-seek KEYFRAME ("fast") seek.
+///
+/// `video_player`'s `seekTo` is an EXACT seek: fvp (mdk) decodes from the
+/// previous keyframe up to the target, so one tap froze the picture for the
+/// whole seek. mpv's own ←/→ is a RELATIVE KEYFRAME seek and is what the
+/// media_kit backend now issues natively; fvp has no relative seek, so the
+/// closest parity is the fvp controller extension's `fastSeekTo`
+/// (mdk `SeekFlag.keyFrame`). It is applied to step seeks ONLY — scrub / dial /
+/// resume / lock-retry need the exact landing. (The global `fastSeek`
+/// registration option would degrade those too, hence per-seek here.)
+///
+/// Pure so the src → mode decision is unit-testable.
+bool fvpStepUsesKeyframeSeek(String src) => src == 'step';
+
+/// Whether a seek from [src] must arm the position-intent lock.
+///
+/// A step is the one seek whose landing is DELIBERATELY not the requested
+/// target: the keyframe seek lands on the previous keyframe, which on a long GOP
+/// is seconds away, while the lock requires the player to be observed within
+/// ±2s of the target. Arming it there made the 1s tick re-issue an EXACT seek
+/// after 5s (a visible jump to where the user already was) and blocked the
+/// progress write for up to 10s. media_kit's step already skips the lock; this
+/// keeps fvp at parity. Every other caller (scrub / dial / resume / lock-retry)
+/// needs the lock so the sanitizer cannot reject its landing.
+///
+/// Pure so the src → lock decision is unit-testable.
+bool fvpShouldArmPositionLock(String src) => !fvpStepUsesKeyframeSeek(src);
+
+/// The position a user-seek burst persists for a seek attributed to [src].
+///
+/// The PERSISTED position must never run ahead of what has actually played.
+/// A step lands on the PREVIOUS KEYFRAME (deliberately behind the requested
+/// target), so writing the target — as this hook used to — made a kill inside
+/// the burst resume to a frame that was never on screen. media_kit already
+/// persists the engine's OBSERVED position for a step; fvp must match it.
+/// Every other caller persists the requested target (the authoritative intent
+/// of an exact seek).
+///
+/// Pure so the src → persisted-position decision is unit-testable.
+int fvpPersistedSeekMs({
+  required String src,
+  required int targetMs,
+  required int observedMs,
+}) =>
+    fvpStepUsesKeyframeSeek(src) ? observedMs : targetMs;
 
 FvpPlayer useFvpPlayer(BuildContext context) {
   final appStore = useAppStore();
@@ -122,6 +173,37 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   /// so chaining a relative step onto it (or onto the raw position) makes
   /// repeated presses recompute the same target.
   final stepIntent = useRef(StepIntent());
+
+  /// The step target the OSD should report (ms on the EXPOSED axis: the virtual
+  /// total under a VM session, the file's own timeline otherwise), or null when
+  /// no burst is live. Mirror of the media_kit hook's `stepOsdTargetMs`: without
+  /// it `player.stepIntentTargetMs` was null on the fvp backend, so the keyboard
+  /// OSD fell back to a per-press snapshot and appeared frozen while ←/→ was held.
+  final stepOsdTargetMs = useRef<int?>(null);
+
+  /// Step-burst idle window (mirror of the media_kit burst timer): a press
+  /// inside [kStepBurstWindow] keeps the burst — and the accumulation — alive;
+  /// once it lapses the recorded target is stale (playback ran past it) and is
+  /// dropped so the next press anchors on the live position instead of jumping
+  /// backwards. fvp has no seek chain, so this timer IS the burst detector.
+  final stepBurstTimer = useRef<Timer?>(null);
+
+  /// The media the external-subtitle index was last armed for. The duration
+  /// effect that selects track 0 runs on every duration change (including a
+  /// mid-play revision), so without this a revised duration reset a
+  /// user-chosen external track back to the first one.
+  final externalSubtitleFileKey = useRef<String?>(null);
+
+  /// Records a step target and arms the idle window that drops it (see
+  /// [stepBurstTimer]).
+  void noteStepIntent(int targetMs) {
+    stepIntent.value.note(targetMs);
+    stepBurstTimer.value?.cancel();
+    stepBurstTimer.value = Timer(kStepBurstWindow, () {
+      stepBurstTimer.value = null;
+      stepIntent.value.reset();
+    });
+  }
 
   MediaStream mediaStream = useMemoized(() => MediaStream());
   final streamUrl = useMemoized(() => mediaStream.url);
@@ -404,16 +486,22 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       } else if (externalSubtitle.value! < externalSubtitles.length) {
         bool isExists = true;
 
-        final uri = file?.storageType == StorageType.ftp
-            ? '$streamUrl/${externalSubtitles[currentExternalSubtitle].uri}'
-            : externalSubtitles[currentExternalSubtitle].uri;
+        final subtitle = externalSubtitles[currentExternalSubtitle];
+        final storage = file == null
+            ? null
+            : useStorageStore().resolveStorageForNodeId(file.storageId);
+        // Shared resolver: rebuilds the WebDAV authority from the current
+        // storage record and centralises the FTP proxy prefix, so this path
+        // matches the track panel and the media_kit auto-select exactly.
+        final uri = subtitlePlayableUri(
+          storage,
+          subtitle,
+          mediaStreamUrl: streamUrl ?? '',
+        );
 
         areaKeyLog.i('External subtitle uri: $uri');
 
-        if (Platform.isAndroid &&
-            externalSubtitles[currentExternalSubtitle]
-                .uri
-                .startsWith('content://')) {
+        if (Platform.isAndroid && subtitle.uri.startsWith('content://')) {
           try {
             isExists = await SafUtil().exists(uri, false);
           } catch (e) {
@@ -423,9 +511,24 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         }
 
         if (isExists) {
+          // NOTE: fvp exposes no error surface for `setExternalSubtitle`, so a
+          // REMOTE subtitle that fails to fetch still has no feedback here — the
+          // existence pre-check above only covers the LOCAL (SAF) case. The
+          // media_kit path watches the engine error stream instead.
           controller.value.setExternalSubtitle(uri);
         } else {
           externalSubtitle.value = null;
+          // The fvp backend used to drop the request in silence: the track
+          // simply never appeared, with nothing to tell a dead subtitle link
+          // (a renamed file) from a bug. Same surface the media_kit auto-select
+          // uses.
+          if (context.mounted) {
+            await showCopyableErrorDialog(
+              context,
+              message: getLocalizations(context)
+                  .track_subtitle_load_failed(subtitle.name),
+            );
+          }
         }
       }
     }();
@@ -664,7 +767,16 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       }
 
       if (externalSubtitles.isNotEmpty) {
-        externalSubtitle.value = 0;
+        // Only re-arm on a different FILE: the parsed duration can be revised
+        // mid-play, and the old unconditional reset silently dropped the user's
+        // chosen external track back to the first one.
+        final key = file == null
+            ? null
+            : canonicalProgressKey(file.storageId, file.path, uri: file.uri);
+        if (externalSubtitleFileKey.value != key) {
+          externalSubtitleFileKey.value = key;
+          externalSubtitle.value = 0;
+        }
       }
     }();
     return;
@@ -673,19 +785,26 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   // Write duration + probed dimensions to media_nodes DB when they first
   // become available (lazy probe backfill: playing a file fills any gaps
   // left by an unprobed scan).
-  final durationSaved = useState(false);
-  final dimsSaved = useState(false);
+  // The write-once mark is keyed by the FILE ([MediaInfoWritebackGate]): a
+  // per-hook boolean stayed set for the whole session, so everything after the
+  // first file was silently skipped.
+  final mediaInfoGate = useRef(MediaInfoWritebackGate());
+  final mediaInfoKey = file == null
+      ? null
+      : canonicalProgressKey(file.storageId, file.path, uri: file.uri);
   useEffect(() {
     final d = controller.value.value.duration;
     final size = controller.value.value.size;
     final w = size.width.round();
     final h = size.height.round();
-    if (file == null) return null;
-    final needDuration = d != Duration.zero && !durationSaved.value;
-    final needDims = w > 0 && h > 0 && !dimsSaved.value;
+    final key = mediaInfoKey;
+    if (file == null || key == null) return null;
+    final gate = mediaInfoGate.value;
+    final needDuration = gate.needsDuration(key, d.inMilliseconds);
+    final needDims = gate.needsDims(key, w, h);
     if (!needDuration && !needDims) return null;
-    if (needDuration) durationSaved.value = true;
-    if (needDims) dimsSaved.value = true;
+    if (needDuration) gate.markDurationWritten(key);
+    if (needDims) gate.markDimsWritten(key);
     // Immediate live-progress seed: give the progress UIs the just-parsed
     // duration right away instead of waiting for the next 1s timer tick.
     if (needDuration) {
@@ -700,24 +819,38 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     () async {
       try {
         final dbPath = file.path.join('/');
-        if (dbPath.isNotEmpty) {
-          await DbModule.mediaNodeRepo.updateFileMediaInfo(
-            storageId: file.storageId,
-            path: dbPath,
-            durationMs: needDuration ? d.inMilliseconds : null,
-            width: needDims ? w : null,
-            height: needDims ? h : null,
-            pixelCount: needDims ? w * h : null,
-          );
-          areaKeyLog.i('Saved media info to DB: ${file.name} '
-              'dur=${needDuration ? d.inMilliseconds : "-"}ms');
+        if (dbPath.isEmpty) {
+          // No segment path to key the write on (SAF single pick): nothing was
+          // written, so release the mark instead of swallowing the backfill.
+          gate.unmark(key);
+          return;
         }
+        final rows = await DbModule.mediaNodeRepo.updateFileMediaInfo(
+          storageId: file.storageId,
+          path: dbPath,
+          durationMs: needDuration ? d.inMilliseconds : null,
+          width: needDims ? w : null,
+          height: needDims ? h : null,
+          pixelCount: needDims ? w * h : null,
+        );
+        if (rows <= 0) {
+          // No `media_nodes` row matched (unscanned file, or a stored path-shape
+          // mismatch such as the collapsed SAF scheme). The database was NOT
+          // updated, so release the mark: keeping it would drop this file's
+          // duration/dimensions for the rest of the session.
+          gate.unmark(key);
+          areaKeyLog.w('Media info write-back matched no row: ${file.name}');
+          return;
+        }
+        areaKeyLog.i('Saved media info to DB: ${file.name} '
+            'dur=${needDuration ? d.inMilliseconds : "-"}ms');
       } catch (e) {
+        gate.unmark(key);
         areaKeyLog.e('Error saving media info to DB: $e');
       }
     }();
     return null;
-  }, [controller.value.value.duration, controller.value.value.size]);
+  }, [controller.value.value.duration, controller.value.value.size, mediaInfoKey]);
 
   // Live progress: update the in-memory store every second so progress UIs can
   // tick in real time; throttle media-column DB writes to at most once per 10s
@@ -858,11 +991,12 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   // would hammer the UI isolate); the seeks themselves are issued one per press
   // so a held key advances frame by frame instead of jumping once.
   //
-  // NOTE: the media_kit hook additionally has a rapid-step burst that bypasses
-  // media_kit's seek mutex and toggles mpv `hr-seek`. Neither has a counterpart
-  // here — `video_player`'s `seekTo` is not serialized by the plugin, and fvp's
-  // seek precision (`fastSeek`) is a global registration option, not a
-  // per-seek/per-burst property.
+  // NOTE: the media_kit hook issues mpv's NATIVE relative keyframe seek
+  // (`seek <delta> relative+keyframes`), which mpv coalesces itself, and keeps
+  // no Dart accumulator. fvp has no relative / natively-coalesced seek, so the
+  // Dart [stepIntent] accumulation above IS the burst tracker here, and each
+  // step press is turned into an absolute seek that uses the keyframe
+  // (`fastSeekTo`) path — see [fvpStepUsesKeyframeSeek].
   final userSeekWrite = useRef(
       TrailingCoalescer<({FileItem file, Duration position, int durationMs})>());
   final userSeekWriteTimer = useRef<Timer?>(null);
@@ -916,7 +1050,13 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     // An absolute jump re-anchors the NEXT relative step on the fresh
     // position; a cross-segment step re-anchors below (its local axis
     // changes). Only 'step' keeps the accumulation alive.
-    if (src != 'step') stepIntent.value.reset();
+    if (src != 'step') {
+      stepIntent.value.reset();
+      stepOsdTargetMs.value = null;
+    }
+    // Step seeks land on a KEYFRAME (mpv-native parity, see
+    // [fvpStepUsesKeyframeSeek]); everything else needs the exact landing.
+    final bool keyframe = fvpStepUsesKeyframeSeek(src);
     // Virtual Media: cross-segment targets open WITH the intra-segment
     // offset (pendingSeekMs handoff) instead of flashing 0% first — unless
     // the drag strategy says to hold the picture until release (spec §6).
@@ -937,31 +1077,61 @@ FvpPlayer useFvpPlayer(BuildContext context) {
               '(legal for chapter/rewind; investigate otherwise)');
         }
         if (segIdx == vm.state.segmentIndex) {
+          // An unknown segment duration makes the intra-segment target a
+          // fabricated 0 (`clampVmLocalMs`), which the lock + persist below
+          // would write over the file's saved progress. Hold instead — and drop
+          // any previous press's OSD target so a held key does not keep showing
+          // a landing this press never asked for.
+          const handler = VirtualSeekHandler();
+          if (!handler.segmentDurationKnown(item, segIdx)) {
+            stepOsdTargetMs.value = null;
+            return;
+          }
           final clamped =
               clampVmLocalMs(item.segments[segIdx].durationMs, localMs);
           // Step accumulation on the SEGMENT-LOCAL axis (the axis
           // seekRelative reads — see StepIntent).
-          if (src == 'step') stepIntent.value.note(clamped);
+          if (src == 'step') noteStepIntent(clamped);
+          // The OSD reads the virtual axis (the one `player.duration` exposes),
+          // while the step accumulator is segment-LOCAL.
+          if (src == 'step') {
+            stepOsdTargetMs.value = item.offsetOf(segIdx) + clamped;
+          }
           userSeekPending.value = true;
           lastSanePosMs.value = null;
-          // Position-intent lock + save-once (mirror of the media_kit hook).
-          positionLock.value.armTarget(clamped);
+          // Position-intent lock + save-once (mirror of the media_kit hook) — but
+          // NOT for a step: its keyframe landing is deliberately off-target and
+          // would trip the lock's miss path (see [fvpShouldArmPositionLock]).
+          if (fvpShouldArmPositionLock(src)) {
+            positionLock.value.armTarget(clamped);
+          }
           if (file != null) {
-            unawaited(persistPlaybackProgress(
-              file: file,
-              position: Duration(milliseconds: clamped),
-              durationMs: controller.value.value.duration.inMilliseconds,
-              userSeekToHead: clamped == 0,
-              userSeek: true,
-              writeTag: 'user-seek',
+            // Leading + trailing burst writes, exactly like the non-VM path
+            // below: a held arrow key used to write Drift on EVERY repeat (a
+            // read+write per press on the UI isolate), while the media_kit hook
+            // coalesces the same burst. A STEP persists the OBSERVED position,
+            // not the requested one: its keyframe landing is behind the target
+            // (see [fvpPersistedSeekMs]).
+            final int observedMs =
+                controller.value.value.position.inMilliseconds;
+            persistUserSeekBurst(Duration(
+              milliseconds: fvpPersistedSeekMs(
+                src: src,
+                targetMs: clamped,
+                observedMs: observedMs,
+              ),
             ));
           }
-          await controller.value.seekTo(Duration(milliseconds: clamped));
+          final Duration seekTarget = Duration(milliseconds: clamped);
+          await (keyframe
+              ? controller.value.fastSeekTo(seekTarget)
+              : controller.value.seekTo(seekTarget));
         } else {
           final dragging = useScrubDragStore().state.any;
           // A cross-segment step lands on ANOTHER segment: the local axis the
           // accumulator was recorded in no longer applies.
           stepIntent.value.reset();
+          stepOsdTargetMs.value = null;
           final decision = decideVmDragSeek(
             strategy: useAppStore().state.vmCrossSegmentDragStrategy,
             isDragging: dragging,
@@ -991,13 +1161,29 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     lastSanePosMs.value = null;
     final totalMs = controller.value.value.duration;
     final target = clampSeekTarget(newPosition, totalMs);
-    if (src == 'step') stepIntent.value.note(target.inMilliseconds);
+    if (src == 'step') {
+      noteStepIntent(target.inMilliseconds);
+      stepOsdTargetMs.value = target.inMilliseconds;
+    }
     // Position-intent lock + save-once (mirror of the media_kit hook): the
     // user's explicit target is the authoritative progress from this moment.
-    // A burst collapses to leading+trailing writes.
-    positionLock.value.armTarget(target.inMilliseconds);
-    persistUserSeekBurst(target);
-    await controller.value.seekTo(target);
+    // A burst collapses to leading+trailing writes. A STEP is exempt: its
+    // keyframe landing is deliberately off-target (see
+    // [fvpShouldArmPositionLock]) — so it persists the OBSERVED position, never
+    // the target ([fvpPersistedSeekMs]).
+    if (fvpShouldArmPositionLock(src)) {
+      positionLock.value.armTarget(target.inMilliseconds);
+    }
+    persistUserSeekBurst(Duration(
+      milliseconds: fvpPersistedSeekMs(
+        src: src,
+        targetMs: target.inMilliseconds,
+        observedMs: controller.value.value.position.inMilliseconds,
+      ),
+    ));
+    await (keyframe
+        ? controller.value.fastSeekTo(target)
+        : controller.value.seekTo(target));
   }
 
   /// Relative skip on the VIRTUAL timeline (ms precision, clamped).
@@ -1011,8 +1197,13 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     // reported position can sit still, so neither is a sound base alone.
     final int? pendingIntent =
         positionLock.value.blocksWrites ? positionLock.value.targetMs : null;
-    final int baseMs = stepIntent.value
-        .baseFor(reportedMs: rawPosMs, lockIntentMs: pendingIntent);
+    // Burst-gated: an expired burst leaves a stale target that must not anchor
+    // the press (see [stepBurstTimer]); the lock intent still covers an
+    // in-flight seek.
+    final int baseMs = stepIntent.value.baseFor(
+        reportedMs: rawPosMs,
+        lockIntentMs: pendingIntent,
+        active: stepBurstTimer.value != null);
     if (vm.isActive && item != null) {
       const handler = VirtualSeekHandler();
       final target = handler.resolveRelativeSeek(
@@ -1021,12 +1212,29 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         localMs: baseMs,
         deltaMs: deltaMs,
       );
+      // An unresolvable move (no probed duration on the target segment) must NOT
+      // be turned into a step: the degenerate 0 used to be persisted over the
+      // file's saved progress (「进度归 0」). Drop a previous press's OSD target
+      // too (see [stepOsdTargetMs]).
+      if (target == null) {
+        stepOsdTargetMs.value = null;
+        // Drop the accumulation too: a press that resolved nothing must not
+        // leave a stale base (and a live burst window) for the next press.
+        stepBurstTimer.value?.cancel();
+        stepBurstTimer.value = null;
+        stepIntent.value.reset();
+        return;
+      }
       await seek(Duration(milliseconds: target.virtualMs), 'step');
       return;
     }
     final totalMs = controller.value.value.duration.inMilliseconds;
-    if (totalMs <= 0) return;
-    final target = (baseMs + deltaMs).clamp(0, totalMs);
+    if (totalMs <= 0) {
+      stepOsdTargetMs.value = null;
+      return;
+    }
+    final int lastMs = lastSeekableMs(totalMs);
+    final target = (baseMs + deltaMs).clamp(0, lastMs);
     await seek(Duration(milliseconds: target), 'step');
   }
 
@@ -1206,13 +1414,25 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   final mediaUriF = file?.uri;
   useEffect(() {
     flushUserSeekBurst();
+    stepBurstTimer.value?.cancel();
+    stepBurstTimer.value = null;
     stepIntent.value.reset();
+    stepOsdTargetMs.value = null;
     lastUserSeekWrite.value = null;
     return;
   }, [mediaUriF]);
 
-  // Unmount: cancel the debounce timer and land the last pending write.
-  useEffect(() => flushUserSeekBurst, []);
+  // Unmount: cancel the debounce/step-burst timers and land the last pending
+  // write. (Mirror of the media_kit hook's unmount dispose, which the
+  // body-form effect there was silently skipping.)
+  useEffect(() {
+    return () {
+      stepBurstTimer.value?.cancel();
+      stepBurstTimer.value = null;
+      stepIntent.value.reset();
+      flushUserSeekBurst();
+    };
+  }, []);
 
   final fvpPlayer = useMemoized(
     () => FvpPlayer(
@@ -1239,6 +1459,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       stepForward: stepForward,
       seek: seek,
       saveProgress: saveProgress,
+      stepIntentTargetMs: () => stepOsdTargetMs.value,
     ),
     [
       controller.value,

@@ -5,9 +5,14 @@ import 'package:flutter_test/flutter_test.dart';
 /// Architecture fitness test for the 副音 (background playback) subsystem.
 ///
 /// bg always plays REAL single files from a plain list — it must never take
-/// part in virtual-merge grouping. That is already true structurally (candidate
-/// resolution only keeps `MediaNode.file`), and this guard keeps it that way:
-/// the virtual-merge machinery must not be reachable from the bg feature.
+/// part in virtual-merge grouping. This guard is the STRUCTURAL half: the
+/// virtual-merge machinery must not be reachable from the bg feature itself.
+///
+/// The RUNTIME half is `BackgroundTagPool`: 副音's candidate stream is the
+/// reserved tag's own `TagViewResolver` resolve with `withVmOverlay: false`, so
+/// the shared resolver never folds the members into a merged row. A merged
+/// representative's `media` is still a `MediaFile`, so the token scan below
+/// alone cannot catch a merge — both halves are required.
 void main() {
   test('background_playback never applies virtual-merge rules', () {
     final dir = Directory('lib/features/background_playback');

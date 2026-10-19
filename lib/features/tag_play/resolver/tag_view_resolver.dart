@@ -181,6 +181,7 @@ class TagViewResolver {
     required int tagId,
     required String scenarioId,
     bool ignoreScenario = false,
+    bool withVmOverlay = true,
   }) async {
     final tag = await repo.tagById(tagId);
     final members = await repo.activeMembersOf(tagId);
@@ -196,8 +197,13 @@ class TagViewResolver {
     }
 
     // Member lookup keyed exactly like view-side identities (canonical form).
+    // [canonicalKey] — NOT a raw `'$storageId:$path'` interpolation: a
+    // pre-normalization row (a leading slash, a `//` collapse) would otherwise
+    // build a key that never matches [keyOf]'s canonical one, silently
+    // dropping the member from the addedAt lookup (epoch fallback) and, on the
+    // ignore-scenario path, from the stream itself.
     final addedAtByKey = <String, DateTime>{
-      for (final m in members) '${m.storageId}:${m.path}': m.addedAt,
+      for (final m in members) canonicalKey(m.storageId, m.path): m.addedAt,
     };
 
     // "Ignore scenario": the tag's OWN membership is the stream — no scenario
@@ -261,6 +267,18 @@ class TagViewResolver {
       resolved = shuffled;
     }
 
+    // `virtualIndex` must be the item's position in THIS resolved stream: the
+    // tag's own sort/shuffle just reordered the list, so the pre-sort index
+    // (scenario order, or membership order on the ignore-scenario path) no
+    // longer describes where the item sits. Every dense-list consumer relies on
+    // the invariant `virtualIndex == position` — notably the 副音 runtime, which
+    // indexes its window by it (a stale index made a tapped row play another
+    // file).
+    resolved = [
+      for (var i = 0; i < resolved.length; i++)
+        resolved[i].copyWith(virtualIndex: i),
+    ];
+
     // Keep the pre-overlay stream: the playback side derives its VM session
     // grouping from it (a merged display entry must map back to its group).
     final vmStream = List<EffectivePlaybackItem>.from(resolved);
@@ -269,13 +287,15 @@ class TagViewResolver {
     // view's own filtered stream — tag selects, VM organizes ("职责独立").
     // Resolved ONCE and carried on the snapshot so the playback feed reuses
     // them (a second `resolveGroupsForStream` per feed was the dominant
-    // per-tap regex cost).
-    final vmRules = await VirtualMediaService.instance.enabledRules();
+    // per-tap regex cost). 副音 opts out (its list must stay real single files).
     VmStreamGroups? groups;
-    if (vmRules.isNotEmpty) {
-      groups = resolveGroupsForStream(resolved, vmRules);
-      if (groups.isNotEmpty) {
-        resolved = applyVmOverlay(resolved, groups.byKey);
+    if (withVmOverlay) {
+      final vmRules = await VirtualMediaService.instance.enabledRules();
+      if (vmRules.isNotEmpty) {
+        groups = resolveGroupsForStream(resolved, vmRules);
+        if (groups.isNotEmpty) {
+          resolved = applyVmOverlay(resolved, groups.byKey);
+        }
       }
     }
 
@@ -314,7 +334,12 @@ class TagViewResolver {
     List<TagPlayMember> members,
     String scenarioId,
   ) async {
-    final keys = <String>{for (final m in members) '${m.storageId}:${m.path}'};
+    // Query and lookup on the SAME canonical axis the node map is built on:
+    // a raw `'$storageId:$path'` lookup misses a legacy non-canonical member
+    // row even though the canonical-keyed node was found (see [canonicalKey]).
+    final keys = <String>{
+      for (final m in members) canonicalKey(m.storageId, m.path),
+    };
     final nodes = await _lookupNodes(keys);
     final byKey = {
       for (final node in nodes)
@@ -322,7 +347,7 @@ class TagViewResolver {
     };
     final out = <EffectivePlaybackItem>[];
     for (final m in members) {
-      final node = byKey['${m.storageId}:${m.path}'];
+      final node = byKey[canonicalKey(m.storageId, m.path)];
       if (node == null) continue;
       out.add(EffectivePlaybackItem(
         media: node,
@@ -390,7 +415,9 @@ class TagMediaCountResolver {
       var inScenario = 0;
       if (scenarioKeys.isNotEmpty) {
         for (final m in members) {
-          if (scenarioKeys.contains('${m.storageId}:${m.path}')) {
+          // Canonical, like [keyOf] on the scenario side — a raw interpolation
+          // misses non-canonical member rows and undercounts.
+          if (scenarioKeys.contains(canonicalKey(m.storageId, m.path))) {
             inScenario++;
           }
         }

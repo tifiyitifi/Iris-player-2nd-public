@@ -1,4 +1,5 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:iris/models/file.dart' show Subtitle;
 
 part 'media_node.freezed.dart';
 part 'media_node.g.dart';
@@ -70,6 +71,14 @@ abstract class MediaNode with _$MediaNode {
     /// read side falls back to [MediaNodePlayableUriX] on [path].
     String? uri,
 
+    /// External subtitle associations captured at browse/scan time.
+    ///
+    /// NULL = UNKNOWN (the row predates schema v50, or a lane that cannot see
+    /// the listing wrote it); `[]` = KNOWN to have none. The two are kept
+    /// distinct so an upsert from a lane that does not know never clears the
+    /// stored associations. Display names carry the subtitle's own file name.
+    @Default(null) List<Subtitle>? subtitles,
+
     /// Deep-probe video frame dimensions in pixels.
     ///
     /// NULL until filled by an optional scan-time probe or the lazy
@@ -102,6 +111,23 @@ abstract class MediaNode with _$MediaNode {
   String get displayPath => path.join('/');
   String get fullPath => [storageId, ...path].join('/');
   String get normalizedNameValue => normalizedName ?? name.toLowerCase();
+
+  /// The occurrence path of this node — the `path` half of a file's
+  /// [PlaybackOccurrenceId].
+  ///
+  /// Normally the storage-relative path. A SAF single-picked file has an EMPTY
+  /// path, so its only stable identity is its persisted document `uri`; keeping
+  /// the empty string would collapse every such file of one storage onto the
+  /// same occurrence, breaking breakpoint recovery and the queue highlight.
+  /// EVERY producer and consumer of a file occurrence must agree on this form
+  /// (see `scenario_resolver`, the 副音 position store and `canonicalProgressKey`).
+  String get occurrencePath {
+    final self = this;
+    if (self is MediaFile) {
+      return self.path.isNotEmpty ? self.path.join('/') : (self.uri ?? '');
+    }
+    return path.join('/');
+  }
 }
 
 enum MediaType {

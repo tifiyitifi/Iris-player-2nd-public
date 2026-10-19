@@ -294,7 +294,10 @@ class TagPlayController {
 
     final latest = await repo.latestActiveMember(snap.tagId);
     if (latest != null) {
-      final key = '${latest.storageId}:${latest.path}';
+      // Canonical key — the SAME shape the snapshot index is built with (and
+      // every other comparison in this file uses). A raw interpolation misses
+      // a pre-normalization member row and silently falls back to index 0.
+      final key = canonicalKey(latest.storageId, latest.path);
       final idx = snap.indexOfFileKey(key);
       if (idx != null) return TagResumeDecision(index: idx, fileKey: key);
     }
@@ -831,6 +834,8 @@ class TagPlayController {
           size: f.sizeInBytes ?? 0,
           type: _mediaTypeOf(f.mediaType),
           lastModified: f.modifiedAt,
+          // Subtitle associations persisted at scan time (schema v50).
+          subtitles: f.subtitles ?? const [],
         );
       },
       orElse: () => FileItem(name: node.name, uri: playableUri(node.path)),

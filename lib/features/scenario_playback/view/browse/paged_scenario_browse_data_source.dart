@@ -1,8 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:iris/features/background_playback/background_playback_gate.dart';
-import 'package:iris/features/background_playback/view/bg_source_rule_editor.dart';
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_result.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
@@ -607,22 +605,8 @@ class PagedScenarioBrowseDataSource
             _excludeDirectory(isStorage ? '' : e.path);
           },
         ),
-      // Folder quick-adds: the storage root / a directory becomes a 副音 source
-      // rule / a virtual-merge rule, prefilled with storage+folder defaults.
-      if ((isStorage || isDir) && BackgroundPlaybackGate.enabled)
-        GenericItemAction<ScenarioBrowseItem>(
-          label: t.lib_add_as_bg_source,
-          icon: const Icon(Icons.queue_music, size: 16),
-          onPressed: (ctx, i) {
-            final e = i as ScenarioBrowseItem;
-            openBgSourceRuleEditorForFolder(
-              ctx,
-              storageName: storageNameOf(e.storageId),
-              folderName: isStorage ? '' : e.name,
-              folderPath: folderPathOf(e),
-            );
-          },
-        ),
+      // Folder quick-adds: the storage root / a directory becomes a
+      // virtual-merge rule, prefilled with storage+folder defaults.
       if ((isStorage || isDir) && VirtualMediaGate.enabled)
         GenericItemAction<ScenarioBrowseItem>(
           label: t.lib_add_as_vm_merge,

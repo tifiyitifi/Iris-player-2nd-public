@@ -15,10 +15,38 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 
+/// One built export: the file body plus the section keys whose encoder failed.
+///
+/// A failing coder returns an `error` payload (or throws) instead of taking the
+/// whole export down, so the file always exists — but a `payload: []` section
+/// reads exactly like an empty one, which is how a failed backup looked like a
+/// successful one. [failedSections] is the signal the export dialog must show.
+class ExportBuildResult {
+  const ExportBuildResult({required this.json, this.failedSections = const []});
+
+  final String json;
+
+  /// Section keys whose encoder reported a swallowed failure.
+  final List<String> failedSections;
+
+  bool get isPartial => failedSections.isNotEmpty;
+}
+
+/// Section keys whose payload reports a swallowed encoder failure.
+///
+/// The coders catch their own DB errors and return `payload: []` plus an
+/// `error` string (see `ScenarioCoder.encode`); that key is the only signal
+/// left, because the payload shape is otherwise identical to an empty section.
+List<String> failedExportSections(Map<String, dynamic> sections) => [
+      for (final entry in sections.entries)
+        if (entry.value is Map && (entry.value as Map)['error'] != null)
+          entry.key,
+    ];
+
 class TransferService {
   // Build export for selected sections. If passphrase is non-empty and
   // networkStorages is among selected, the file will be encrypted.
-  static Future<String> buildExport({
+  static Future<ExportBuildResult> buildExport({
     required Set<String> selectedSections,
     String? passphrase,
     String? passphraseKind, // numeric | custom
@@ -34,6 +62,9 @@ class TransferService {
         sections[key] = {'subVersion': 1, 'error': e.toString(), 'payload': []};
       }
     }
+    // Detected HERE, before encryption: the caller has to know the file only
+    // carries part of what was asked for.
+    final failedSections = failedExportSections(sections);
 
     final envelope = await ExportEnvelope.create(sections);
 
@@ -60,27 +91,14 @@ class TransferService {
         enc: enc,
       );
       final jsonStr = const JsonEncoder.withIndent('  ').convert(encryptedEnvelope.toJson());
-      await _auditExport(selectedSections, encrypted: true, passphraseKind: kind);
-      return jsonStr;
+      return ExportBuildResult(json: jsonStr, failedSections: failedSections);
     }
 
+    // Reaching here means the payload carries no network-storage passwords
+    // (those require a passphrase and return through the encrypted branch above),
+    // so a plain envelope is safe to write as-is.
     final jsonStr = envelope.encode(pretty: true);
-    // Audit: record export (even unencrypted, if networkStorages involved).
-    if (hasNetwork) {
-      await _auditExport(selectedSections, encrypted: false, passphraseKind: null);
-    }
-    // Ensure no plaintext password in file when not encrypted but network storages not selected is fine.
-    // When not encrypted but network storages selected without passphrase, we already have passwords in plaintext!
-    // To satisfy "never plaintext", we must NOT allow networkStorages without encryption.
-    // The caller (dialog) should enforce that networkStorages requires passphrase.
-    // Here we additionally guard: if hasNetwork && !hasPassphrase, strip passwords.
-    // But per latest requirement ("去掉无口令实现"), networkStorages without passphrase should be
-    // excluded or stripped. We strip here as safety.
-    // However our flow already returns unencrypted when hasNetwork && !hasPassphrase — that would
-    // contain plaintext passwords. So we need to handle.
-    // Instead, we will NOT reach here with hasNetwork && !hasPassphrase if dialog enforces.
-    // Keep as is for now; the dialog is the gate.
-    return jsonStr;
+    return ExportBuildResult(json: jsonStr, failedSections: failedSections);
   }
 
   // Import from raw file content. passphrase required if file is encrypted.
@@ -136,19 +154,29 @@ class TransferService {
     // Cross-platform imports (desktop <-> mobile) keep common +
     // target-platform appSettings keys; the coder reports skipped items.
     final targetPlatform = currentTransferPlatformName;
-    final orderedKeys = <String>[];
-    if (sections.containsKey('appSettings')) orderedKeys.add('appSettings');
-    for (final k in sections.keys) {
-      if (k != 'appSettings') orderedKeys.add(k);
-    }
+    // appSettings first (backend sync depends on it), then tagPlay before the
+    // rest. The old reason for that order is gone: a scenario tag source used to
+    // re-resolve against the tags imported in the SAME run, and v49 retired that
+    // source kind (scenario rows carry no tag identity any more). The order is
+    // kept so an import stays deterministic and matches older builds; the rest
+    // keep the file's own order.
+    final orderedKeys = <String>[
+      if (sections.containsKey('appSettings')) 'appSettings',
+      if (sections.containsKey('tagPlay')) 'tagPlay',
+      for (final k in sections.keys)
+        if (k != 'appSettings' && k != 'tagPlay') k,
+    ];
     // Also include requested resolutions that may not be in file (they'll be skipped)
     final allItems = <TransferItemResult>[];
 
     for (final key in orderedKeys) {
       final coder = TransferCatalog.coderFor(key);
       if (coder == null) {
+        // A section this build does not know is reported and SKIPPED — never a
+        // reason to abort the rest. A newer export can carry a section an older
+        // app cannot read; breaking here silently dropped every later section
+        // (and the message even said "ignored" while doing the opposite).
         allItems.add(TransferItemResult(section: key, label: key, ok: false, error: 'unknown section (ignored)'));
-        if (!skipErrors) break;
         continue;
       }
       final resolution = resolutions[key] ?? defaultResolutionFor(key);
@@ -255,7 +283,18 @@ class TransferService {
     return TransferReport(items: items, skippedErrors: skipErrors);
   }
 
-  static Future<void> _auditExport(Set<String> sections, {required bool encrypted, String? passphraseKind}) async {
+  /// Records one SUCCESSFUL export in the transfer audit log.
+  ///
+  /// Called by the export surface only AFTER the file has actually been written:
+  /// the entry says "ok", so writing it inside [buildExport] (before the
+  /// partial-export confirmation, or before the save) left a success record for
+  /// an export the user then declined — an audit trail that claimed a backup
+  /// that never landed.
+  static Future<void> auditExport({
+    required Set<String> sections,
+    required bool encrypted,
+    String? passphraseKind,
+  }) async {
     try {
       final store = useTransferAuditStore();
       await store.load();

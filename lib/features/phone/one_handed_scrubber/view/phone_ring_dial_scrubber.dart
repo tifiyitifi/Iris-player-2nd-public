@@ -10,6 +10,8 @@ import 'package:iris/features/background_playback/services/bg_vm_visibility.dart
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/control_group/domain/center_zone.dart';
 import 'package:iris/features/control_group/domain/center_zone_actions.dart';
+import 'package:iris/features/control_group/domain/center_zone_icons.dart';
+import 'package:iris/features/control_group/view/center_zone_sector_icons.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_edge_lock.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_math.dart';
 import 'package:iris/features/phone/one_handed_scrubber/controller/phone_ring_dial_palette.dart';
@@ -115,9 +117,23 @@ class PhoneRingDialScrubber extends HookWidget {
     final bool isScrubbing =
         useScrubDragStore().select(context, (s) => s.isScrubbing);
     // Centre sectors are relative to the screen centre; the panel's 9-grid
-    // anchor decides which horizontal side is "inward".
-    final bool inwardOnLeft =
-        resolveSidePanelAlignment(useAppStore().state).x > 0;
+    // anchor decides which horizontal side is "inward". Subscribed (not a
+    // one-shot state read) so the sector icons re-seat when the panel flips
+    // sides; the tap handler captures the same fresh value per build.
+    final bool inwardOnLeft = useAppStore()
+        .select(context, (AppState s) => resolveSidePanelAlignment(s).x > 0);
+    // Center-sector hint icons: field-scoped like the other dial knobs so a
+    // per-frame position tick does not rebuild the overlay.
+    final CircleSliderCenterAction centerInward = useAppStore()
+        .select(context, (AppState s) => s.centerZoneInwardAction);
+    final CircleSliderCenterAction centerOutward = useAppStore()
+        .select(context, (AppState s) => s.centerZoneOutwardAction);
+    final CircleSliderCenterAction centerTop = useAppStore()
+        .select(context, (AppState s) => s.centerZoneTopAction);
+    final CircleSliderCenterAction centerBottom = useAppStore()
+        .select(context, (AppState s) => s.centerZoneBottomAction);
+    final bool desktopPhoneMode = useAppStore()
+        .select(context, (AppState s) => s.desktopCenterZonePhoneMode);
     final RingDialPalette dialPalette =
         useAppStore().select(context, (state) => state.ringDialPalette);
     final double heightPct =
@@ -380,6 +396,22 @@ class PhoneRingDialScrubber extends HookWidget {
           ],
           radius: g.centerHitR,
         );
+        // Sector hint icons share the tap resolution (desktop legacy
+        // all-toggleControls included) so the glyph always matches the tap.
+        final Map<CenterZone, CircleSliderCenterAction> centerActions =
+            resolveCenterZoneActionMap(
+          inward: centerInward,
+          outward: centerOutward,
+          top: centerTop,
+          bottom: centerBottom,
+          desktopPhoneMode: desktopPhoneMode,
+        );
+        final Map<CenterZone, IconData?> centerSectorIcons =
+            <CenterZone, IconData?>{
+          for (final MapEntry<CenterZone, CircleSliderCenterAction> e
+              in centerActions.entries)
+            e.key: centerZoneActionIcon(e.value),
+        };
 
         return SizedBox(
           width: box.width,
@@ -749,6 +781,10 @@ class PhoneRingDialScrubber extends HookWidget {
                         midlineIsLeft: !isLeftHanded,
                         holdTip: holdTip.value,
                         transientRate: transientRate,
+                        sectorIcons: centerSectorIcons,
+                        sectorInwardOnLeft: inwardOnLeft,
+                        centerHitR: g.centerHitR,
+                        centerGapRadius: centerGapRadius,
                      ),
                    ),
                  ),
@@ -959,6 +995,10 @@ class _DialOverlays extends StatelessWidget {
     required this.midlineIsLeft,
     required this.holdTip,
     required this.transientRate,
+    required this.sectorIcons,
+    required this.sectorInwardOnLeft,
+    required this.centerHitR,
+    required this.centerGapRadius,
   });
 
   final double diameter;
@@ -986,6 +1026,18 @@ class _DialOverlays extends StatelessWidget {
   /// parent Stack layer, which knows about ring shifts) — null when idle.
   final int? holdTip;
   final double transientRate;
+
+  /// Resolved sector hint icons (null = leave empty), keyed by logical zone.
+  final Map<CenterZone, IconData?> sectorIcons;
+
+  /// Screen side of the logical inward sector, from the panel anchor.
+  final bool sectorInwardOnLeft;
+
+  /// Parent-geometry hit radius + readout hole the icon orbit is derived from.
+  /// The overlay's own default geometry is NOT used: the parent sizes rings
+  /// with custom factors, so it passes the real numbers down.
+  final double centerHitR;
+  final double centerGapRadius;
 
   /// Center readout styles. Shared with the 45° sector-X hole measurement in
   /// [PhoneRingDialScrubber.build] so the laid-out text and the lines that
@@ -1112,6 +1164,16 @@ class _DialOverlays extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: subStyle(accent)),
         ]),
+      ),
+      // Sector hint icons on the X arms' free span; `none` sectors stay empty.
+      CenterZoneSectorIcons(
+        center: g.center,
+        orbitRadius: centerZoneIconOrbitRadius(
+          hitRadius: centerHitR,
+          gapRadius: centerGapRadius,
+        ),
+        icons: sectorIcons,
+        inwardOnLeft: sectorInwardOnLeft,
       ),
     ]);
   }

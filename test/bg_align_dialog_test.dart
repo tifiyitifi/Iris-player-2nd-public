@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/background_playback/engine/background_playback_engine.dart';
-import 'package:iris/features/background_playback/model/enum/bg_align_default.dart';
 import 'package:iris/features/background_playback/model/enum/bg_align_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/background_playback/view/bg_align_auto_rule_dialog.dart';
 import 'package:iris/features/background_playback/view/bg_align_dialog.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/player.dart';
@@ -15,9 +15,9 @@ import 'package:iris/store/warning_dialogs.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
 
-/// The shared 副音 alignment editor: a scope switch (update-now vs
-/// save-as-default) over three shared anchor modes, with a decoupled percent
-/// slider that never seeks by itself.
+/// The shared 副音 alignment editor: a two-tab switch — 「更新对齐」 with three
+/// LIVE anchor modes, and a read-only 「默认对齐」 tab explaining the AUTOMATIC
+/// anchoring — over a decoupled percent slider that never seeks by itself.
 MediaPlayer _fakePlayer() => MediaPlayer(
       isInitializing: false,
       isPlaying: true,
@@ -119,101 +119,105 @@ void main() {
     expect(find.byType(BgAlignContent), findsOneWidget);
   });
 
-  testWidgets('shows one scope switch over the three shared modes',
+  testWidgets('shows which anchor the automatic rule applied', (tester) async {
+    // 尾部锚定 has no manual radio, so this read-only line is the only place the
+    // user can see why the 副音 started mid-file.
+    final bg = useBackgroundPlaybackStore();
+    bg.set(bg.state.copyWith(alignMode: BgAlignMode.tailAtFg));
+    engine.duration = const Duration(minutes: 30);
+    await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Auto anchoring:'), findsOneWidget);
+    expect(
+      find.textContaining("aligned with the video's end"),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the default tab explains the automatic anchoring, not options',
       (tester) async {
     await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
     await tester.pumpAndSettle();
 
-    // The scope switch is a SegmentedButton over a private enum, so match
-    // by subtype instead of an exact generic instantiation.
-    expect(
-      find.byWidgetPredicate((w) => w is SegmentedButton),
-      findsOneWidget,
-    );
+    // 「更新对齐」 (the default tab) shows the three manual modes and no rule
+    // note: a tap there re-aligns the running pair right now.
+    expect(find.byWidgetPredicate((w) => w is SegmentedButton), findsOneWidget);
     expect(find.text('Update alignment'), findsOneWidget);
     expect(find.text('Default alignment'), findsOneWidget);
-    // The at-position label exists exactly once (shared by both scopes).
     expect(
       find.text(
-          'Sub Audio starts at its 00:00 at the video\'s current position'),
+          'Sub Audio from 00:00: its start aligns with the video\'s current position'),
       findsOneWidget,
     );
-    // The default hint lives only in the 默认对齐 scope.
-    expect(find.textContaining('Current default:'), findsNothing);
+    expect(find.text('Default anchoring'), findsNothing);
+
+    // 「默认对齐」 is read-only: it only explains the automatic rule, with no
+    // option to pick.
     await tester.tap(find.text('Default alignment'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Current default:'), findsOneWidget);
+
+    expect(find.text('Default anchoring'), findsOneWidget);
+    expect(find.textContaining('Decided automatically'), findsOneWidget);
+    expect(
+      find.text(
+          'Sub Audio from 00:00: its start aligns with the video\'s current position'),
+      findsNothing,
+    );
   });
 
-  testWidgets('gate shut hides the update scope; taps only save the default',
+  testWidgets('gate shut keeps the tabs; the manual modes are disabled',
       (tester) async {
     final bg = useBackgroundPlaybackStore();
     bg.set(bg.state.copyWith(gateOpen: false));
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead);
-    expect(bg.state.alignDefault, BgAlignDefault.fgHead);
+    final modeBefore = bg.state.alignMode;
 
     await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
     await tester.pumpAndSettle();
 
-    // No live-update surface, and no scope switch to reach it.
-    expect(find.byWidgetPredicate((w) => w is SegmentedButton), findsNothing);
-    expect(find.text('Update alignment'), findsNothing);
-    // The "applies next alignment" framing is always shown while shut.
-    expect(find.textContaining('Current default:'), findsOneWidget);
+    // The card is still reachable while 副音 is inactive: the two-tab switch and
+    // the three manual anchors stay, with a caption saying they are inert.
+    expect(find.byWidgetPredicate((w) => w is SegmentedButton), findsOneWidget);
+    expect(find.text('Update alignment'), findsOneWidget);
+    final headMode = find.text(
+        'Sub Audio from 00:00: its start aligns with the video\'s current position');
+    expect(headMode, findsOneWidget);
+    expect(
+      find.text("Sub Audio isn't active yet, so alignment can't be applied."),
+      findsOneWidget,
+    );
 
-    final finder = find.text(
-        'Sub Audio starts at its 00:00 at the video\'s current position');
-    await tester.ensureVisible(finder);
-    await tester.tap(finder);
+    // Tapping a listed-but-disabled mode must not re-align anything.
+    await tester.ensureVisible(headMode);
+    await tester.tap(headMode, warnIfMissed: false);
     await tester.pumpAndSettle();
+    expect(bg.state.alignMode, modeBefore);
 
-    expect(bg.state.alignDefault, BgAlignDefault.fgPosition);
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead,
-        reason: 'the (stopped) running pair is never touched while the gate is '
-            'shut');
+    // The read-only explanation is one tab away.
+    final defaultTab = find.text('Default alignment');
+    await tester.ensureVisible(defaultTab);
+    await tester.tap(defaultTab);
+    await tester.pumpAndSettle();
+    expect(find.text('Default anchoring'), findsOneWidget);
   });
 
-  testWidgets('update scope taps the mode without touching the default',
-      (tester) async {
+  testWidgets('tapping a mode updates the running pair live', (tester) async {
     final bg = useBackgroundPlaybackStore();
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead);
-    expect(bg.state.alignDefault, BgAlignDefault.fgHead);
+    expect(bg.state.alignMode, BgAlignMode.sameClock);
+    final defBefore = bg.state.alignDefault;
 
     await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
     await tester.pumpAndSettle();
 
     final finder = find.text(
-        'Sub Audio starts at its 00:00 at the video\'s current position');
+        'Sub Audio from 00:00: its start aligns with the video\'s current position');
     await tester.ensureVisible(finder);
     await tester.tap(finder);
     await tester.pumpAndSettle();
 
-    expect(bg.state.alignMode, BgAlignMode.atFgPosition);
-    expect(bg.state.alignDefault, BgAlignDefault.fgHead);
-  });
-
-  testWidgets('default scope saves without seeking the running pair',
-      (tester) async {
-    final bg = useBackgroundPlaybackStore();
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead);
-
-    await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Default alignment'));
-    await tester.pumpAndSettle();
-
-    final finder = find.text(
-        'Sub Audio starts at its 00:00 at the video\'s current position');
-    await tester.ensureVisible(finder);
-    await tester.tap(finder);
-    await tester.pumpAndSettle();
-
-    expect(bg.state.alignDefault, BgAlignDefault.fgPosition);
-    // The running pair is untouched: no mode change, no seek.
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead);
-    // The hint reflects the new default so the change is visible at a glance.
-    expect(find.textContaining('Current default:'), findsOneWidget);
+    expect(bg.state.alignMode, BgAlignMode.bgHeadAtFg);
+    // There is no persisted default anymore: it is never touched by a tap.
+    expect(bg.state.alignDefault, defBefore);
   });
 
   testWidgets('the percent slider edits the share without seeking',
@@ -230,7 +234,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(bg.state.alignPercent, isNot(equals(before)));
-    expect(bg.state.alignMode, BgAlignMode.fromFgHead);
+    expect(bg.state.alignMode, BgAlignMode.sameClock);
   });
 
   testWidgets('alignment section sits above other settings', (tester) async {
@@ -254,34 +258,48 @@ void main() {
     );
   });
 
-  testWidgets('the default hint hides forever and comes back on reset',
+  testWidgets('the anchoring note is read-only (no dismiss control)',
       (tester) async {
-    // NOTE: never `await useAppStore().initialized` in a widget test — the
-    // store is a process-wide singleton created inside whichever test's
-    // fake-async zone ran first, so its completer can never resolve here.
-    // `set` is synchronous, which is all the UI assertions need.
-    final app = useAppStore();
-
     await tester.pumpWidget(_harness(player: _fakePlayer(), engine: engine));
     await tester.pumpAndSettle();
-
+    // The note lives on the read-only tab.
     await tester.tap(find.text('Default alignment'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Current default:'), findsOneWidget);
 
-    final hide =
-        find.byKey(const ValueKey('bg_align_default_hint_hide'));
-    await tester.ensureVisible(hide);
-    await tester.tap(hide);
+    expect(find.text('Default anchoring'), findsOneWidget);
+    // Never dismissible: it is the tab's whole content, and the tab itself is
+    // optional to open.
+    expect(
+      find.byKey(const ValueKey('bg_align_default_hint_hide')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('the anchoring explanation dialog renders the automatic rule',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+      locale: const Locale('en'),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: Center(
+            child: ElevatedButton(
+              onPressed: () => showBgAlignAutoRuleDialog(context),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    ));
+
     await tester.pumpAndSettle();
 
-    expect(app.state.suppressedWarnings, contains(kWarningBgAlignDefaultHint));
-    expect(find.textContaining('Current default:'), findsNothing);
-
-    // 取消永关: resetting brings the hint back.
-    await app.resetWarning(kWarningBgAlignDefaultHint);
+    await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Current default:'), findsOneWidget);
+
+    expect(find.text('Default anchoring'), findsOneWidget);
+    expect(find.textContaining('Decided automatically'), findsOneWidget);
   });
 
   testWidgets('the percent caption hides forever and comes back on reset',

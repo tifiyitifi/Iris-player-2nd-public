@@ -65,6 +65,13 @@ abstract class AppIdentityEntry with _$AppIdentityEntry {
     /// first activation of an independent entry. Null before then.
     String? workspaceScenarioId,
 
+    /// The entry's dedicated 副音 (background) workspace scenario id
+    /// ([ScenarioKind.entryBackground]), lazily created together with
+    /// [workspaceScenarioId] so each independent entry owns its own fg/bg PAIR.
+    /// Null before the entry's first activation. Not used by shared entries
+    /// (they share the default background workspace).
+    String? backgroundWorkspaceScenarioId,
+
     /// Timestamp of an independent entry's first activation; the seed runs
     /// only while this is null. Not set for shared entries (they own no
     /// workspace), so switching a shared entry to independent later still gets

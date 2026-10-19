@@ -146,7 +146,7 @@ void main() {
     final healed = AppDatabase(NativeDatabase(file));
     addTearDown(healed.close);
     final row = await healed.customSelect('PRAGMA user_version').getSingle();
-    expect(row.read<int>('user_version'), 46);
+    expect(row.read<int>('user_version'), healed.schemaVersion);
   });
 
   group('migration catch guard', () {
@@ -156,9 +156,14 @@ void main() {
     //    migration, which never retries).
     //  - v38: _canonicalBase parses one legacy row; malformed data only means
     //    that row keeps its absolute path, so schema state is unaffected.
+    //  - v49: the tag-source DELETE runs first and unconditionally; only the
+    //    best-effort `DROP COLUMN tag_id` is guarded (SQLite < 3.35 cannot drop
+    //    a column, and the app no longer reads or writes it, so advancing the
+    //    schema version is safe).
     const allowedSwallows = <String, int>{
       'v31_migration.dart': 1,
       'v38_migration.dart': 1,
+      'v49_migration.dart': 1,
     };
 
     test('every version-gated migration rethrows on failure', () {

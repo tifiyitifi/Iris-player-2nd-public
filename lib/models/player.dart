@@ -27,16 +27,11 @@ class MediaPlayer {
   final Future<void> Function(Duration) seek;
 
   /// Latest accumulated step-seek target (ms, on the same axis as [position])
-  /// while a ← / → / double-tap step is heading to its target, else null. The
-  /// OSD reads this instead of the pre-seek [position] snapshot so the shown
-  /// time matches where the seek is heading rather than where it just was.
+  /// while a ← / → / double-tap step burst is heading to its target, else null.
+  /// The OSD reads this instead of the pre-seek [position] snapshot so the
+  /// shown time matches where the seek is heading rather than where it just
+  /// was. Null on backends without a Dart-side step accumulator.
   final int? Function()? stepIntentTargetMs;
-
-  /// Collapses a held step-seek burst to its final target when the ← / →
-  /// key is released, so the walk stops within one landing instead of draining
-  /// every auto-repeated press. Null on backends without the chained step
-  /// scheduler (fvp), where there is nothing to collapse.
-  final Future<void> Function()? endStepBurst;
 
   // ── Capability stubs (P0 track/sync features) ──
   //
@@ -78,7 +73,6 @@ class MediaPlayer {
     required this.stepForward,
     required this.seek,
     this.stepIntentTargetMs,
-    this.endStepBurst,
   });
 }
 
@@ -189,7 +183,6 @@ class MediaKitPlayer extends MediaPlayer {
     required super.stepForward,
     required super.seek,
     super.stepIntentTargetMs,
-    super.endStepBurst,
   });
 }
 
@@ -216,5 +209,6 @@ class FvpPlayer extends MediaPlayer {
     required super.stepBackward,
     required super.stepForward,
     required super.seek,
+    super.stepIntentTargetMs,
   });
 }

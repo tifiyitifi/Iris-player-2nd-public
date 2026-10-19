@@ -50,6 +50,11 @@ class MobileControlLayout extends HookWidget {
       isMobile: isMobilePlatform,
       groupSupported: supported,
     );
+    // 副音 menu button MOVES into the 副音 group on PHONES: their playback row
+    // hands the slot to the screen-lock toggle. The desktop bars are untouched
+    // (a narrow desktop window also renders this layout, so the gate is the
+    // platform, never the layout kind).
+    final bool bgMenuInGroup = isMobilePlatform;
 
     final PortraitBarAlign portraitAlign =
         useAppStore().select(context, (s) => s.portraitPlaybackAlign);
@@ -77,6 +82,10 @@ class MobileControlLayout extends HookWidget {
               forceVisible: true,
               color: controls.color,
               overlayColor: controls.overlayColor,
+              // The 副音 menu closes the group (the counterpart of More on the
+              // playback row) — phones only, see [bgMenuInGroup].
+              trailingAction:
+                  bgMenuInGroup ? controls.backgroundPlaybackMenu : null,
             ),
           )
         else ...[
@@ -101,8 +110,12 @@ class MobileControlLayout extends HookWidget {
                 controls.rotateOrVolume,
               if (!collapsed.contains(ControlBarSlot.subtitle))
                 controls.subtitle,
-              if (!collapsed.contains(ControlBarSlot.backgroundMenu))
+              // 副音 menu: phones hand its slot to the screen-lock toggle (the
+              // menu went into the 副音 group); desktop keeps the menu here.
+              if (!bgMenuInGroup &&
+                  !collapsed.contains(ControlBarSlot.backgroundMenu))
                 controls.backgroundPlaybackMenu,
+              if (controls.showScreenLock) controls.screenLock,
               if (!collapsed.contains(ControlBarSlot.playQueue))
                 controls.playQueue,
               if (!collapsed.contains(ControlBarSlot.storage))

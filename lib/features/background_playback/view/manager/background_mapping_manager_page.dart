@@ -216,8 +216,8 @@ class BackgroundMappingManagerPage extends HookWidget {
 
     final bg = useBackgroundPlaybackStore();
     if (!bg.state.enabled) {
-      final candidates = await BackgroundPlaybackActions.resolveCandidates();
-      if (candidates == null) {
+      final window = await BackgroundPlaybackActions.resolveCandidates();
+      if (window == null) {
         useApbEditSessionStore().clear();
         await ApbEditContext.exit(session);
         await showMessageDialog(
@@ -229,7 +229,8 @@ class BackgroundMappingManagerPage extends HookWidget {
         return;
       }
       await BackgroundPlaybackActions.startWithCandidates(
-        candidates,
+        window.files,
+        window: window,
         replace: false,
       );
     }

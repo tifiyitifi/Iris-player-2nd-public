@@ -35,6 +35,25 @@ void main() {
     expect(relativeToStoragePath(base, [base]), '');
   });
 
+  test('a SAF descendant keeps the literal tail after the tree prefix', () {
+    // Shape produced by the scanner/browser: `[treeUri, 'Movies', ...]`.
+    const base =
+        'content://com.android.externalstorage.documents/tree/primary%3ADownload';
+    expect(relativeToStoragePath('$base/Movies', [base]), 'Movies');
+    // A deeper tree id in the base still resolves the tail against the base.
+    const inner = '$base%2FMovies';
+    expect(relativeToStoragePath('$base/Movies/Sub', [inner]), 'Sub');
+  });
+
+  test('a SAF descendant under NO registered base falls back to its tail', () {
+    const base =
+        'content://com.android.externalstorage.documents/tree/primary%3ADownload';
+    expect(
+      relativeToStoragePath('$base/Movies/a.mp4', ['E:/yb']),
+      'Download/Movies/a.mp4',
+    );
+  });
+
   test('falls through unchanged under no registered base', () {
     expect(relativeToStoragePath('other/dir', ['E:/yb']), 'other/dir');
   });

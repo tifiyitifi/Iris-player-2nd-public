@@ -31,27 +31,52 @@ class VirtualSeekHandler {
     return (item.offsetOf(segIdx) + saneLocal).clamp(0, item.totalDurationMs);
   }
 
+  /// Whether the segment [segmentIndex] of [item] carries a REAL duration.
+  ///
+  /// Every intra-segment clamp is meaningless without it: any candidate target
+  /// collapses to 0 (`clampVmLocalMs` returns 0 for an unknown duration), and a
+  /// caller that seeks/persists that fabricated 0 wipes the file's saved
+  /// progress (「VM 里按一下 ←/→ 进度归 0」). Callers must HOLD instead of
+  /// seeking. Duration is unknown until the VM scan/notification has probed the
+  /// physical file.
+  bool segmentDurationKnown(VirtualMediaItem item, int segmentIndex) {
+    if (item.segments.isEmpty) return false;
+    final idx = segmentIndex.clamp(0, item.segments.length - 1);
+    final dur = item.segments[idx].durationMs;
+    return dur != null && dur > 0;
+  }
+
   /// Resolves a relative move on the virtual timeline (ms precision).
   ///
   /// Returns the clamped virtual target decomposed to `(segIdx, localMs,
-  /// virtualMs)`. Exact segment boundaries resolve to the LATER segment
-  /// (same rule as [VirtualMediaItem.locate]); head/tail clamp instead of
-  /// wrapping; zero-total items no-op to `(0, 0, 0)` so callers never feed a
-  /// degenerate target into a segment open.
-  ({int segIdx, int localMs, int virtualMs}) resolveRelativeSeek(
+  /// virtualMs)` — or NULL when the move cannot be resolved: a virtual total of
+  /// zero (nothing probed yet) or a target segment with no known duration. A
+  /// caller MUST treat null as "do nothing": the degenerate `(0, 0, 0)` this
+  /// used to return was fed to a user seek and persisted position 0 over the
+  /// file's saved progress. Exact segment boundaries resolve to the LATER
+  /// segment (same rule as [VirtualMediaItem.locate]); head/tail clamp instead
+  /// of wrapping.
+  ({int segIdx, int localMs, int virtualMs})? resolveRelativeSeek(
     VirtualMediaItem item, {
     required int segmentIndex,
     required int localMs,
     required int deltaMs,
   }) {
-    if (item.segments.isEmpty || item.totalDurationMs <= 0) {
-      return (segIdx: 0, localMs: 0, virtualMs: 0);
-    }
+      if (item.segments.isEmpty || item.totalDurationMs <= 0) return null;
+    // The source segment's position is meaningless without a real duration: any
+    // base derived from it is fabricated (the old `clamp(0, 0)` collapsed the
+    // current position to the segment start and wiped saved progress). Hold
+    // instead of seeking, exactly like an unknown target segment.
+    if (!segmentDurationKnown(item, segmentIndex)) return null;
     final base = virtualBaseMs(item, segmentIndex: segmentIndex, localMs: localMs);
     final target = (base + deltaMs).clamp(0, item.totalDurationMs);
     final (idx, local) = item.locate(target);
+    if (!segmentDurationKnown(item, idx)) return null;
     final clamped = clampVmLocalMs(item.segments[idx].durationMs, local);
-    return (segIdx: idx, localMs: clamped, virtualMs: target);
+    // Report the ACTUAL landing, not the (possibly unseekable) clamped-to-total
+    // target: otherwise the OSD / persisted position sit one ms past the last
+    // seekable ms of the segment and fire an instant `completed`.
+    return (segIdx: idx, localMs: clamped, virtualMs: item.offsetOf(idx) + clamped);
   }
 
   /// Local buffered amount -> virtual buffered amount (ms) for the progress

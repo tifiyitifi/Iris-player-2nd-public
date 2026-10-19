@@ -16,6 +16,7 @@ import 'package:iris/features/scenario_playback/model/domain/effective_playback_
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_source_provider.dart';
+import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/tag_play/model/db/dao/video_tag_members_dao.dart';
 import 'package:iris/features/tag_play/model/db/dao/video_tag_pin_presets_dao.dart';
 import 'package:iris/features/tag_play/model/db/dao/video_tag_view_states_dao.dart';
@@ -114,8 +115,14 @@ void main() {
           ? (tagId, addedAfter) =>
               membersDao.memberNodeIds(tagId, addedAfter: addedAfter)
           : null,
+      // The PRODUCTION provider (retention-aware), not the raw DAO: a count
+      // test must exercise the same expiry rule the app wires.
       tagMembersByTag: tagCallbacks
-          ? (addedAfter) => membersDao.memberNodeIdsByTag(addedAfter: addedAfter)
+          ? (addedAfter) => PlaybackScenarioStore.activeTagMemberNodeIdsByTag(
+                addedAfter,
+                repo: tagRepo,
+                membersDao: membersDao,
+              )
           : null,
       useSharedIndexRead: true,
     );
@@ -168,6 +175,35 @@ void main() {
     final counts = await sharedResolverWith().tagIntersectionCountsFor(sid);
     expect(counts, isNotNull);
     expect(counts![tag.id], 2);
+  });
+
+  test('tagIntersectionCountsFor drops members past the tag retention',
+      () async {
+    await seedMedia(10);
+    final sid = await buildScenario(shared: true);
+    final tag = await tagRepo.createTag(
+      name: 'r',
+      retention: const Duration(minutes: 5),
+    );
+    // Both are in the scenario; only the fresh one is inside the retention
+    // window (the expired row has not been purged yet).
+    await tagRepo.addMember(
+      tagId: tag.id,
+      storageId: 'st1',
+      pathSegments: ['A/0001.mp4'],
+      at: DateTime.now().subtract(const Duration(hours: 1)),
+    );
+    await tagRepo.addMember(
+      tagId: tag.id,
+      storageId: 'st1',
+      pathSegments: ['A/0002.mp4'],
+      at: DateTime.now(),
+    );
+
+    final counts = await sharedResolverWith().tagIntersectionCountsFor(sid);
+    expect(counts, isNotNull);
+    expect(counts![tag.id], 1,
+        reason: 'the expired member must not inflate scenarioCount');
   });
 
   test('memberCountsByTag returns per-tag totals in SQL', () async {

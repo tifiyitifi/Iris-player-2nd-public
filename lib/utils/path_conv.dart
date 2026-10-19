@@ -13,6 +13,48 @@ final RegExp _kSafTreePrefix = RegExp(r'^content://[^/]+/tree/[^/]+');
 /// True when [raw] is an Android SAF content URI / content-prefixed path.
 bool isSafPath(String raw) => raw.startsWith('content://');
 
+/// Percent-decodes one SAF path segment, falling back to the raw text when it
+/// is not valid percent-encoding.
+///
+/// The `%` guard is not an optimisation: a literal `%` in a real name (or a
+/// half-typed segment) makes `Uri.decodeComponent` throw, and a decode failure
+/// here must never take the whole path down.
+String _decodeSafSegment(String s) {
+  if (!s.contains('%')) return s;
+  try {
+    return Uri.decodeComponent(s);
+  } on FormatException {
+    return s;
+  } on ArgumentError {
+    return s;
+  }
+}
+
+/// The readable identity of a SAF tree id: its percent-decoded form, with no
+/// volume-prefix stripping (`primary:Download`, `ABCD-1234:Download/Sub`).
+String _decodedTreeId(String treePrefix) {
+  final head = treePrefix.substring(0, treePrefix.lastIndexOf('/'));
+  return _decodeSafSegment(treePrefix.substring(head.length + 1));
+}
+
+/// The literal relative segments that ride AFTER the matched tree prefix, with
+/// empty / `.` / `..` segments dropped.
+///
+/// A scanner/browser-built SAF path is `<treePrefix>/<rel1>/<rel2>` (the tree
+/// id is percent-encoded, the relative names are LITERAL — the same form
+/// `safSegmentsOf`/`canonicalDbPath` store and `safJoin` round-trips). The
+/// prefix regex stops at the encoded id, so these segments are NOT part of the
+/// match and must be read separately — dropping them collapsed every descendant
+/// of a storage root to the root itself.
+///
+/// They are deliberately NOT percent-decoded: a real file named `a%20b.mp4`
+/// would become `a b.mp4`, and `a%2Fb` would grow a path level. Only the tree
+/// id itself is encoded and decoded (see [_decodedTreeId]).
+List<String> _safTailSegments(String raw, String treePrefix) => <String>[
+      for (final part in raw.substring(treePrefix.length).split('/'))
+        if (part.isNotEmpty && part != '.' && part != '..') part,
+    ];
+
 /// Whether the first segment already embeds the full `content://` tree
 /// prefix (segment 0 == tree URI), i.e. a SAF-path segment list.
 bool isSafPathSegments(List<String> segments) =>
@@ -25,13 +67,27 @@ bool isSafPathSegments(List<String> segments) =>
 /// segment is ALWAYS the full tree prefix; the remainder are literal
 /// (un-encoded) relative names split on '/'. Rejects `.`/`..`.
 ///
+/// A `content://` document URI WITHOUT a `/tree/` segment (an
+/// `ACTION_OPEN_DOCUMENT` single pick, e.g. `.../document/video%3A101`) is NOT
+/// split: it is returned verbatim as a single segment so its scheme stays
+/// reversible (splitting collapsed `content://` into `content:/`).
+///
 /// For non-SAF input falls back to the legacy `pathConv`-style split.
 List<String> safSegmentsOf(String raw) {
   if (!isSafPath(raw)) return pathConv(raw);
   final prefix = _kSafTreePrefix.stringMatch(raw) ?? '';
   if (prefix.isEmpty) {
-    // Malformed `content://...` (missing /tree/) — treat scheme lossily so
-    // nothing downstream crashes on a stray string.
+    // A `content://` URI without a `/tree/` segment is a SAF document URI
+    // (ACTION_OPEN_DOCUMENT single pick) — NOT a malformed tree URI. Splitting
+    // it on `/` collapses `content://` into `content:/` (see v23 repair) and
+    // breaks every downstream identity (media_nodes path, progress key, the
+    // queue highlight). Preserve it verbatim as a single segment so it stays
+    // reversible, exactly like a tree prefix.
+    if (isSafPath(raw)) {
+      return <String>[raw];
+    }
+    // Genuinely malformed `content://...` (missing /tree/) — keep the legacy
+    // lossy split so nothing downstream crashes on a stray string.
     areaKeyLog.w('safSegmentsOf: no /tree/ prefix in $raw');
     return raw.split('/').where((e) => e.isNotEmpty).toList();
   }
@@ -52,6 +108,19 @@ String safJoin(List<String> segments) {
   return s.join('/');
 }
 
+/// The LEGACY scheme-collapsed form of a SAF path (`content://a/b` →
+/// `content:/a/b`), or null when [path] is not a `content://` path.
+///
+/// The old canonicalization split the scheme on `/` and rejoined it, so rows
+/// written before the scheme was preserved (and repaired once by
+/// `MigrationV23`) still live under this key. Lookups accept both forms so a
+/// migrated single pick is never orphaned.
+String? collapsedSafSchemePath(String path) {
+  const prefix = 'content://';
+  if (!path.startsWith(prefix)) return null;
+  return 'content:/${path.substring(prefix.length)}';
+}
+
 /// Resolves a picked SAF tree URI ([raw]) to a HUMAN-READABLE
 /// storage-relative directory path under the storage rooted at [treeBase].
 ///
@@ -64,6 +133,11 @@ String safJoin(List<String> segments) {
 /// - `raw` under `[treeBase]` → the remaining decoded relative path
 ///   (`Movies` / `Movies/sub` — readable, no `content://`, no `%2F`);
 /// - different tree roots / non-SAF inputs → `null` (not under this storage).
+///
+/// [raw] may be the bare tree URI OR a deeper path whose tail rides literally
+/// after the prefix (`<treePrefix>/Movies/sub`, the scanner/browser shape):
+/// the tail is part of [raw]'s identity, so a descendant is never mistaken for
+/// [treeBase] itself (which returned `''` and silently targeted the root).
 String? safTreeRelativeTo(String raw, String treeBase) {
   if (!isSafPath(raw) || !isSafPath(treeBase)) return null;
   final rawPrefix = _kSafTreePrefix.stringMatch(raw) ?? '';
@@ -71,14 +145,19 @@ String? safTreeRelativeTo(String raw, String treeBase) {
   if (rawPrefix.isEmpty || basePrefix.isEmpty) return null;
 
   // Same `content://<authority>/tree/` head, then compare decoded tree ids.
+  // The authority is case-INSENSITIVE (RFC 3986): `COM.Android...` and
+  // `com.android...` are the same provider.
   final rawHead = rawPrefix.substring(0, rawPrefix.lastIndexOf('/'));
   final baseHead = basePrefix.substring(0, basePrefix.lastIndexOf('/'));
-  if (rawHead != baseHead) return null;
+  if (rawHead.toLowerCase() != baseHead.toLowerCase()) return null;
 
-  final rawDecoded = Uri.decodeComponent(
-      rawPrefix.substring(rawHead.length + 1));
-  final baseDecoded = Uri.decodeComponent(
-      basePrefix.substring(baseHead.length + 1));
+  // Compare the FULL readable identity (decoded tree id + literal tail), with
+  // the volume prefix kept so `primary:` vs `ABCD-1234:` stays distinct.
+  final rawDecoded = <String>[
+    _decodedTreeId(rawPrefix),
+    ..._safTailSegments(raw, rawPrefix),
+  ].join('/');
+  final baseDecoded = _decodedTreeId(basePrefix);
   if (rawDecoded == baseDecoded) return '';
   if (!rawDecoded.startsWith('$baseDecoded/')) return null;
   return rawDecoded.substring(baseDecoded.length + 1);
@@ -91,6 +170,9 @@ String? safTreeRelativeTo(String raw, String treeBase) {
 /// `content://com.android.externalstorage.documents/tree/primary%3ADownload%2FMovies`
 /// → `Download/Movies`.
 ///
+/// A literal tail after the tree prefix is kept too:
+/// `.../tree/primary%3ADownload/Movies/a.mp4` → `Download/Movies/a.mp4`.
+///
 /// Used as a LAST-RESORT fallback when a pick is not under any registered
 /// storage — rules store storage-relative directory paths, never a raw
 /// `content://...` string. Returns null for non-tree / malformed input.
@@ -98,14 +180,15 @@ String? safReadableRelative(String raw) {
   if (!isSafPath(raw)) return null;
   final prefix = _kSafTreePrefix.stringMatch(raw) ?? '';
   if (prefix.isEmpty) return null;
-  final head = prefix.substring(0, prefix.lastIndexOf('/'));
-  final decoded = Uri.decodeComponent(prefix.substring(head.length + 1));
+  final decoded = _decodedTreeId(prefix);
   // Strip the volume prefix (`primary:`, `ABCD-1234:`, ...). No colon → the
   // whole decoded id is the path.
   final sep = decoded.indexOf(':');
   final path = sep < 0 ? decoded : decoded.substring(sep + 1);
-  final segs =
-      path.split('/').where((e) => e.isNotEmpty && e != '.' && e != '..').toList();
+  final segs = <String>[
+    ...path.split('/').where((e) => e.isNotEmpty && e != '.' && e != '..'),
+    ..._safTailSegments(raw, prefix),
+  ];
   return segs.join('/');
 }
 
@@ -346,6 +429,22 @@ bool pathRidesCaseInsensitiveFs(String path) {
   return RegExp(r'^[A-Za-z]:([/\\]|$)').hasMatch(path);
 }
 
+/// Whether two LOCAL paths name the same file, tolerating separator and — on a
+/// case-insensitive filesystem — case differences.
+///
+/// A picker-returned path and a `Directory.list()` entry for the SAME file can
+/// differ in `\` vs `/` (or a drive-letter case), so an identity comparison must
+/// normalize first: comparing raw strings turned a real match into a
+/// not-found. POSIX / SAF paths stay case-sensitive, where folding would merge
+/// two genuinely distinct entries.
+bool sameLocalPath(String a, String b) {
+  final pa = p.normalize(a);
+  final pb = p.normalize(b);
+  return pathRidesCaseInsensitiveFs(pa)
+      ? pa.toLowerCase() == pb.toLowerCase()
+      : pa == pb;
+}
+
 /// Replaces the leading [oldSegments] of [segments] with [newSegments] when
 /// they match; returns null when the prefix does not match.
 ///
@@ -372,3 +471,13 @@ String sanitizePlayableUri(String uri) =>
     uri.startsWith('/') && RegExp(r'^\/[A-Za-z]:').hasMatch(uri)
         ? uri.substring(1)
         : uri;
+
+/// Percent-encodes an FTP proxy `path=` value, keeping `/` separators literal.
+///
+/// `Uri.encodeFull` leaves `&`, `#` and `=` untouched, so a file name carrying
+/// them truncated the query (`ftp?host=h&port=21&path=/a&b.srt` parsed back as
+/// `path=/a`). Component encoding escapes them, and restoring `%2F` keeps the
+/// `/a/b.srt` shape the proxy's `queryParameters` accessor (and `changeDirectory`)
+/// expects.
+String encodeFtpProxyPath(String path) =>
+    Uri.encodeComponent(path).replaceAll('%2F', '/');

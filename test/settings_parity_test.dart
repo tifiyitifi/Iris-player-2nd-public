@@ -55,9 +55,6 @@ void main() {
         // media_kit demuxer cache preset (metadata-only `playback.` AUX row;
         // hidden while the fvp backend is active).
         'playback.videoCachePreset',
-        // Step-seek scheduling strategy (metadata-only `playback.` AUX row;
-        // hidden while the fvp backend is active).
-        'playback.stepSeekMode',
         // "Slider type" merged tile (design + anchor live in its dialog) and
         // the dial-ring/circle style tile — both power the sideway panel on
         // desktop too.
@@ -79,7 +76,6 @@ void main() {
         'background_playback.keepWarmPlayer',
         'background_playback.startArmed',
         'background_playback.autoFocusControl',
-        'background_playback.sourceManage',
         'background_playback.followFgSwitch',
         'background_playback.allowSameFile',
         'background_playback.rateLock',
@@ -112,7 +108,6 @@ void main() {
         'background_playback.itemSwitch',
         'background_playback.segmentSwitch',
         'background_playback.alignAutoPauseRemainSec',
-        'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
         'background_playback.queueSyncMode',
         // PotPlayer-style stacked bar (features/windows/desktop_control_bar)
@@ -205,8 +200,6 @@ void main() {
         'app.showControlsOnPlayToPause',
         // media_kit demuxer cache preset (metadata-only `playback.` AUX row).
         'playback.videoCachePreset',
-        // Step-seek scheduling strategy (metadata-only `playback.` AUX row).
-        'playback.stepSeekMode',
         'app.phoneLandscapeSliderType',
         'speed.gestureMode',
         'speed.rateMode',
@@ -229,7 +222,6 @@ void main() {
         'background_playback.keepWarmPlayer',
         'background_playback.startArmed',
         'background_playback.autoFocusControl',
-        'background_playback.sourceManage',
         'background_playback.followFgSwitch',
         'background_playback.allowSameFile',
         'background_playback.rateLock',
@@ -257,7 +249,6 @@ void main() {
         'background_playback.itemSwitch',
         'background_playback.segmentSwitch',
         'background_playback.alignAutoPauseRemainSec',
-        'background_playback.fallbackBanner',
         'background_playback.exhaustedAction',
         'background_playback.queueSyncMode',
         // Screenshot save dir (mobile custom dir; platform default

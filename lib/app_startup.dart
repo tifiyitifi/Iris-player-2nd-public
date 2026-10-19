@@ -14,8 +14,7 @@ import 'package:iris/features/playback_tools/services/screenshot_service.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/controller/background_playback_bootstrap.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
-import 'package:iris/features/background_playback/services/bg_source_revision.dart';
-import 'package:iris/features/background_playback/store/bg_source_bootstrap.dart';
+import 'package:iris/features/background_playback/services/bg_pool_revision.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/meta_settings/engine/def_visibility.dart';
@@ -123,15 +122,17 @@ Future<void> completeStartupInitialization() async {
   // without the scenario ever being told, which left the queue highlight (and
   // the locate hint) on the previously tapped row.
   VmGroupPositionSync.instance.start();
-  // 副音 playback: registers the control-target router + candidate sources.
+  // 副音 playback: registers the control-target router.
   BackgroundPlaybackBootstrap.init();
-  // 副音 source rules: seed the non-deletable built-in rule + import legacy
-  // JSON rules into the table (meta-driven era only).
+  // 副音 pool: a tag-membership write on the reserved 「副音备选」tag — or a
+  // source-definition edit of a background scenario — must reach the candidate
+  // pool (and a live queue) without waiting for a re-resolve. The probe is
+  // injected here because [BgPoolRevision.shared] is built before the DB
+  // exists: without it, EVERY tag write in the app re-resolved the pool.
   if (BackgroundPlaybackGate.enabled) {
-    await BgSourceBootstrap.ensure(DbModule.bgSourceRuleRepo);
-    // Membership writes of the tags the rules read from must reach the
-    // candidate pool (and a live queue) without waiting for a rule edit.
-    BgSourceRevision.shared.start();
+    BgPoolRevision.shared.start(
+      relevanceOf: BgPoolRevision.relevanceOfReservedBackgroundTag,
+    );
   }
 
   // tag_play global session prefs (pin order, active view, view stack).
@@ -193,15 +194,6 @@ Future<void> completeStartupInitialization() async {
   // while fvp is active (unavailable functionality must never be shown).
   DefVisibility.registerKey(
     'playback.videoCachePreset',
-    () =>
-        MetaSettingsModule.ready &&
-        useAppStore().state.useMetadataSettings &&
-        useAppStore().state.playerBackend == PlayerBackend.mediaKit,
-  );
-  // Step-seek scheduling steers the media_kit burst chain only; hide it while
-  // fvp is active.
-  DefVisibility.registerKey(
-    'playback.stepSeekMode',
     () =>
         MetaSettingsModule.ready &&
         useAppStore().state.useMetadataSettings &&

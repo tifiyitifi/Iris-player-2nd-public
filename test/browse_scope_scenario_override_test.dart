@@ -10,6 +10,7 @@ import 'package:iris/features/scenario_playback/actions/scenario_override_action
 import 'package:iris/features/scenario_playback/actions/scenario_playback_error.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -115,7 +116,12 @@ void main() {
       ScenarioOverrideActions.playSelectionInDefaultScenario(
         files: const [],
         directories: <ScenarioSourceSpec>[
-          (storageId: 'st-ov', path: 'Aud', recursive: false),
+          (
+            storageId: 'st-ov',
+            path: 'Aud',
+            recursive: false,
+            kind: ScenarioSourceKind.folder,
+          ),
         ],
         sortField: ScenarioSortField.name,
         sortDirection: SortDirection.asc,

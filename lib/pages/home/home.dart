@@ -180,6 +180,8 @@ class Home extends HookWidget {
         useAppStore().select(context, (s) => s.fullscreenDockEdgeRevealPct);
     final useMetadataSettings =
         useAppStore().select(context, (s) => s.useMetadataSettings);
+    final useLegacyStoragePersistence =
+        useAppStore().select(context, (s) => s.useLegacyStoragePersistence);
     final isFullScreen = usePlayerUiStore().select(context, (s) => s.isFullScreen);
     final fsDockPeeking =
         usePlayerUiStore().select(context, (s) => s.isFullscreenDockPeeking);
@@ -199,6 +201,7 @@ class Home extends HookWidget {
       useMetadataSettings: useMetadataSettings,
       mode: playlistPanelMode,
       isFullScreen: isFullScreen,
+      legacyStorage: useLegacyStoragePersistence,
     );
 
     // On entering picture fullscreen, seed the pinned state from the setting
@@ -291,6 +294,8 @@ class Home extends HookWidget {
             visible: playlistPanelVisible,
             isFullScreen: isFullScreen,
             behavior: sideFullscreenBehavior,
+            useMetadataSettings: useMetadataSettings,
+            legacyStorage: useLegacyStoragePersistence,
           );
 
           // Stable player identity — switching dock must not recreate MediaPlayer.

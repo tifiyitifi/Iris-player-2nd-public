@@ -24,7 +24,7 @@ local files, WebDAV, and FTP. Package `iris`, version `1.6.0+6` (`pubspec.yaml`)
 | Concern | Library | Notes |
 |---|---|---|
 | State | `flutter_zustand` | Zustand stores. NOT Riverpod. |
-| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v45**. |
+| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v51**. |
 | Models | `freezed` + `json_serializable` | All domain models and DTOs. |
 | Widgets | `flutter_hooks` | `HookWidget` preferred over `StatefulWidget`. |
 | Playback | `media_kit` + `fvp` | Two swappable backends (`AppState.playerBackend`). |
@@ -57,7 +57,7 @@ Other key paths:
 
 - `lib/models/db/` — global Drift layer: `app_database.dart` (schema), `db_module.dart`
   (DAO→repository wiring), `tables/`, `dao/`, `repositories/`, `adapters/`,
-  `migration/` (`v2`–`v45`).
+  `migration/` (`v2`–`v51`).
 - `lib/store/` — global Zustand stores; `persistent_store.dart` is the `PersistentStore<T>`
   base class (`load`/`save` lifecycle).
 - `lib/pages/` — top-level pages (`home/`, `player/`, `bootstrap_gate.dart`).
@@ -165,6 +165,41 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
 - **CHANGELOG encoding:** `CHANGELOG.md` is strict-valid UTF-8 without BOM; Chinese
   mojibake in GBK viewers (codepage 936 console, `Get-Content` without `-Encoding utf8`,
   legacy Notepad) is a viewer artifact, not corruption. Do NOT re-encode or add BOM.
+
+## Release Process (private → public mirror)
+
+Public releases are cut from a dedicated **squash branch** that mirrors the public
+repository's `main`; the development branch is never rewritten.
+
+1. **Release commit on the development branch.** Add ONE `chore(release): vX.Y.Z` commit: a new
+   `## vX.Y.Z` CHANGELOG section (English `### Changelog` + Chinese `### 更新日志`) plus the
+   `X.Y.Z` bump in `pubspec.yaml`. Let the `pre-commit` hook bump `versionCode` and sync the
+   `+N`; push fast-forward.
+2. **Squash one commit onto the squash branch.** The tip tree must be byte-identical to the
+   development branch's release commit, and its parent must be the current public `main` tip
+   (fast-forward). Build it WITHOUT checking the branch out, so the working tree is untouched:
+   ```bash
+   tree=$(git show -s --format=%T <dev-release-commit>)
+   new=$(git commit-tree "$tree" -p <squash-tip> -m "feat: X.Y.Z — <headline items>")
+   git branch -f <squash-branch> "$new"
+   git diff <squash-branch> <dev-release-commit> -- .   # must be empty
+   ```
+   Message style: `feat: X.Y.Z — <three or four headline items>`.
+3. **Publish.** Push the squash branch to the **public** repository's `main` (fast-forward). A
+   push to `main` there triggers that repo's `ci.yml` → `build-android` + `build-windows` →
+   `release` (tag `vX.Y.Z`, notes extracted from `CHANGELOG.md` by `extract_log.py`, all
+   artifacts plus `SHA256SUMS.txt`).
+
+- Preferred path is the manual `workflow_dispatch` sync workflow
+  (`.github/workflows/sync-to-public.yml`): it uses a repository secret for public-repo write
+  access, so credentials are centralised and auditable. Dispatch it **on the squash branch**
+  and leave the message override empty so the baked commit message is kept. A direct
+  fast-forward push is the fallback when the secret / `gh` is unavailable.
+- Publishing needs write access to the public repository (the CI secret, or the local git
+  credential helper for a direct push). Never commit a real token.
+
+Desensitized on purpose: repository URLs and token/secret names are placeholders here because
+this file is mirrored to the public repository.
 
 ## AI Session Conventions
 

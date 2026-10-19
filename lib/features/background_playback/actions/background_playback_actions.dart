@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
-import 'package:iris/features/background_playback/services/background_candidate_cache.dart';
+import 'package:iris/features/background_playback/services/background_scenario_pool.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
 import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
@@ -34,26 +34,32 @@ abstract final class BackgroundPlaybackActions {
   /// ([BackgroundQueueLogic.pickStartIndex], `step`, `advanceOnCompleted`,
   /// `jumpTo`) — never in the listing.
   ///
-  /// The raw pool comes from the session candidate cache (resolved once per
-  /// source-rules revision). When there is NO active source rule the built-in
-  /// library pure-tag source (the reserved 「副音备选」tag) is used — the
-  /// zero-active fallback. Cross-rule dedupe is applied inside the resolver.
-  static Future<List<FileItem>> resolveCandidatePool() async =>
-      List<FileItem>.of(await BackgroundCandidateCache.shared.pool());
+  /// The raw pool comes from the ACTIVE background scenario (definition, sort,
+  /// shuffle, dedup and excludes all scenario-owned); the per-entry pairing
+  /// decides which scenario that is. Its default definition is one tag source
+  /// (the reserved 「副音备选」tag).
+  static Future<BgQueueWindow> resolveCandidateWindow({
+    int? around,
+    String? aroundKey,
+  }) =>
+      BackgroundScenarioPool.shared.window(around: around, aroundKey: aroundKey);
 
   /// Candidates that can be handed to a queue AND played right now, or null
   /// when nothing qualifies.
   ///
   /// The start-time contract: a launch needs at least one candidate that is not
   /// the foreground's own file, otherwise the "no candidates" message is the
-  /// honest answer. The returned LIST is still the full pool, so the queue the
-  /// launch builds keeps A for the next foreground — only the null case is
+  /// honest answer. The returned WINDOW is still the full page, so the queue
+  /// the launch builds keeps A for the next foreground — only the null case is
   /// filtered.
-  static Future<List<FileItem>?> resolveCandidates() async {
-    final candidates = await resolveCandidatePool();
-    if (candidates.isEmpty) return null;
-    if (!hasPlayableCandidate(candidates)) return null;
-    return candidates;
+  static Future<BgQueueWindow?> resolveCandidates({
+    int? around,
+    String? aroundKey,
+  }) async {
+    final window = await resolveCandidateWindow(around: around, aroundKey: aroundKey);
+    if (window.files.isEmpty) return null;
+    if (!hasPlayableCandidate(window.files)) return null;
+    return window;
   }
 
   /// Whether at least one entry of [candidates] may play against the current
@@ -77,6 +83,7 @@ abstract final class BackgroundPlaybackActions {
   /// never force-resumed by 副音.
   static Future<void> startWithCandidates(
     List<FileItem> candidates, {
+    BgQueueWindow? window,
     required bool replace,
     BgApplyScope? applyScope,
     String? anchorKey,
@@ -85,7 +92,7 @@ abstract final class BackgroundPlaybackActions {
   }) async {
     final store = useBackgroundPlaybackStore();
     if (replace) {
-      await store.replaceQueue(candidates);
+      await store.replaceQueue(candidates, window: window);
       // A refresh (no explicit scope/anchor) must NOT drop the run's 仅当前
       // anchor: 作用范围 decides WHICH fg the run applies to, and silently
       // clearing it turned the quick-bar「对当前」off and let 副音 keep playing
@@ -100,6 +107,7 @@ abstract final class BackgroundPlaybackActions {
     }
     await store.enableWithQueue(
       candidates,
+      window: window,
       applyScope: applyScope,
       anchorKey: anchorKey,
       // Forward null so the store applies its `autoFocusControl` preference —
@@ -162,8 +170,8 @@ abstract final class BackgroundPlaybackActions {
     // read across an async gap is forbidden; a mid-resolve fg change is
     // reconciled by the transport mirror anyway).
     final bool fgPlaying = _foregroundPlaying(context);
-    final filtered = await resolveCandidates();
-    if (filtered == null) {
+    final window = await resolveCandidates();
+    if (window == null) {
       await showMessageDialog(
         navigator,
         title: t.menu_background_playback,
@@ -173,7 +181,8 @@ abstract final class BackgroundPlaybackActions {
       return;
     }
     await startWithCandidates(
-      filtered,
+      window.files,
+      window: window,
       replace: false,
       applyScope: scope,
       anchorKey: anchor,
@@ -260,7 +269,7 @@ abstract final class BackgroundPlaybackActions {
     // The re-activation mode only advances an ALREADY LOADED track; a fresh
     // open (no current file) must land on the queue head, never skip it.
     final bool hadCurrent = store.state.currentIndex >= 0;
-    List<FileItem>? fresh;
+    BgQueueWindow? fresh;
     if (store.state.queue.isEmpty || !hadCurrent) {
       fresh = await resolveCandidates();
       if (fresh == null) {
@@ -279,7 +288,7 @@ abstract final class BackgroundPlaybackActions {
       store.armRunStopped();
     }
     if (fresh != null) {
-      await store.replaceQueue(fresh);
+      await store.replaceQueue(fresh.files, window: fresh);
     }
     final bool stepForward = hadCurrent &&
         store.state.applyScope == BgApplyScope.currentOnly &&
@@ -288,7 +297,7 @@ abstract final class BackgroundPlaybackActions {
     // foreground's live state, so activating while the video is paused opens
     // the gate but never force-resumes the pair (the transport mirror owns the
     // later resume when the user plays the video).
-    store.openGate(
+    await store.openGate(
       mediaKey: fgKey,
       stepForward: stepForward,
       autoplay: fgPlaying,
@@ -344,10 +353,11 @@ abstract final class BackgroundPlaybackActions {
       store.applyToCurrent(currentScopeKey(), autoplay: autoplay);
       return;
     }
-    final filtered = await resolveCandidates();
-    if (filtered == null) return;
+    final window = await resolveCandidates();
+    if (window == null) return;
     await startWithCandidates(
-      filtered,
+      window.files,
+      window: window,
       replace: false,
       applyScope: BgApplyScope.smart,
       anchorKey: currentScopeKey(),
@@ -401,7 +411,7 @@ abstract final class BackgroundPlaybackActions {
   /// that want to force a rebuild regardless. Never touches a running session.
   static void invalidateSourceRules() {
     if (!BackgroundPlaybackGate.enabled) return;
-    BackgroundCandidateCache.shared.invalidate();
+    BackgroundScenarioPool.shared.invalidate();
   }
 
   /// Float-panel / manager refresh: re-resolves candidates while playing,
@@ -434,8 +444,8 @@ abstract final class BackgroundPlaybackActions {
   }) async {
     // Localize BEFORE any await (dialog survives async gaps).
     final t = getLocalizations(navigator.context);
-    final filtered = await resolveCandidates();
-    if (filtered == null) {
+    final window = await resolveCandidates();
+    if (window == null) {
       await showMessageDialog(
         navigator,
         title: t.menu_background_playback,
@@ -444,6 +454,6 @@ abstract final class BackgroundPlaybackActions {
       );
       return;
     }
-    await startWithCandidates(filtered, replace: replace);
+    await startWithCandidates(window.files, window: window, replace: replace);
   }
 }

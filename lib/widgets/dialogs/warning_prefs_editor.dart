@@ -57,10 +57,6 @@ class WarningDialogPrefsEditorDialog extends HookWidget {
           t.dlg_warn_bg_align_move_title,
           t.dlg_warn_bg_align_move_desc,
         ),
-        kWarningBgAlignDefaultHint: (
-          t.dlg_warn_bg_align_default_hint_title,
-          t.dlg_warn_bg_align_default_hint_desc,
-        ),
         kWarningBgAlignPercentHint: (
           t.dlg_warn_bg_align_percent_hint_title,
           t.dlg_warn_bg_align_percent_hint_desc,
@@ -108,10 +104,6 @@ class WarningDialogPrefsEditorDialog extends HookWidget {
         kWarningAppOverview: (
           t.dlg_warn_app_overview_title,
           t.dlg_warn_app_overview_desc,
-        ),
-        kWarningBgSourceManage: (
-          t.dlg_warn_bg_source_manage_title,
-          t.dlg_warn_bg_source_manage_desc,
         ),
       };
 

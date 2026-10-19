@@ -10,7 +10,6 @@ import 'package:iris/utils/check_content_type.dart';
 import 'package:iris/utils/get_subtitle_map.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/storage_path_guard.dart';
-import 'package:path/path.dart' as p;
 import 'package:webdav_client/webdav_client.dart' as webdav;
 final areaKeyLog = AreaKeyLog(LogKeys.legacyDb);
 
@@ -152,26 +151,23 @@ Future<FileListResult> getWebDAVFilesResult(
   }
 
   final cleanPathSegments = path.map((e) => e.replaceAll('/', '')).toList();
-  final baseUri = Uri(
-    scheme: storage.https ? 'https' : 'http',
-    host: storage.host,
-    port: int.tryParse(storage.port),
-    pathSegments: cleanPathSegments,
-  );
-  final baseUriString = baseUri.toString();
 
+  // The listing URI and the URI later handed to the player must be the SAME
+  // shape: both are built by [webdavUriForEndpoint], so a name containing
+  // sub-delimiters (`,` `+` `&`) is escaped identically on both paths. The old
+  // `Uri.encodeComponent` form escaped `,` as `%2C` while playback (`media_uri`
+  // `webdavPlayableUri`) emitted a raw `,` — an origin that does not normalize
+  // the two spellings would then play the video but 404 the subtitle.
   String getUri(String fileName) {
     if (fileName.contains('/') || fileName == '..' || fileName == '.') {
       areaKeyLog.w('getWebDAVFiles skip traversal file: $fileName');
-      return '$baseUriString/${Uri.encodeComponent(fileName)}';
     }
-    try {
-      final dirUri = Uri.parse(baseUriString.endsWith('/') ? baseUriString : '$baseUriString/');
-      return dirUri.resolve(Uri.encodeComponent(fileName)).toString();
-    } catch (e) {
-      final separator = baseUriString.endsWith('/') ? '' : '/';
-      return '$baseUriString$separator${Uri.encodeComponent(fileName)}';
-    }
+    return webdavUriForEndpoint(
+      https: https,
+      host: host,
+      port: port,
+      segments: [...cleanPathSegments, fileName],
+    );
   }
 
   final subtitleMap = getSubtitleMap<webdav.File>(
@@ -188,7 +184,6 @@ Future<FileListResult> getWebDAVFilesResult(
     if (fileName == null) continue;
 
     final isDir = file.isDir;
-    final basename = p.basenameWithoutExtension(fileName).split('.').first;
     fileItems.add(FileItem(
       storageId: id,
       storageType: StorageType.webdav,
@@ -199,7 +194,9 @@ Future<FileListResult> getWebDAVFilesResult(
       size: file.size ?? 0,
       lastModified: file.mTime,
       type: isDir ?? false ? ContentType.other : checkContentType(fileName),
-      subtitles: isVideoFile(fileName) ? subtitleMap[basename] ?? [] : [],
+      subtitles: isVideoFile(fileName)
+          ? subtitleMap[subtitleMapKey(fileName)] ?? []
+          : [],
     ));
   }
 
@@ -208,3 +205,33 @@ Future<FileListResult> getWebDAVFilesResult(
 
 String getWebDAVAuth(WebDAVStorage storage) =>
     'Basic ${base64Encode(utf8.encode('${storage.username}:${storage.password}'))}';
+
+/// Canonical absolute URL for [segments] at a concrete WebDAV endpoint.
+///
+/// This is the SINGLE encoder shared by the listing ([getWebDAVFilesResult])
+/// and by the playback/probe builder (`media_uri.dart` `webdavPlayableUri`), so
+/// a file's listed address and its play address can never diverge. Credentials
+/// are NOT embedded — the player hooks attach `getAuth()` as a request header.
+///
+/// `Uri(pathSegments:)` leaves path sub-delimiters (`,`, `+`, `&`, `=`, `:`,
+/// `@`, `$`) unescaped, matching a URL copied out of a browser and what every
+/// mainstream WebDAV server expects. `Uri.encodeComponent` instead escapes
+/// them, which is why the two builders must never be used interchangeably.
+String webdavUriForEndpoint({
+  required bool https,
+  required String host,
+  required String? port,
+  required List<String> segments,
+  String? query,
+  String? fragment,
+}) =>
+    Uri(
+      scheme: https ? 'https' : 'http',
+      host: host,
+      port: port == null ? null : int.tryParse(port),
+      pathSegments: segments,
+      // Preserved verbatim: a signed query / a fragment is part of the address
+      // the listing handed out, and dropping it changed the request.
+      query: query,
+      fragment: fragment,
+    ).toString();

@@ -79,6 +79,20 @@ final ValueNotifier<GlobalKey?> sidePanelKeyNotifier =
 final ValueNotifier<double?> sidePanelLayoutWidthNotifier =
     ValueNotifier<double?>(null);
 
+/// Whether the one-handed side panel currently carries the magnetically
+/// attached 副音 quick column (published by `CircleSliderLayout`; false while no
+/// side panel is mounted).
+///
+/// The 副音 control group and this column are two routes to the same controls:
+/// while the column is attached the floating bottom-group switch button is
+/// redundant and would overlap the strip, so it stands down (see
+/// `ControlGroupFloatingButton`). The column's own decision chain (feature gate,
+/// `quickBarEnabled`, the active control group, the cross-axis budget) already
+/// excludes phones, so the flag is desktop-only by construction — the SAME
+/// `showsSidewayQuickColumn` call the layout renders from, never a re-derivation.
+final ValueNotifier<bool> sidewayQuickColumnAttachedNotifier =
+    ValueNotifier<bool>(false);
+
 /// The APB align editor's own side-panel box.
 ///
 /// The editor and the normal one-handed panel are mutually exclusive subtrees

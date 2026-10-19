@@ -6,10 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_exclude_rule.dart';
 import 'package:iris/features/scenario_playback/model/enum/exclude_rule_kind.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/scenario_playback/view/sources/paged_scenario_sources_data_source.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 
@@ -69,8 +71,44 @@ void main() {
     return sys.id;
   }
 
-  test('notifyDefinitionChanged bumps BOTH re-resolution signals', () async {
+  test('a setter for a workspace that no longer exists writes nothing',
+      () async {
     final store = usePlaybackScenarioStore();
+    final repo = DbModule.scenarioRepo;
+
+    // Falling back to `Scenario(id: id, name: '')` used to INSERT through
+    // `updateScenario`'s upsert, so a setter called with a stale id left a
+    // nameless `userSaved` row in the saved list (and, for an internal kind, a
+    // second row of a kind the code assumes is unique).
+    await store.setRepeatFor('ghost-workspace', Repeat.all);
+
+    final rows = await repo.getAllScenarios();
+    expect(rows.where((s) => s.id == 'ghost-workspace'), isEmpty);
+    expect(rows.where((s) => s.name.isEmpty), isEmpty);
+  });
+
+  test('shuffle/duplicate/sourceInternalFirst ignore a stale active id',
+      () async {
+    final store = usePlaybackScenarioStore();
+    final repo = DbModule.scenarioRepo;
+
+    final before = (await repo.getAllScenarios()).map((s) => s.id).toSet();
+    // A stale persisted active id — the workspace row is gone.
+    await store.setActiveScenario('ghost-workspace');
+
+    // Each of these still fell back to `?? Scenario(id: id, name: '')` and
+    // minted a nameless userSaved row through updateScenario's upsert.
+    await store.toggleShuffle();
+    await store.toggleDuplicatePolicy();
+    await store.setSourceInternalFirst(true);
+
+    final after = await repo.getAllScenarios();
+    expect(after.map((s) => s.id).toSet(), before,
+        reason: 'a stale active id must not mint a scenario');
+    expect(after.where((s) => s.name.isEmpty), isEmpty);
+  });
+
+  test('notifyDefinitionChanged bumps BOTH re-resolution signals', () async {    final store = usePlaybackScenarioStore();
     final beforePlayback = store.state.playbackVersion;
     final beforeScan = store.state.sourceScanRevision;
 
@@ -145,5 +183,21 @@ void main() {
 
     expect(await store.indexedTotalCount(), 1,
         reason: 'indexedTotalCount must reflect the current definition');
+  });
+
+  test('addSource keeps an explicit file kind', () async {
+    final store = usePlaybackScenarioStore();
+    final id = await resetWorkspace();
+
+    await store.addSource(
+      storageId: 's1',
+      path: 'a.mp4',
+      kind: ScenarioSourceKind.file,
+    );
+
+    final sources = await store.getSources(id);
+    expect(sources, hasLength(1));
+    expect(sources.single.sourceKind, ScenarioSourceKind.file);
+    expect(sources.single.path, 'a.mp4');
   });
 }

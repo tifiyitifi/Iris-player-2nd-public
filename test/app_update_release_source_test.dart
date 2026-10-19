@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -349,6 +350,35 @@ void main() {
       ]);
       await expectLater(probe(server), unreadablePage());
       expect(served(), 1, reason: 'one question, one refused answer');
+    });
+
+    test('a body that never ends is abandoned instead of waited on', () async {
+      // The `Location` is the payload; the body is only drained so the
+      // connection can be released. A captive portal that sends the status and
+      // then stalls left the version check hanging with no dialog to close —
+      // `readTimeout` only ever covered the headers.
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.statusCode = 302;
+        request.response.headers.set(
+          HttpHeaders.locationHeader,
+          'http://127.0.0.1:${server.port}/owner/iris/releases/tag/v2.0.5',
+        );
+        request.response.add(utf8.encode('half an answer'));
+        await request.response.flush();
+        // Never completes, and the response is never closed.
+        await Completer<void>().future;
+      });
+      addTearDown(() => server.close(force: true));
+
+      await expectLater(
+        fetchLatestReleaseTag(
+          url: 'http://127.0.0.1:${server.port}/owner/iris/releases/latest',
+          readTimeout: const Duration(milliseconds: 200),
+        ).timeout(const Duration(seconds: 10)),
+        throwsA(isA<UpdateFetchException>()
+            .having((e) => e.reason, 'reason', UpdateFailure.timeout)),
+      );
     });
 
     test('a redirect loop costs a bounded number of hops, not a hang', () async {

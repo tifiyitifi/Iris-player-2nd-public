@@ -119,7 +119,7 @@ VmStreamGroups resolveGroupsForStream(
     final f = item.media.maybeMap(file: (f) => f, orElse: () => null);
     if (f == null) continue;
     segments.add(VirtualSegment(
-      mediaKey: canonicalKey(f.storageId, f.path.join('/')),
+      mediaKey: canonicalKey(f.storageId, f.occurrencePath),
       storageId: f.storageId,
       path: f.path,
       name: f.name,

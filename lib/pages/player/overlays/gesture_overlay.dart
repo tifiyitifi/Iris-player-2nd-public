@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/screen_lock/store/use_screen_lock_store.dart';
 import 'package:iris/features/speed/model/enum/speed_gesture_mode.dart';
 import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
 import 'package:iris/globals.dart';
@@ -428,12 +429,21 @@ class GestureOverlay extends HookWidget {
     // cannot fight the locked pair.
     final editing = useBackgroundPlaybackStore()
         .select(context, (s) => s.segmentEditMode);
+    // Screen lock: the gesture surface is switched off the same way. The player
+    // also drops a topmost AbsorbPointer that would already swallow these
+    // pointers, but gating HERE as well means the recognisers never even enter
+    // the arena — an in-flight pan cannot carry over the lock boundary.
+    final bool screenLocked =
+        useScreenLockStore().select(context, (s) => s.locked);
 
     // Windows AXTree-crash mitigation (#103808 family): pointer-only gesture
     // canvas — taps/swipes carry no announceable semantics, and feeding its
     // per-frame churn to the accessibility bridge is pure crash exposure.
     return ExcludeSemantics(
-      child: IgnorePointer(ignoring: editing, child: wrappedOverlay),
+      child: IgnorePointer(
+        ignoring: editing || screenLocked,
+        child: wrappedOverlay,
+      ),
     );
   }
 }

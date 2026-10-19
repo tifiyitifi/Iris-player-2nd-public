@@ -14,10 +14,9 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
+import 'package:iris/hooks/player/media_info_writeback.dart';
 import 'package:iris/hooks/player/seek_clamp.dart';
 import 'package:iris/hooks/player/seek_tuning.dart';
-import 'package:iris/hooks/player/step_seek_mode.dart';
-import 'package:iris/models/enums/step_seek_mode.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/models/file.dart';
@@ -37,9 +36,13 @@ import 'package:iris/store/use_player_ui_store.dart';
 import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/check_data_source_type.dart';
+import 'package:iris/features/media_library/services/external_subtitle_loader.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_playback_uri.dart';
 import 'package:iris/features/webdav_discovery/view/webdav_playback_error_dialog.dart';
+import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:media_kit/media_kit.dart';
@@ -77,18 +80,6 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   // read live inside the effect).
   final videoCachePreset =
       useAppStore().select(context, (state) => state.videoCachePreset);
-
-  // Step-seek scheduling strategy (metadata meta-setting). Both modes land
-  // each press precisely; the resolver degrades to `precise` when the metadata
-  // gate is OFF, matching every legacy build.
-  final StepSeekMode stepSeekMode = useAppStore().select(
-    context,
-    (state) => resolveStepSeekMode(
-      state,
-      metadataEnabled:
-          state.useMetadataSettings && MetaSettingsModule.ready,
-    ),
-  );
 
   useEffect(() {
     () async {
@@ -257,11 +248,6 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   /// Persist + History writes are skipped while locked so a next/prev
   /// tap inside the window cannot clobber the real stored progress.
   final positionLock = useRef(PlaybackPositionLock());
-
-  /// Late-bound (the step-seek chain lives further down, next to the burst
-  /// block): the position stream reports landings to whatever handler is
-  /// installed, so the chain can release its next queued step.
-  final stepChainOnPosition = useRef<void Function(int)?>(null);
 
   Future<void> init(FileItem file) async {
     if (file.uri == '') return;
@@ -571,8 +557,6 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         diagLog.d(
             'lock landed pos=${posMs}ms target-reached phase=unlocked');
       }
-      // Step burst: the chain issues its next target only from a landing.
-      stepChainOnPosition.value?.call(posMs);
     });
     return () => sub.cancel();
   }, [positionStream]);
@@ -694,17 +678,29 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       }
       // 设置字幕
       if (externalSubtitles!.isNotEmpty) {
-        areaKeyLog.i('Set external subtitle: ${externalSubtitles[0]}');
-        final uri = file?.storageType == StorageType.ftp
-            ? '${mediaStream.url}/${externalSubtitles[0].uri}'
-            : externalSubtitles[0].uri;
-        areaKeyLog.i('External subtitle uri: $uri');
-        await player.setSubtitleTrack(
-          SubtitleTrack.uri(
-            uri,
-            title: externalSubtitles[0].name,
-          ),
+        final sub = externalSubtitles[0];
+        areaKeyLog.i('Set external subtitle: $sub');
+        final storage = file == null
+            ? null
+            : useStorageStore().resolveStorageForNodeId(file.storageId);
+        final uri = subtitlePlayableUri(
+          storage,
+          sub,
+          mediaStreamUrl: mediaStream.url ?? '',
         );
+        areaKeyLog.i('External subtitle uri: $uri');
+        final loaded = await tryLoadExternalSubtitle(
+          player,
+          uri: uri,
+          title: sub.name,
+        );
+        if (!loaded && context.mounted) {
+          await showCopyableErrorDialog(
+            context,
+            message:
+                getLocalizations(context).track_subtitle_load_failed(sub.name),
+          );
+        }
       } else if (subtitles.length > 1) {
         areaKeyLog.i('Set subtitle: ${subtitles[1].title ?? subtitles[1].language ?? subtitles[1].id}');
         await player.setSubtitleTrack(subtitles[1]);
@@ -718,18 +714,26 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   // Write duration + probed dimensions to media_nodes DB when they first
   // become available (lazy probe backfill: playing a file fills any gaps
   // left by an unprobed scan).
-  final durationSaved = useState(false);
-  final dimsSaved = useState(false);
+  //
+  // The write-once mark is keyed by the FILE ([MediaInfoWritebackGate]): a
+  // per-hook boolean stayed set for the whole session, so everything after the
+  // first file was silently skipped.
+  final mediaInfoGate = useRef(MediaInfoWritebackGate());
+  final mediaInfoKey = file == null
+      ? null
+      : canonicalProgressKey(file.storageId, file.path, uri: file.uri);
   useEffect(() {
-    if (file == null) return null;
+    final key = mediaInfoKey;
+    if (file == null || key == null) return null;
     final vp = videoParams;
     final vpW = vp?.w ?? 0;
     final vpH = vp?.h ?? 0;
-    final needDuration = duration != Duration.zero && !durationSaved.value;
-    final needDims = vpW > 0 && vpH > 0 && !dimsSaved.value;
+    final gate = mediaInfoGate.value;
+    final needDuration = gate.needsDuration(key, duration.inMilliseconds);
+    final needDims = gate.needsDims(key, vpW, vpH);
     if (!needDuration && !needDims) return null;
-    if (needDuration) durationSaved.value = true;
-    if (needDims) dimsSaved.value = true;
+    if (needDuration) gate.markDurationWritten(key);
+    if (needDims) gate.markDimsWritten(key);
     // Immediate live-progress seed: the progress UIs read the in-memory store
     // keyed by fileId, so give them the just-parsed duration right away
     // instead of waiting for the next 1s timer tick.
@@ -745,25 +749,40 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     () async {
       try {
         final dbPath = file.path.join('/');
-        if (dbPath.isNotEmpty) {
-          await DbModule.mediaNodeRepo.updateFileMediaInfo(
-            storageId: file.storageId,
-            path: dbPath,
-            durationMs:
-                needDuration ? duration.inMilliseconds : null,
-            width: needDims ? vpW : null,
-            height: needDims ? vpH : null,
-            pixelCount: needDims ? vpW * vpH : null,
-          );
-          areaKeyLog.i('Saved media info to DB: ${file.name} '
-              'dur=${needDuration ? duration.inMilliseconds : "-"}ms');
+        if (dbPath.isEmpty) {
+          // No segment path to key the write on (SAF single pick): nothing was
+          // written, so release the mark instead of swallowing the backfill.
+          gate.unmark(key);
+          return;
         }
+        final rows = await DbModule.mediaNodeRepo.updateFileMediaInfo(
+          storageId: file.storageId,
+          path: dbPath,
+          durationMs:
+              needDuration ? duration.inMilliseconds : null,
+          width: needDims ? vpW : null,
+          height: needDims ? vpH : null,
+          pixelCount: needDims ? vpW * vpH : null,
+        );
+        if (rows <= 0) {
+          // No `media_nodes` row matched (unscanned file, or a stored path-shape
+          // mismatch such as the collapsed SAF scheme). The database was NOT
+          // updated, so release the mark: keeping it would drop this file's
+          // duration/dimensions for the rest of the session.
+          gate.unmark(key);
+          areaKeyLog.w(
+              'Media info write-back matched no row: ${file.name}');
+          return;
+        }
+        areaKeyLog.i('Saved media info to DB: ${file.name} '
+            'dur=${needDuration ? duration.inMilliseconds : "-"}ms');
       } catch (e) {
+        gate.unmark(key);
         areaKeyLog.e('Error saving media info to DB: $e');
       }
     }();
     return null;
-  }, [duration, videoParams?.w, videoParams?.h]);
+  }, [duration, videoParams?.w, videoParams?.h, mediaInfoKey]);
 
   useEffect(() {
     () async {
@@ -1051,293 +1070,79 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     if (pending != null) persistUserSeekWrite(pending);
   }
 
-  // ── Rapid step burst (keyboard / double-tap ← →) ──
+  // ── Step seek (keyboard / double-tap ← →) ──
   //
-  // WHY A CHAIN, NOT A CADENCE (measured 2026-09-29 on a 4K local file): mpv
-  // keeps only the NEWEST seek target while a seek is in flight. A fixed
-  // cadence (the old 120ms throttle) therefore issued `/seek 3s`, `/seek 6s`,
-  // `/seek 9s` … and mpv dropped every one that arrived while the previous was
-  // still decoding — the picture sat on the previous frame and then jumped
-  // straight to the last target ("+3+6+9+12 中间的没显示"). A precise seek on
-  // such content costs a few hundred ms, far more than any usable cadence.
+  // Each press hands mpv a NATIVE RELATIVE keyframe seek
+  // (`seek <±delta> relative+keyframes`, see stepSeekArgs) instead of an
+  // ABSOLUTE + EXACT one.
   //
-  // [StepSeekChain] instead issues exactly ONE engine seek at a time and sends
-  // the next only after the previous target was OBSERVED in the position
-  // stream, so every requested step really lands and paints — in order:
-  //  * a landed frame is held for [kStepLandedDwell] before the next seek, or
-  //    the next discontinuity would freeze it before the eye sees it. In
-  //    `adaptive` mode the dwell is dropped the moment a backlog is waiting
-  //    (see [stepLandingDwell]) so the queue is pumped as fast as the engine
-  //    reports each landing;
-  //  * `precise` bounds the queue by [kStepChainMaxPending] and drops the
-  //    OLDEST pending step when a held key (~30/s) outpaces the painter;
-  //    `adaptive` drops NOTHING (the "吞掉跳过时间点" defect) and drains the
-  //    full backlog in order after the input stops;
-  //  * [kStepSeekHardTimeout] releases a landing that is never observed;
-  //  * the seek stays PRECISE (`hr-seek=yes` + `hr-seek-framedrop=yes`, set by
-  //    applyMpvSeekTuning) so every press lands exactly on its target. The
-  //    keyframe-seek relaxation used to live here (an inexact `seek absolute`
-  //    lands on the keyframe BEFORE the target, so a held / re-tapped ←/→
-  //    re-showed the previous GOP — 回跳重播) and is gated off by
-  //    [kStepBurstRelaxesPreciseSeek];
-  //  * when the input goes idle nothing is re-issued — the queue simply drains
-  //    and the DB progress was already written to the last press's exact target
-  //    by persistUserSeekBurst.
-  // The intent target still accumulates on EVERY press (see StepIntent), so a
-  // press the engine has not reached yet is never lost.
+  // WHY (mpv-parity rework, 2026-10-16): `Player.seek()` issues
+  // `seek <abs> absolute`, and mpv defaults `absolute` seeks to `exact`; with
+  // IRIS's `hr-seek=yes` every step then decoded from the previous keyframe up
+  // to the target and restarted the audio output (~300ms), so a single tap froze
+  // the picture for the whole seek. The old Dart StepSeekChain made it worse:
+  // it issued ONE seek at a time and waited for a landing, then collapsed the
+  // backlog to its final target on release — so rapid taps swallowed every
+  // intermediate target ("吞掉中途帧") and only the last one ever painted.
   //
-  // ADAPTIVE (2026-10-08): the two defects the precise chain left open are now
-  // closed — `precise` still drops the oldest queued press, and the exposed
-  // position could dip when the engine reported a pre-land frame. Adaptive
-  // stops dropping and the step-burst display guard (below) holds the shown
-  // time monotonic, with the OSD reading the accumulated intent target.
+  // mpv's own ←/→ are relative keyframe seeks, and mpv coalesces a held-key
+  // burst itself: `queue_seek` sums the relative amounts and
+  // `execute_queued_seek` paces execution so the last landed frame is shown in
+  // between. The Dart side must therefore NOT serialize anything, and it keeps
+  // NO long-lived accumulator either: the nominal landing used by the OSD and
+  // the progress write is anchored on the engine's reported position for the
+  // current press (stepSeekTargetMs), and the delta handed to mpv is clamped
+  // into the media (stepSeekSentDelta) so a press at the ends is a no-op. The
+  // engine position is mpv's: `time-pos` reports the seek target while a seek
+  // is in flight (`last_seek_pts`), exactly like mpv's own OSD, so no Dart-side
+  // display hold is needed either.
   //
-  // VERIFIED (2026-09-29 run, 4K local file): the settle never re-seeks
-  // (12/12 `(chain empty, no re-seek)`; ZERO `src=burst-settle` in the whole
-  // capture), the hard timeout never fired, and 206 of 216 presses each got
-  // their own issue + landing. Repro-log signature for a future regression:
-  //   `[step] target=` (presses) ≈ `[step] issue` ≈ `[step] landed`, and no
-  //   settle seek at all. The `[step] landed … took=<ms>` field added on
-  //   2026-10-08 is the per-step engine cost to watch when tuning.
-  //
-  // REMAINING cost lever (needs measurement before shipping): the ~330ms
-  // precise seek is decode-from-keyframe + audio restart. Candidates, in
-  // expected-impact order, all gated by the same timing log:
-  //  * zero-copy hwdec (`hwdec=d3d11va` vs the measured `d3d11va-copy`);
-  //  * `vd-lavc-skiploopfilter` / `vd-lavc-threads` during a seek;
-  //  * avoiding the audio-output restart on a video seek.
-  // A relative `seek <delta> relative+exact` (native mpv command) is another
-  // candidate: the same precise landing, but mpv may serve it from the demuxer
-  // cache instead of a hard reposition.
-  final stepBurst = useRef(StepBurst());
-  final stepBurstTimer = useRef<Timer?>(null);
-  final stepBurstTargetMs = useRef<int?>(null);
-  // Monotonic display guard (adaptive mode, and precise too — a pre-land raw
-  // sample must never read as a rewind in either). [stepGuardTargetMs] is the
-  // newest pressed target on the CALLER axis (virtual under VM); the exposed
-  // position is held monotonic toward it until [isStepLanded] fires. The OSD
-  // reads the same target (see MediaPlayer.stepIntentTargetMs) so it never
-  // shows a stale pre-seek snapshot.
-  final stepGuardTargetMs = useRef<int?>(null);
-  final stepGuardForward = useRef<bool>(true);
-  final stepGuardShownMs = useRef<int?>(null);
-  // Lock-independent step accumulation: the position lock unlocks on its
-  // ±2s landing tolerance (or its fail-open paths), and the REPORTED position
-  // lags a seek that is still decoding toward its target — chaining onto
-  // either makes N presses recompute the SAME target (see StepIntent).
-  final stepIntent = useRef(StepIntent());
-  final stepChain = useRef(StepSeekChain());
-  final stepDwellTimer = useRef<Timer?>(null);
-  final stepHardTimeoutTimer = useRef<Timer?>(null);
-  // One-shot per media: which decoder mpv actually picked (a silent software
-  // fallback is what makes a precise 4K seek take hundreds of ms).
-  final stepHwdecLogged = useRef(false);
-  // Late-bound handle to [seek] so the chain can re-enter it (Dart forbids
-  // referencing a local function before its declaration, and the re-entry must
-  // go through the VM decomposition, not the raw engine call).
-  final seekFn = useRef<Future<void> Function(Duration, [String, bool])?>(null);
+  // Newest pressed target on the CALLER axis (virtual while a VM session is
+  // active) — read once by the OSD right after the press, then overwritten by
+  // the next one.
+  final stepOsdTargetMs = useRef<int?>(null);
 
-  Future<void> setExactSeek(bool exact) async {
-    // Soft kill switch (see kStepBurstRelaxesPreciseSeek): the burst must NOT
-    // relax mpv's precision — `hr-seek=no` lands on the keyframe BEFORE the
-    // target, so a held / re-tapped ←/→ re-showed the previous GOP instead of
-    // advancing (回跳重播). All call sites stay in place for an easy rollback;
-    // while the flag is false this is a no-op and `hr-seek` keeps the
-    // `hr-seek=yes` + `hr-seek-framedrop=yes` baseline applyMpvSeekTuning set.
-    if (!kStepBurstRelaxesPreciseSeek) return;
+  /// Hands mpv ONE native relative keyframe step seek (see the block above).
+  /// [deltaMs] is signed; mpv clamps the landing into the media itself.
+  ///
+  /// A failed command drops the optimistic OSD target: the pair must not keep
+  /// showing a landing that was never requested.
+  Future<void> issueStepSeek(int deltaMs) async {
     final platform = player.platform;
-    if (platform is! NativePlayer) return;
-    await platform.setProperty('hr-seek', exact ? 'yes' : 'no');
-  }
-
-  /// Hands the next queued step target to the engine (through [seek], so a
-  /// virtual-media target is decomposed onto its segment) and arms the hard
-  /// timeout that keeps an unobserved landing from wedging the chain.
-  void pumpStepChain() {
-    stepDwellTimer.value?.cancel();
-    stepDwellTimer.value = null;
-    // Nothing queued and nothing in flight: the burst is over (or a landing
-    // timed out and drained). Release the display hold so it cannot pin the
-    // clock if the final target was never observed.
-    if (stepChain.value.isEmpty) {
-      stepGuardTargetMs.value = null;
-    }
-    // Adaptive: never swallow a queued press (the oldest-drop is the "吞掉跳过
-    // 时间点" the chain used to cause while a held key outpaced the painter).
-    // Precise keeps the original bounded-drop cadence.
-    stepChain.value.dropOldest = stepSeekMode == StepSeekMode.precise;
-    final StepSeekRequest? next = stepChain.value.takeNext(DateTime.now());
-    if (next == null) return;
-    diagLog.d('[step] issue target=${next.targetMs} '
-        'engine=${next.engineTargetMs} pending=${stepChain.value.pendingCount} '
-        'forward=${next.forward}');
-    if (!stepHwdecLogged.value) {
-      stepHwdecLogged.value = true;
-      final platform = player.platform;
-      if (platform is NativePlayer) {
-        unawaited(() async {
-          try {
-            final String hwdec = await platform.getProperty('hwdec-current');
-            diagLog.d('[step] mpv hwdec-current=$hwdec '
-                '(precise seeks decode from the previous keyframe when "no")');
-            // Empty right after a media switch (decoder not configured yet) is
-            // expected and harmless.
-          } catch (_) {
-            // A backend without the property keeps mpv's own defaults.
-          }
-        }());
-      }
-    }
-    stepHardTimeoutTimer.value?.cancel();
-    stepHardTimeoutTimer.value = Timer(kStepSeekHardTimeout, () {
-      if (!stepChain.value.tickTimeout(DateTime.now())) return;
-      diagLog.w('[step] landing not observed target=${next.targetMs} '
-          'pending=${stepChain.value.pendingCount} -> next step');
-      pumpStepChain();
-    });
-    // 'step-issue' keeps the step accumulation alive (unlike an absolute jump).
-    unawaited(seekFn.value!(
-        Duration(milliseconds: next.targetMs), 'step-issue', next.forward));
-  }
-
-  /// Collapses a held-step backlog to its final target (see
-  /// [StepSeekChain.collapseOnRelease]). Returns the collapsed target for the
-  /// settle log, or null when the in-flight seek already is the newest.
-  StepSeekRequest? collapseStepBurst() {
-    final collapsed = stepChain.value.collapseOnRelease();
-    if (collapsed == null) return null;
-    diagLog.d('[step] release collapse target=${collapsed.targetMs} '
-        'pending=${stepChain.value.pendingCount}');
-    return collapsed;
-  }
-
-  /// Key-release hook for the executor: stop a held ←/→ burst now instead of
-  /// walking the whole accumulated backlog. Idempotent and safe when no burst is
-  /// active; the input-idle settle calls the same collapse as a fallback for a
-  /// swallowed UP event (window blur / dialog).
-  Future<void> endStepBurst() async {
-    if (collapseStepBurst() == null) return;
-    stepDwellTimer.value?.cancel();
-    stepDwellTimer.value = null;
-    // Hand the final target to the engine at once; it supersedes the in-flight
-    // older seek, leaving exactly one landing before normal playback resumes.
-    pumpStepChain();
-  }
-
-  /// Position-stream hook for the chain: a landed target releases the next
-  /// queued step after [kStepLandedDwell], so the landed frame is actually
-  /// visible before the next seek freezes the picture again.
-  void onStepChainPosition(int posMs) {
-    final DateTime? issueAt = stepChain.value.inFlightSince;
-    if (!stepChain.value.notePosition(posMs)) return;
-    stepHardTimeoutTimer.value?.cancel();
-    stepHardTimeoutTimer.value = null;
-    final int tookMs =
-        issueAt == null ? -1 : DateTime.now().difference(issueAt).inMilliseconds;
-    diagLog.d('[step] landed engine=$posMs '
-        'pending=${stepChain.value.pendingCount} took=${tookMs}ms');
-    if (stepChain.value.pendingCount == 0) {
-      // The newest queued target landed: release the display hold now (the
-      // build-time guard would also clear it, this just drops a frame of lag).
-      stepGuardTargetMs.value = null;
+    if (platform is! NativePlayer) {
+      // No relative seek was issued, so the optimistic OSD target (written by
+      // the caller BEFORE this call) describes a landing that will never
+      // happen. The catch below drops it on a failure; this early return must
+      // drop it too, or a non-native backend keeps showing the wrong step.
+      stepOsdTargetMs.value = null;
       return;
     }
-    stepDwellTimer.value?.cancel();
-    // Adaptive: drop the landed-frame dwell the moment a backlog is waiting, so
-    // the queue is pumped as fast as the engine observes each landing (the
-    // dwell only helps a LONE step be perceived). Precise keeps the constant.
-    final Duration dwell = stepSeekMode == StepSeekMode.adaptive
-        ? stepLandingDwell(stepChain.value.pendingCount)
-        : kStepLandedDwell;
-    stepDwellTimer.value = Timer(dwell, pumpStepChain);
-  }
-
-  stepChainOnPosition.value = onStepChainPosition;
-
-  void noteStepSeek(int targetMs, bool forward) {
-    // Display guard: seed from the current shown position, and re-seed on a
-    // direction flip so the reversal is not pinned.
-    if (stepGuardTargetMs.value == null || forward != stepGuardForward.value) {
-      stepGuardShownMs.value = null;
+    final List<String> args = stepSeekArgs(deltaMs);
+    diagLog.d('[step] native ${args.join(' ')}');
+    try {
+      await platform.command(args);
+    } catch (e) {
+      // A backend without the seek command must not wedge playback.
+      diagLog.w('[step] native relative seek failed: $e');
+      stepOsdTargetMs.value = null;
     }
-    stepGuardForward.value = forward;
-    stepGuardTargetMs.value = targetMs;
-    final bool rapid = stepBurst.value.note(DateTime.now());
-    stepBurstTargetMs.value = targetMs;
-    if (rapid) unawaited(setExactSeek(false));
-    diagLog.d('[step] target=$targetMs rapid=$rapid');
-    stepBurstTimer.value?.cancel();
-    stepBurstTimer.value = Timer(kStepBurstWindow, () {
-      stepBurstTimer.value = null;
-      final int? finalMs = stepBurstTargetMs.value;
-      final bool wasRapid = stepBurst.value.isRapid;
-      stepBurstTargetMs.value = null;
-      stepBurst.value.reset();
-      if (!wasRapid) return;
-      unawaited(setExactSeek(true));
-      // Input idle = the burst is over: collapse the backlog to its final
-      // target so the walk stops now instead of draining every auto-repeated
-      // press. This is also the fallback for a swallowed KeyUp (window blur /
-      // dialog): no press for kStepBurstWindow means the hold ended.
-      final StepSeekRequest? collapsed = collapseStepBurst();
-      if (collapsed == null && stepChain.value.isEmpty) {
-        diagLog.d(
-            '[step] burst settle target=$finalMs (chain empty, no re-seek)');
-        return;
-      }
-      // Still draining: the queue held steps the user asked for DURING the
-      // hold; the collapse above reduced it to the single release target. In
-      // `precise` mode a held key was already coalesced by
-      // [kStepChainMaxPending] (oldest dropped); in `adaptive` the collapse is
-      // what bounds the post-release walk.
-      diagLog.d('[step] burst settle target=$finalMs '
-          'collapsed=${collapsed?.targetMs} '
-          'pending=${stepChain.value.pendingCount} '
-          'inFlight=${stepChain.value.inFlightMs}');
-      pumpStepChain();
-    });
   }
 
-  /// Stops any in-flight burst and clears its bookkeeping (media change /
-  /// unmount). With [kStepBurstRelaxesPreciseSeek] off there is no engine
-  /// precision to restore; the call site is kept for the A/B rollback.
+  /// Stops the step bookkeeping (media change / unmount / absolute seek). The
+  /// relative seeks already handed to mpv are left to mpv to finish.
   void resetStepBurst() {
-    stepBurstTimer.value?.cancel();
-    stepBurstTimer.value = null;
-    stepBurstTargetMs.value = null;
-    stepDwellTimer.value?.cancel();
-    stepDwellTimer.value = null;
-    stepHardTimeoutTimer.value?.cancel();
-    stepHardTimeoutTimer.value = null;
-    stepChain.value.reset();
-    stepIntent.value.reset();
-    stepHwdecLogged.value = false;
-    stepGuardTargetMs.value = null;
-    stepGuardShownMs.value = null;
-    final bool wasRapid = stepBurst.value.isRapid;
-    stepBurst.value.reset();
-    if (wasRapid) unawaited(setExactSeek(true));
+    stepOsdTargetMs.value = null;
   }
 
   // Attribution-only [src]: every seek lands in the log with its caller
   // (dial-tap / dial-commit / step / release-commit / resume / lock-retry /
   // player for every other MediaPlayer.seek caller). Zero behaviour change;
   // the tear-off still satisfies `Future<void> Function(Duration)`.
-  Future<void> seek(Duration newPosition,
-      [String src = 'player', bool forward = true]) async {
-    // 'step' (a press) and 'step-issue' (the chain handing that press to the
-    // engine) are the two halves of one step: an absolute jump re-anchors the
-    // NEXT relative step on the fresh position and invalidates a queued walk,
-    // but a step must keep the accumulation alive.
-    final bool stepSrc = src == 'step' || src == 'step-issue';
-    if (!stepSrc) {
-      // An absolute jump re-anchors playback: end any held-step burst so its
-      // burst/dwell/hard timers and `_rapid` flag cannot leak into the NEXT
-      // press (a stale burst would keep `hr-seek` relaxed across the jump once
-      // that kill switch is ever enabled). [resetStepBurst] clears the
-      // intent/chain/guard AND cancels every step timer.
-      resetStepBurst();
-    }
+  Future<void> seek(Duration newPosition, [String src = 'player']) async {
+    // A step press (`src == 'step'`) keeps the step bubble alive; any absolute
+    // jump re-anchors playback and must drop the step bookkeeping so it cannot
+    // leak into the NEXT press. [resetStepBurst] clears the OSD target.
+    if (src != 'step') resetStepBurst();
     // Virtual Media session: dragging the scrubber produces virtual
     // positions; decompose onto the physical segment before seeking (spec
     // §9.3). Cross-segment targets open WITH the intra-segment offset
@@ -1361,55 +1166,26 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
               '(legal for chapter/rewind; investigate otherwise)');
         }
         if (segIdx == vm.state.segmentIndex) {
+          // An unknown segment duration makes the intra-segment target a
+          // fabricated 0 (`clampVmLocalMs`), which the persist below would write
+          // over the file's saved progress. Hold — the same contract as the
+          // `duration == Duration.zero` guard further down.
+          const handler = VirtualSeekHandler();
+          if (!handler.segmentDurationKnown(item, segIdx)) return;
           final clamped =
               clampVmLocalMs(item.segments[segIdx].durationMs, localMs);
-          // Step accumulation on the SEGMENT-LOCAL axis: this is what the
-          // next relative step adds to. The chain queues the target on the
-          // VIRTUAL axis instead (different axis, on purpose: its re-entry
-          // through seek() re-decomposes it onto the right segment).
-          if (src == 'step') stepIntent.value.note(clamped);
           userSeekPending.value = true;
           lastSanePosMs.value = null;
           // Position-intent lock + save-once: the user's explicit target is
-          // the authoritative progress from this moment. A burst collapses to
+          // the authoritative progress from this moment; a burst collapses to
           // leading+trailing writes (see persistUserSeekBurst).
-          // A chain issue must not re-run the lock/persist below: its target
-          // can be an OLDER queued step than the press that already armed the
-          // lock and persisted the progress (see the non-VM path).
-          if (src != 'step-issue') {
-            positionLock.value.armTarget(clamped);
-            persistUserSeekBurst(Duration(milliseconds: clamped));
-          }
-          // Keyboard / double-tap steps inside a VM segment take the SAME chain
-          // treatment as the non-VM path. The queued target is VIRTUAL — the
-          // chain re-enters seek() so it is decomposed onto the right segment —
-          // while the engine axis (what the landing check compares against) is
-          // the segment-local [clamped].
-          if (src == 'step') {
-            stepChain.value.push(
-              newPosition.inMilliseconds,
-              engineTargetMs: clamped,
-              forward: forward,
-            );
-            noteStepSeek(newPosition.inMilliseconds, forward);
-            pumpStepChain();
-            return;
-          }
+          positionLock.value.armTarget(clamped);
+          persistUserSeekBurst(Duration(milliseconds: clamped));
           await player.seek(Duration(milliseconds: clamped));
         } else {
           final dragging = useScrubDragStore().state.any;
-          // A cross-segment step lands on ANOTHER segment: the local axis the
-          // accumulator was recorded in no longer applies, and a queued walk
-          // [(StepSeekChain)] is stale for the same reason. This call may be the
-          // chain's OWN `step-issue` seek (which armed the hard timeout in
-          // [pumpStepChain]); clearing the chain here must also cancel that
-          // timeout, or it fires later against an already-empty chain.
-          stepIntent.value.reset();
-          stepChain.value.reset();
-          stepHardTimeoutTimer.value?.cancel();
-          stepHardTimeoutTimer.value = null;
-          stepDwellTimer.value?.cancel();
-          stepDwellTimer.value = null;
+          // Cross-segment step: the next press re-anchors on the new segment's
+          // live position (no accumulation is kept across a segment switch).
           final decision = decideVmDragSeek(
             strategy: useAppStore().state.vmCrossSegmentDragStrategy,
             isDragging: dragging,
@@ -1431,111 +1207,133 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         return;
       }
     }
+    if (duration == Duration.zero) {
+      // No duration yet: the clamp below would silently land the seek at 0
+      // (the fvp hook already drops this case). Drop it — the open-resume
+      // path re-issues a proper seek once the duration arrives. Done BEFORE
+      // arming `userSeekPending`: nothing moved, so the next sample must not be
+      // treated as a user jump.
+      return;
+    }
     // A user-initiated jump resets the position-sanitizer guard so the new
     // position (possibly backward) is accepted on the next sample.
     userSeekPending.value = true;
     lastSanePosMs.value = null;
-    if (duration == Duration.zero) {
-      // No duration yet: the clamp below would silently land the seek at 0
-      // (the fvp hook already drops this case). Drop it — the open-resume
-      // path re-issues a proper seek once the duration arrives.
-      return;
-    }
     diagLog.d('[seek] target=${newPosition.inMilliseconds}ms src=$src '
         'dur=${duration.inMilliseconds}ms');
     final target = clampSeekTarget(newPosition, duration);
-    if (src == 'step') stepIntent.value.note(target.inMilliseconds);
     // Position-intent lock + save-once: the user's explicit target is the
     // authoritative progress from this moment — persist it BEFORE the seek
     // lands (a kill mid-seek cannot lose it) and block writes until the
     // player is observed at the target. A burst collapses to leading+trailing
     // writes (see persistUserSeekBurst).
-    //
-    // 'step-issue' (the chain handing a queued step to the engine) must NOT
-    // re-run this: its target can be an OLDER step than the press that already
-    // armed the lock, and re-persisting it would overwrite the newest progress
-    // with a position the user has already stepped past.
-    if (src != 'step-issue') {
-      positionLock.value.armTarget(target.inMilliseconds);
-      persistUserSeekBurst(target);
-    }
-    // Keyboard / double-tap steps enqueue on the caller's axis and let
-    // [pumpStepChain] hand them to the engine ONE at a time: mpv keeps only
-    // the newest in-flight target, so a fixed-cadence burst painted nothing but
-    // the last target (see StepSeekChain).
-    if (src == 'step') {
-      stepChain.value.push(
-        target.inMilliseconds,
-        engineTargetMs: target.inMilliseconds,
-        forward: forward,
-      );
-      noteStepSeek(target.inMilliseconds, forward);
-      pumpStepChain();
-      return;
-    }
+    positionLock.value.armTarget(target.inMilliseconds);
+    persistUserSeekBurst(target);
     await player.seek(target);
   }
 
-  // Late-bound so [pumpStepChain] can hand a queued step to seek() (see the
-  // seekFn declaration above).
-  seekFn.value = seek;
-
   /// Which base a relative step chained onto — makes a non-advancing burst
   /// (step-vs-lock-vs-reported confusion) diagnosable from the console alone.
+  ///
+  /// There is no `step` (accumulator) branch on this backend on purpose: mpv
+  /// accumulates the relative seeks itself, so only the position lock and the
+  /// engine's reported position can be the base (see [seekRelative]).
   void logStepBase(int baseMs, int? lockMs, int reportedMs, int deltaMs) {
-    final String from = stepIntent.value.lastMs != null
-        ? 'step'
-        : lockMs != null
-            ? 'lock'
-            : 'reported';
+    final String from = lockMs != null ? 'lock' : 'reported';
     diagLog.d('[step-base] base=$baseMs from=$from '
         'lock=$lockMs reported=$reportedMs delta=$deltaMs');
   }
 
-  /// Relative skip on the VIRTUAL timeline (ms precision, clamped).
+  /// Relative skip (← / →, double-tap): mpv's native RELATIVE keyframe seek.
   ///
-  /// The exposed [position] is raw local inside the current segment while a
-  /// VM session is active; adding the delta to it and feeding it to [seek]
-  /// (which interprets it as virtual) lands on the wrong segment. Translate
-  /// local -> virtual first via the shared [VirtualSeekHandler] choke point.
+  /// mpv accumulates a burst itself, so the Dart side keeps no long-lived
+  /// intent: the OSD / progress-write target is anchored on the engine's last
+  /// reported position for *this* press (stepSeekTargetMs), which bounds it to
+  /// one press instead of drifting tens of seconds behind the picture. The delta
+  /// handed to mpv is clamped into the media (stepSeekSentDelta), so a press
+  /// that would cross the start/end becomes a no-op instead of driving the
+  /// engine past 0 or the duration. The virtual timeline is translated first so
+  /// a segment-local step does not land on the wrong segment; a target that
+  /// crosses into another segment goes through [seek], which opens it WITH the
+  /// intra-segment offset.
   Future<void> seekRelative(int deltaMs) async {
     final vm = VirtualMediaController.instance;
     final item = vm.state.item;
+    final int? lockIntent =
+        positionLock.value.blocksWrites ? positionLock.value.targetMs : null;
+    final int reportedMs = position.inMilliseconds;
+    // Logged only: the anchor is the engine's own position — mpv accumulates
+    // the presses natively, so no accumulator is needed here.
+    logStepBase(reportedMs, lockIntent, reportedMs, deltaMs);
+
     if (vm.isActive && item != null) {
       const handler = VirtualSeekHandler();
-      // Accumulate onto the last REQUESTED step target first: the lock's
-      // intent unlocks on its ±2s landing tolerance and the raw position lags
-      // a seek that is still decoding — chaining onto either made every repeat
-      // recompute the same target (N presses advanced nothing, then one jump).
-      // Only when no step is in flight does the lock intent (then the reported
-      // position) anchor the jump.
-      final int? pendingIntent =
-          positionLock.value.blocksWrites ? positionLock.value.targetMs : null;
-      final int reportedMs = position.inMilliseconds;
-      final int baseMs = stepIntent.value
-          .baseFor(reportedMs: reportedMs, lockIntentMs: pendingIntent);
-      logStepBase(baseMs, pendingIntent, reportedMs, deltaMs);
       final target = handler.resolveRelativeSeek(
         item,
         segmentIndex: vm.state.segmentIndex,
-        localMs: baseMs,
+        localMs: reportedMs,
         deltaMs: deltaMs,
       );
-      await seek(Duration(milliseconds: target.virtualMs), 'step',
-          deltaMs >= 0);
+      // An unresolvable move (no probed duration on the target segment) must NOT
+      // be turned into a step: the degenerate 0 used to be persisted over the
+      // file's saved progress (「进度归 0」). It must also DROP any previous
+      // press's OSD target — leaving it showed a landing this press never asked
+      // for (the held-key-on-an-unknown-duration stale OSD).
+      if (target == null) {
+        stepOsdTargetMs.value = null;
+        return;
+      }
+      // A jump really is being issued now, so arm the sanitizer: an early return
+      // above must not leave `userSeekPending` stuck true for the next sample.
+      userSeekPending.value = true;
+      lastSanePosMs.value = null;
+      // The OSD reads the CALLER (virtual) axis — it is DISPLAY only: it may sit
+      // ahead of the picture, because a keyframe landing is deliberately off the
+      // requested target.
+      stepOsdTargetMs.value = target.virtualMs;
+      // The PERSISTED position must never run ahead of what has actually played:
+      // write the position the engine is OBSERVED at (the pre-seek sample), not
+      // the nominal keyframe target. A kill inside the burst then resumes to a
+      // frame that was really on screen, and the landing is picked up by the
+      // throttled live save once it lands.
+      persistUserSeekBurst(Duration(milliseconds: reportedMs));
+      if (target.segIdx == vm.state.segmentIndex) {
+        final int segDur = item.segments[target.segIdx].durationMs ?? 0;
+        // Bounded by the VM's last SEEKABLE ms, not the raw segment duration:
+        // landing on `segDur` fires an instant completed, which is exactly what
+        // `clampVmLocalMs` keeps the OSD / persisted target away from.
+        final int sent = stepSeekSentDelta(
+            reportedMs: reportedMs,
+            deltaMs: deltaMs,
+            durationMs: vmLastSeekableMs(segDur));
+        if (sent != 0) await issueStepSeek(sent);
+      } else {
+        // Cross-segment: land through seek(), which opens the segment WITH the
+        // target offset.
+        await seek(Duration(milliseconds: target.virtualMs), 'step');
+      }
       return;
     }
-    final totalMs = duration.inMilliseconds;
-    if (totalMs <= 0) return;
-    // Same accumulation contract as the VM branch above.
-    final int? pendingIntent =
-        positionLock.value.blocksWrites ? positionLock.value.targetMs : null;
-    final int reportedMs = position.inMilliseconds;
-    final int baseMs = stepIntent.value
-        .baseFor(reportedMs: reportedMs, lockIntentMs: pendingIntent);
-    logStepBase(baseMs, pendingIntent, reportedMs, deltaMs);
-    final target = (baseMs + deltaMs).clamp(0, totalMs);
-    await seek(Duration(milliseconds: target), 'step', deltaMs >= 0);
+
+    final int totalMs = duration.inMilliseconds;
+    if (totalMs <= 0) {
+      stepOsdTargetMs.value = null;
+      return;
+    }
+    // A real step is being issued: reset the sanitizer so a keyframe landing
+    // (possibly backward) is accepted on the next sample. NO position-intent
+    // lock is armed — a keyframe landing deliberately differs from the target.
+    userSeekPending.value = true;
+    lastSanePosMs.value = null;
+    final int boundMs = lastSeekableMs(totalMs);
+    final int target = stepSeekTargetMs(
+        reportedMs: reportedMs, deltaMs: deltaMs, durationMs: boundMs);
+    final int sent = stepSeekSentDelta(
+        reportedMs: reportedMs, deltaMs: deltaMs, durationMs: boundMs);
+    stepOsdTargetMs.value = target;
+    // Observed position, not the nominal target (see the VM branch above).
+    persistUserSeekBurst(Duration(milliseconds: reportedMs));
+    if (sent != 0) await issueStepSeek(sent);
   }
 
   Future<void> backward(int seconds) async =>
@@ -1589,44 +1387,17 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   final vmFrozenMk = isVmMk &&
       vmCtrlMk.state.transitioning &&
       vmCtrlMk.state.pendingSeekMs != null;
-  // Step-burst display guard (both modes, non-VM): while a ←/→ press heads to
-  // its target the engine emits pre-land samples (previous frame/keyframe); the
-  // sanitizer's blanket user-seek bypass let those leak to the UI as a visible
-  // rewind (回退时间). Hold the shown position monotonic in the burst direction
-  // until [isStepLanded] fires, then release so playback may continue past.
-  final int rawPosMsMk = position.inMilliseconds;
-  final int guardedPosMsMk;
-  final int? stepGuardTarget = stepGuardTargetMs.value;
-  if (stepGuardTarget != null && !isVmMk) {
-    if (isStepLanded(
-        posMs: rawPosMsMk,
-        targetMs: stepGuardTarget,
-        forward: stepGuardForward.value)) {
-      stepGuardTargetMs.value = null;
-      stepGuardShownMs.value = rawPosMsMk;
-      guardedPosMsMk = rawPosMsMk;
-    } else {
-      final int shown = saneStepBurstPos(
-        raw: rawPosMsMk,
-        lastShown: stepGuardShownMs.value,
-        forward: stepGuardForward.value,
-        durationMs: duration.inMilliseconds,
-      );
-      stepGuardShownMs.value = shown;
-      guardedPosMsMk = shown;
-    }
-  } else {
-    stepGuardShownMs.value = rawPosMsMk;
-    guardedPosMsMk = rawPosMsMk;
-  }
-  final Duration guardedPositionMk = Duration(milliseconds: guardedPosMsMk);
-  final vmPositionMk = isVmMk
+  // mpv's `time-pos` already reports the seek TARGET while a seek is in flight
+  // (`player/playloop.c`: `get_current_time` -> `last_seek_pts`), exactly like
+  // mpv's own OSD, so the exposed position needs no Dart-side hold during a
+  // step burst — the engine is the single source of truth.
+  final Duration vmPositionMk = isVmMk
       ? (vmFrozenMk
           ? Duration(
               milliseconds: vmCtrlMk.currentOffsetMs +
                   (vmCtrlMk.state.pendingSeekMs ?? 0))
           : vmCtrlMk.translatePosition(position))
-      : guardedPositionMk;
+      : position;
   // Gated on the position lock: while a target is pending/locked the raw
   // position is a pre-land sample — feeding it to the controller would
   // pollute the anchor flush with the leaving file's offset.
@@ -1676,10 +1447,15 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   }, [mediaUriMk]);
 
   // Unmount: cancel the debounce timer and land the last pending write.
+  // The work MUST be the returned dispose, not the effect body: flutter_hooks
+  // runs the body at MOUNT and only calls the returned function at unmount, so
+  // the previous body-form left the step timers running past player.dispose()
+  // (line ~137) — a fired step timer then seeks on a disposed Player.
   useEffect(() {
-    resetStepBurst();
-    flushUserSeekBurst();
-    return;
+    return () {
+      resetStepBurst();
+      flushUserSeekBurst();
+    };
   }, []);
 
   final mediaKitPlayer = useMemoized(
@@ -1706,8 +1482,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       stepBackward: stepBackward,
       stepForward: stepForward,
       seek: seek,
-      stepIntentTargetMs: () => stepGuardTargetMs.value,
-      endStepBurst: endStepBurst,
+      stepIntentTargetMs: () => stepOsdTargetMs.value,
     ),
     [
       player,

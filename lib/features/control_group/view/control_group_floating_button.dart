@@ -5,6 +5,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/control_group/model/enum/player_control_group.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
+import 'package:iris/globals.dart' show sidewayQuickColumnAttachedNotifier;
 import 'package:iris/models/file.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -130,7 +131,14 @@ class ControlGroupFloatingButton extends HookWidget {
 
     // Present = the More menu wants it and the platform supports it. Active =
     // present AND the control panel is up.
-    final bool present = enabled && supported;
+    // The side panel's attached 副音 quick COLUMN is the other route to the same
+    // controls: while it is on screen this button is redundant and would sit on
+    // top of the strip, so it stands down. Published by `CircleSliderLayout` from
+    // the very `showsSidewayQuickColumn` call that renders the column (phones are
+    // excluded by that helper, so this can only ever be a desktop answer).
+    final bool quickColumnAttached =
+        useValueListenable(sidewayQuickColumnAttachedNotifier);
+    final bool present = enabled && supported && !quickColumnAttached;
     final bool active = present && panelVisible;
 
     // Measure the hosting Stack so the button clamps to the VIDEO area, not

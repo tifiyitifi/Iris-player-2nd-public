@@ -11,6 +11,7 @@ import 'package:iris/features/scenario_playback/model/domain/scenario_exclude_ru
 import 'package:iris/features/scenario_playback/model/enum/exclude_lifetime.dart';
 import 'package:iris/features/scenario_playback/model/enum/exclude_rule_kind.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -109,7 +110,12 @@ void main() {
       ScenarioOverrideActions.playSelectionInDefaultScenario(
         files: const [],
         directories: const [
-          (storageId: 's', path: 'empty', recursive: true),
+          (
+            storageId: 's',
+            path: 'empty',
+            recursive: true,
+            kind: ScenarioSourceKind.folder,
+          ),
         ],
         sortField: ScenarioSortField.name,
         sortDirection: SortDirection.asc,
@@ -152,6 +158,41 @@ void main() {
     expect(items.map((e) => e.path), contains('a/movie.mp4'));
   });
 
+  // v15-D6 + SAF: a pure-SAF single-pick selection must pass the pre-check.
+  // The file has no segment path; its identity is its document uri, which
+  // `media_nodes` stores as the canonical path (v51). The pre-check used to
+  // collect only `path.isNotEmpty` files and threw `..._not_in_db`.
+  test('a pure-SAF selection passes the pre-check and commits the override',
+      () async {
+    const safUri =
+        'content://com.android.providers.media.documents/document/video%3A101';
+    await DbModule.mediaNodesDao.insertNode(MediaNode.file(
+      id: 'saf:$safUri',
+      storageId: 's',
+      path: const <String>[],
+      name: 'saf.mp4',
+      mediaType: MediaType.video,
+      uri: safUri,
+    ));
+    final store = usePlaybackScenarioStore();
+    final sys = await store.ensureSystemPlayingScenario();
+
+    await ScenarioOverrideActions.playFilesOverride(
+      files: const [
+        FileItem(
+          storageId: 's',
+          name: 'saf.mp4',
+          uri: safUri,
+          type: ContentType.video,
+        ),
+      ],
+      sortField: ScenarioSortField.name,
+      sortDirection: SortDirection.asc,
+    );
+    final items = await DbModule.scenarioRepo.getExplicitItems(sys.id);
+    expect(items.map((e) => e.path), contains(safUri));
+  });
+
   // v6-D36: `force` skips the playability pre-check and still installs the
   // intended scope (an unplayable scope simply resolves to an empty queue and
   // nothing starts).
@@ -162,7 +203,12 @@ void main() {
     await ScenarioOverrideActions.playSelectionInDefaultScenario(
       files: const [],
       directories: const [
-        (storageId: 's', path: 'empty', recursive: true),
+        (
+          storageId: 's',
+          path: 'empty',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
       sortField: ScenarioSortField.name,
       sortDirection: SortDirection.asc,
@@ -185,7 +231,12 @@ void main() {
       ScenarioOverrideActions.playSelectionInDefaultScenario(
         files: const [],
         directories: const [
-          (storageId: 's', path: 'zz', recursive: false),
+          (
+            storageId: 's',
+            path: 'zz',
+            recursive: false,
+            kind: ScenarioSourceKind.folder,
+          ),
         ],
         sortField: ScenarioSortField.name,
         sortDirection: SortDirection.asc,
@@ -203,7 +254,12 @@ void main() {
     await ScenarioOverrideActions.playSelectionInDefaultScenario(
       files: const [],
       directories: const [
-        (storageId: 's', path: 'a', recursive: false),
+        (
+          storageId: 's',
+          path: 'a',
+          recursive: false,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
       sortField: ScenarioSortField.name,
       sortDirection: SortDirection.asc,

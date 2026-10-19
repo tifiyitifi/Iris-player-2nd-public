@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/background_playback/engine/background_playback_engine.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/services/background_sync_logic.dart';
+import 'package:iris/features/background_playback/model/enum/bg_align_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
@@ -37,13 +38,17 @@ FileItem _f(String key) =>
 class _FgProbe {
   final List<String> calls = <String>[];
   bool playing;
-  _FgProbe({required this.playing});
+  _FgProbe({required this.playing, this.positionMs = 5000});
+
+  /// Foreground position the probe reports. The mirror's drift correction is
+  /// judged against it, so a test can place the video far from 00:00.
+  final int positionMs;
 
   MediaPlayer build() => MediaPlayer(
         isInitializing: false,
         isPlaying: playing,
         externalSubtitles: const [],
-        position: const Duration(seconds: 5),
+        position: Duration(milliseconds: positionMs),
         duration: const Duration(minutes: 10),
         buffer: Duration.zero,
         width: 0,
@@ -120,6 +125,10 @@ void main() {
     required String anchor,
     required String foreground,
     FileItem? loadedBg,
+    int? alignOffsetMs,
+    int bgPositionMs = 0,
+    bool bgPlaying = false,
+    Duration bgDuration = const Duration(minutes: 10),
   }) async {
     await usePlayQueueStore().update(
       playQueue: [PlayQueueItem(file: _f(foreground), index: 0)],
@@ -138,17 +147,47 @@ void main() {
       seekLink: BgSeekLink.linked,
       lockLevel: BgLockLevel.high,
       autoFocusControl: true,
+      alignOffsetMs: alignOffsetMs,
       // A live run needs an open target; an EMPTY queue models the "nothing to
       // play" state (the engine was stopped) without touching the DB.
       queue: loadedBg == null ? const <FileItem>[] : <FileItem>[loadedBg],
       currentIndex: loadedBg == null ? -1 : 0,
     ));
     engine.file = loadedBg;
+    engine.duration = bgDuration;
+    engine.position = Duration(milliseconds: bgPositionMs);
+    engine.isPlaying = bgPlaying;
     await tester.pumpWidget(_harness(player: fg.build(), engine: engine));
     // Deferred ARB loading rebuilds the subtree once, so settle before reading
     // the mirror's outcome.
     await tester.pumpAndSettle();
   }
+
+  testWidgets('仅当前 + 高同步: a 副音 stuck at its head must NOT rewind the video',
+      (tester) async {
+    // Reported defect: switching 副音 on reset the video's progress to 00:00.
+    // 副音 is the master while its alignment seek has not landed yet, so it
+    // still reports 0; the continuous drift correction mapped that onto the
+    // video and — with 仅当前 clamping a behind-target — issued `seek(0)`.
+    final fg = _FgProbe(playing: true, positionMs: 300000);
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('B.mp4')),
+      foreground: 'B.mp4',
+      loadedBg: _f('b1'),
+      alignOffsetMs: 0,
+      bgPositionMs: 0,
+      bgPlaying: true,
+    );
+
+    expect(
+      fg.calls,
+      isNot(contains('seek')),
+      reason: 'a settled drift correction must never rewind the video',
+    );
+  });
 
   testWidgets('仅当前: leaving the anchor must NOT resume 副音 through the '
       'transport mirror', (tester) async {
@@ -206,6 +245,73 @@ void main() {
       isEmpty,
       reason: 'an unloaded 副音 engine must not dictate the video transport',
     );
+  });
+
+  group('the automatic anchoring rule, applied by the runtime observer', () {
+    testWidgets('副音 shorter than the video: 尾部锚定 (ends with the video)',
+        (tester) async {
+      // fg 10min at 5min → 5min left, 副音 6min: the 副音's END is put on the
+      // video's END, so it starts at 1min and the offset is fgDur - bgDur.
+      final fg = _FgProbe(playing: true, positionMs: 300000);
+      await mount(
+        tester,
+        fg: fg,
+        target: ControlTarget.background,
+        anchor: backgroundMediaKey(_f('B.mp4')),
+        foreground: 'B.mp4',
+        loadedBg: _f('b1'),
+        bgDuration: const Duration(minutes: 6),
+        bgPlaying: true,
+      );
+
+      final bg = useBackgroundPlaybackStore();
+      expect(bg.state.alignMode, BgAlignMode.tailAtFg);
+      expect(bg.state.alignOffsetMs, 240000, reason: 'fgDur - bgDur');
+      expect(
+        fg.calls,
+        isNot(contains('seek')),
+        reason: 'the tail anchor must never rewind the video either',
+      );
+    });
+
+    testWidgets('副音 shorter than the video REMAINDER: it starts from its head',
+        (tester) async {
+      // fg 10min at 5min → 5min left, 副音 2min cannot cover it, so a tail anchor
+      // is impossible: the 副音 starts at its 00:00 at the current position.
+      final fg = _FgProbe(playing: true, positionMs: 300000);
+      await mount(
+        tester,
+        fg: fg,
+        target: ControlTarget.background,
+        anchor: backgroundMediaKey(_f('B.mp4')),
+        foreground: 'B.mp4',
+        loadedBg: _f('b1'),
+        bgDuration: const Duration(minutes: 2),
+        bgPlaying: true,
+      );
+
+      final bg = useBackgroundPlaybackStore();
+      expect(bg.state.alignMode, BgAlignMode.bgHeadAtFg);
+      expect(bg.state.alignOffsetMs, 300000, reason: 'the current fg moment');
+    });
+
+    testWidgets('副音 longer than the video: 同刻度 (offset 0)', (tester) async {
+      final fg = _FgProbe(playing: true, positionMs: 300000);
+      await mount(
+        tester,
+        fg: fg,
+        target: ControlTarget.background,
+        anchor: backgroundMediaKey(_f('B.mp4')),
+        foreground: 'B.mp4',
+        loadedBg: _f('b1'),
+        bgDuration: const Duration(minutes: 12),
+        bgPlaying: true,
+      );
+
+      final bg = useBackgroundPlaybackStore();
+      expect(bg.state.alignMode, BgAlignMode.sameClock);
+      expect(bg.state.alignOffsetMs, 0);
+    });
   });
 
   group('resolveBgMasterFgAction roll authority', () {

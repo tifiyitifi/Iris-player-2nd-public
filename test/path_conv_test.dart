@@ -42,8 +42,8 @@ void main() {
       final a = canonicalProgressKey('', [], uri: 'content://picks/a');
       final b = canonicalProgressKey('', [], uri: 'content://picks/b');
       expect(a, isNot(b));
-      expect(a, ':content:/picks/a');
-      expect(b, ':content:/picks/b');
+      expect(a, ':content://picks/a');
+      expect(b, ':content://picks/b');
     });
   });
 

@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart' show BuildContext;
-import 'package:iris/features/media_library/model/enum/basic_enum.dart' show SortDirection;
+import 'package:iris/features/media_library/model/enum/basic_enum.dart'
+    show SortDirection;
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart'
     show MediaSourceKind;
 import 'package:iris/features/media_library/model/enum/media_node.dart'
@@ -11,6 +12,7 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_common
 import 'package:iris/features/scenario_playback/actions/scenario_playback_error.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider.dart'
     show PlaybackEntry;
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
@@ -81,7 +83,12 @@ class ScenarioOverrideActions {
         // ignore: use_build_context_synchronously
         gateContext,
         [
-          (storageId: storageId, path: folderPath, recursive: true),
+          (
+            storageId: storageId,
+            path: folderPath,
+            recursive: true,
+            kind: ScenarioSourceKind.folder,
+          ),
         ],
         playOnScanNow: () => playFolderScopeInDefaultScenario(
           storageId: storageId,
@@ -123,7 +130,12 @@ class ScenarioOverrideActions {
       }
     }
     await _replaceSources(ws.id, [
-      (storageId: storageId, path: folderPath, recursive: recursive),
+      (
+        storageId: storageId,
+        path: folderPath,
+        recursive: recursive,
+        kind: ScenarioSourceKind.folder,
+      ),
     ]);
     await resetManualScopeOrigin(ws.id);
     await usePlaybackScenarioStore().applyQueueGenerationRule(
@@ -217,26 +229,21 @@ class ScenarioOverrideActions {
     // v5-D7/D30: mirror `_replaceSources` — an override also clears temporary
     // excludes so a forced install never leaks a stale workspace blacklist.
     await store.clearTemporaryExcludes(ws.id);
-    await store.addSources(
-      specs: [
-        for (final dir in directories)
-          (
-            storageId: dir.storageId,
-            path: dir.path,
-            // v2-D1/D8: honor the spec's own recursion flag (F-007 may install
-            // a non-recursive source from a saved scenario).
-            recursive: dir.recursive,
-          ),
-      ],
-    );
+    await store.addSources(specs: directories);
     await store.addExplicitItemsFor(
       scenarioId: ws.id,
       items: [
         for (final f in files)
-          if (f.path.isNotEmpty)
+          // A SAF single-picked file has no segment path; its identity is its
+          // document uri (the resolver resolves it through `nodesByUris`).
+          // Filtering on `path.isNotEmpty` alone silently dropped every SAF
+          // single pick from the workspace.
+          if (f.path.isNotEmpty || f.uri.isNotEmpty)
             (
               storageId: f.storageId,
-              path: canonicalOccurrencePath(f.path.join('/')),
+              path: f.path.isNotEmpty
+                  ? canonicalOccurrencePath(f.path.join('/'))
+                  : f.uri,
             ),
       ],
     );
@@ -260,7 +267,8 @@ class ScenarioOverrideActions {
     var page = 0;
     var scanned = 0;
     while (scanned < _maxScanItems) {
-      final result = await store.resolvePage(page: page, pageSize: _scanPageSize);
+      final result =
+          await store.resolvePage(page: page, pageSize: _scanPageSize);
       final items = result.items;
       if (items.isEmpty) return;
       for (final item in items) {
@@ -314,16 +322,7 @@ class ScenarioOverrideActions {
     await store.clearSources(scenarioId);
     await store.clearExplicitItems(scenarioId);
     await store.clearTemporaryExcludes(scenarioId);
-    await store.addSources(
-      specs: [
-        for (final spec in specs)
-          (
-            storageId: spec.storageId,
-            path: spec.path,
-            recursive: spec.recursive,
-          ),
-      ],
-    );
+    await store.addSources(specs: specs);
   }
 
   /// v15-D6 playability pre-check: throws [PlaybackUnavailableException] when
@@ -356,12 +355,15 @@ class ScenarioOverrideActions {
       if (result.totalItems > 0) return;
     }
     // Explicit files: playable when at least one exists in the media DB.
+    // A SAF single-picked file has no segment path; its identity is its
+    // document uri, which `media_nodes` stores as the canonical path (v51).
+    // Mirror the append path here, or a pure-SAF selection collects zero
+    // paths and the pre-check throws `search_err_selection_not_in_db`.
     final byStorage = <String, List<String>>{};
     for (final f in files) {
-      if (f.path.isEmpty) continue;
-      byStorage
-          .putIfAbsent(f.storageId, () => [])
-          .add(f.path.join('/'));
+      final p = f.path.isNotEmpty ? f.path.join('/') : f.uri;
+      if (p.isEmpty) continue;
+      byStorage.putIfAbsent(f.storageId, () => []).add(p);
     }
     for (final entry in byStorage.entries) {
       final existing = await DbModule.mediaNodeRepo.getExistingFilePaths(

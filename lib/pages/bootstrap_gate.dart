@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/app_startup.dart';
+import 'package:iris/features/app_update/view/report_previous_update.dart';
 import 'package:iris/store/kv/secure_kv.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -61,6 +62,16 @@ class BootstrapGate extends HookWidget {
             title: t.portable_fallback_title,
             message: t.portable_fallback_body,
           );
+        }
+
+        // What became of the last in-app portable update, if one was handed
+        // over before this launch. After the fallback notice so the two never
+        // race for the same frame, and before the app is shown so the answer
+        // arrives with it.
+        try {
+          await reportPreviousPortableUpdate(navigator);
+        } catch (e, s) {
+          areaKeyLog.e('Update report failed: $e', e, s);
         }
 
         try {

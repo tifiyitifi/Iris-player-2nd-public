@@ -95,16 +95,6 @@ bool shouldContinueQueuePlaybackAfterDelete({
 }) =>
     !scenarioMode && wasPlaying;
 
-/// Whether [key]'s release must collapse a held step-seek burst (← / → and
-/// their Ctrl/Shift/Alt tier variants all feed the same [StepSeekChain]).
-///
-/// Every other repeatable key owns its own release handling in [handle]
-/// (volume ArrowUp/Down, speed X/C). Pure so the binding is unit-testable.
-@visibleForTesting
-bool shouldReleaseStepHold(LogicalKeyboardKey key) =>
-    key == LogicalKeyboardKey.arrowLeft ||
-    key == LogicalKeyboardKey.arrowRight;
-
 /// Executes PotPlayerAction for the potplayer keyboard scheme (SRS §5).
 ///
 /// Owns the sequence-buffer Timer; every action mirrors the corresponding
@@ -144,16 +134,6 @@ class PotPlayerKeyExecutor {
         (event.logicalKey == LogicalKeyboardKey.keyX ||
             event.logicalKey == LogicalKeyboardKey.keyC)) {
       await useAppStore().commitRate();
-      return;
-    }
-
-    // Releasing a held ←/→ ends the step burst: collapse the queued walk to
-    // its final target so it stops within one landing instead of draining
-    // every auto-repeated press (see StepSeekChain.collapseOnRelease). The
-    // input-idle settle repeats this collapse, so a UP swallowed by a blur or
-    // dialog still self-heals.
-    if (event is KeyUpEvent && shouldReleaseStepHold(event.logicalKey)) {
-      await player.endStepBurst?.call();
       return;
     }
 
@@ -931,6 +911,7 @@ class PotPlayerKeyExecutor {
           final app = useAppStore().state;
           final isDock = isDesktop &&
               app.useMetadataSettings &&
+              !app.useLegacyStoragePersistence &&
               app.playlistPanelMode == PlaylistPanelMode.dockedRight;
           if (isDock) {
             await useAppStore().togglePlaylistPanelVisible();

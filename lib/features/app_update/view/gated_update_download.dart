@@ -50,12 +50,19 @@ class GatedUpdateDownload {
   GatedUpdateDownload({
     required this.asset,
     this.expectedSha256,
+    this.notice,
     this.downloader = downloadAsset,
     this.stillWanted,
   }) : _gate = DelayedProgressGate(barrierDismissible: false);
 
   final ReleaseAsset asset;
   final String? expectedSha256;
+
+  /// A line shown under the progress text, for something the reader has to know
+  /// while the transfer runs (today: the release published no checksum index, so
+  /// the digest check is not happening). Already localized by the caller.
+  final String? notice;
+
   final AssetDownloader downloader;
 
   /// Whether the caller can still use what this run produces, asked at the two
@@ -225,6 +232,13 @@ class GatedUpdateDownload {
                 LinearProgressIndicator(
                   value: value.total > 0 ? value.received / value.total : null,
                 ),
+                if (notice != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    notice!,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
               ],
             ),
             actions: [

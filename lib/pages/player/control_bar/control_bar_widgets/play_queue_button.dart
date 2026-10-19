@@ -5,7 +5,6 @@ import 'package:iris/features/background_playback/background_playback_gate.dart'
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/background_queue_panel.dart';
-import 'package:iris/features/media_library/play_queue/ui/paged_play_queue_sheet.dart';
 import 'package:iris/features/scenario_playback/view/coordinator/scenario_browser.dart';
 import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/shortcut_hints.dart';
@@ -34,6 +33,9 @@ Future<void> openPlayQueueFromControlBar(
   bool shouldDockToggle() {
     if (!isDesktop) return false;
     if (!useMetadataSettings) return false;
+    // The desktop dock is a meta-era feature; the legacy-storage backend has no
+    // side panel, so P / the button must fall through to the popup.
+    if (app.useLegacyStoragePersistence) return false;
     if (playlistPanelMode != PlaylistPanelMode.dockedRight) return false;
     return true;
   }
@@ -44,6 +46,7 @@ Future<void> openPlayQueueFromControlBar(
       useMetadataSettings: useMetadataSettings,
       mode: playlistPanelMode,
       isFullScreen: isFullScreen,
+      legacyStorage: app.useLegacyStoragePersistence,
     )) {
       final bool pinned = usePlayerUiStore().state.isFullscreenDockPinned;
       usePlayerUiStore().updateIsFullscreenDockPeeking(false);
@@ -75,10 +78,10 @@ Future<void> openPlayQueueFromControlBar(
         direction: app.defaultPopupDirection,
       ),
     );
-  } else if (app.useScenarioDrivenPlayback) {
-    showScenarioBrowser(context, direction: app.defaultPopupDirection);
   } else {
-    showPagedPlayQueueSheet(context, direction: app.defaultPopupDirection);
+    // The paged queue is retired; the meta-era queue surface is the scenario
+    // browser.
+    showScenarioBrowser(context, direction: app.defaultPopupDirection);
   }
 }
 

@@ -4,10 +4,6 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:iris/features/background_playback/model/db/tables/bg_mapping_segments_table.dart';
 import 'package:iris/features/background_playback/model/db/tables/bg_mappings_table.dart';
-import 'package:iris/features/background_playback/model/db/tables/bg_source_rules_table.dart';
-import 'package:iris/features/background_playback/model/enum/bg_source_rule_kind.dart';
-import 'package:iris/features/background_playback/model/enum/bg_source_sort_field.dart';
-import 'package:iris/utils/dir_match.dart';
 // Referenced by the generated `media_nodes.modified_at` converter (app_database.g.dart
 // is a part of this library, so the class must be imported HERE, not only in the
 // table file).
@@ -37,7 +33,7 @@ import 'package:iris/features/scenario_playback/model/db/tables/media_orders_tab
 import 'package:iris/features/scenario_playback/model/db/tables/scenario_shared_index_table.dart';
 import 'package:iris/features/scenario_playback/model/db/tables/scenario_sources_table.dart';
 import 'package:iris/features/scenario_playback/model/db/tables/scenario_states_table.dart';
- import 'package:iris/features/meta_settings/model/db/tables/feature_flags_table.dart';
+import 'package:iris/features/meta_settings/model/db/tables/feature_flags_table.dart';
 import 'package:iris/features/meta_settings/model/db/tables/setting_defs_table.dart';
 import 'package:iris/features/meta_settings/model/db/tables/setting_values_table.dart';
 import 'package:iris/features/meta_settings/model/enum/feature_stage.dart';
@@ -99,6 +95,11 @@ import 'package:iris/models/db/migration/v43_migration.dart';
 import 'package:iris/models/db/migration/v44_migration.dart';
 import 'package:iris/models/db/migration/v45_migration.dart';
 import 'package:iris/models/db/migration/v46_migration.dart';
+import 'package:iris/models/db/migration/v47_migration.dart';
+import 'package:iris/models/db/migration/v48_migration.dart';
+import 'package:iris/models/db/migration/v49_migration.dart';
+import 'package:iris/models/db/migration/v50_migration.dart';
+import 'package:iris/models/db/migration/v51_migration.dart';
 import 'package:iris/models/db/tables/app_meta_table.dart';
 import 'package:iris/models/db/tables/navigation_table.dart';
 import 'package:iris/models/db/tables/storage_table.dart';
@@ -169,9 +170,6 @@ Otherwise generated drift/freezed files remain stale.
     BgMappingsTable,
     BgMappingSegmentsTable,
 
-    // 副音 candidate-source rules (v28)
-    BgSourceRulesTable,
-
     // Persistent derived queue index for scalable (500k) playback (v39)
     //
     // The v39/v43 ROW tables (vm_groups, vm_group_members,
@@ -193,7 +191,7 @@ class AppDatabase extends _$AppDatabase {
 
   /// Increment schema version whenever the database structure changes.
   @override
-  int get schemaVersion => 46;
+  int get schemaVersion => 51;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -387,6 +385,26 @@ class AppDatabase extends _$AppDatabase {
           if (from < 46) {
             await MigrationV46(this).run(m);
           }
+
+          if (from < 47) {
+            await MigrationV47(this).run(m);
+          }
+
+          if (from < 48) {
+            await MigrationV48(this).run(m);
+          }
+
+          if (from < 49) {
+            await MigrationV49(this).run(m);
+          }
+
+          if (from < 50) {
+            await MigrationV50(this).run(m);
+          }
+
+          if (from < 51) {
+            await MigrationV51(this).run(m);
+          }
         },
 
         /// Optional hook useful during development.
@@ -471,9 +489,8 @@ LazyDatabase _openConnection() {
     final bool isAndroid = Platform.isAndroid;
     final String androidDatabasesPath =
         isAndroid ? await getDatabasesPath() : '';
-    final String documentsPath = isAndroid
-        ? ''
-        : (await getApplicationDocumentsDirectory()).path;
+    final String documentsPath =
+        isAndroid ? '' : (await getApplicationDocumentsDirectory()).path;
 
     final PortableLayout? layout = AppPaths.layout;
     final String filePath = resolveDbFilePath(

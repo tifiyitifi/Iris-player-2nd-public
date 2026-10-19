@@ -49,6 +49,18 @@ List<KnownIssueSection> knownIssueSections({
         header: t.dlg_known_issues_scenario_sort_header,
         body: t.dlg_known_issues_scenario_sort_body,
       ),
+      (
+        header: t.dlg_known_issues_bg_anchor_header,
+        body: t.dlg_known_issues_bg_anchor_body,
+      ),
+      (
+        header: t.dlg_known_issues_bg_anchor_vm_header,
+        body: t.dlg_known_issues_bg_anchor_vm_body,
+      ),
+      (
+        header: t.dlg_known_issues_seek_step_header,
+        body: t.dlg_known_issues_seek_step_body,
+      ),
     ];
 
 /// Read-only explainer listing the project's known issues and workarounds.

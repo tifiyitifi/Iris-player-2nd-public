@@ -557,6 +557,8 @@ class QueryPlayQueueBackend extends PersistentStore<QueryPlayQueueState>
       durationMs: file.durationMs,
       type: _convertMediaType(file.mediaType),
       lastModified: file.modifiedAt,
+      // Subtitle associations persisted at scan time (schema v50).
+      subtitles: file.subtitles ?? const [],
     );
   }
 

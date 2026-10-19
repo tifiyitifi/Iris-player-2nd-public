@@ -21,18 +21,16 @@ import 'package:iris/utils/path_conv.dart';
 
 /// Routes playback to the correct [PlaybackProvider].
 ///
-/// There are three mechanisms of playback (priority order):
-/// 1. the oldest legacy queue (`useLegacyStoragePersistence == true`,
+/// There are two playback mechanisms (priority order):
+/// 1. the legacy queue (`useLegacyStoragePersistence == true`,
 ///    UnifiedPlayQueueStore in-memory backend)
 /// 2. the scenario-driven ("drift base") system
-///    (`useScenarioDrivenPlayback == true`, the current development target)
-/// 3. the paged play queue (`useScenarioDrivenPlayback == false`,
-///    UnifiedPlayQueueStore query backend)
+///    (`useScenarioDrivenPlayback == true`, the default development path)
 ///
-/// All coexist; the scenario-driven mode is the default development path and
-/// can be switched back to the paged queue at any time by toggling
-/// `AppState.useScenarioDrivenPlayback` in code until the final version is
-/// settled.
+/// The unified queue store is still the code-level fallback when
+/// `AppState.useScenarioDrivenPlayback` is flipped off, but its paged UI
+/// surface was retired — the legacy popup and the scenario browser are the
+/// only queue surfaces now.
 class PlaybackProviderRegistry {
   static late final ScenarioPlaybackProvider _scenario;
   static late final LegacyQueueProvider _legacy;

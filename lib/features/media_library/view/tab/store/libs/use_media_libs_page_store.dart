@@ -5,7 +5,7 @@ import 'package:iris/store/kv/kv_store.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart' as zustand;
 import 'package:iris/features/media_library/model/db/adapters/media_library.dart';
-import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dar.dart';
+import 'package:iris/features/media_library/model/db/repositories/media_library_repository_facade.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sort_by.dart';
 import 'package:iris/features/media_library/model/media_lib/media_library.dart';

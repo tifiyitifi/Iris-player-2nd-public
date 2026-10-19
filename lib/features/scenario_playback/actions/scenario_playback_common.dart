@@ -11,8 +11,11 @@ import 'package:iris/features/scenario_playback/store/use_playback_scenario_stor
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/path_conv.dart';
 
-/// A source specification to install into the SystemPlayingScenario.
-typedef ScenarioSourceSpec = ({String storageId, String path, bool recursive});
+/// The canonical source-spec type lives in the model layer so the repository,
+/// the store and the actions share exactly ONE definition. Re-exported here for
+/// the action modules that import this library.
+export 'package:iris/features/scenario_playback/model/domain/scenario_source_spec.dart'
+    show ScenarioSourceSpec;
 
 /// Ensures the SystemPlaying workspace row exists and activates it.
 Future<Scenario> ensureSystemPlayingScenario() async {
@@ -68,6 +71,48 @@ Future<Scenario> ensurePlaybackWorkspace() async {
   return ws;
 }
 
+/// The 副音 workspace the CURRENT playback context pairs with: an active
+/// INDEPENDENT entry's own background workspace ([ScenarioKind.entryBackground]),
+/// otherwise the default background workspace ([ScenarioKind.background]).
+///
+/// Shared entries resolve to the default, exactly like [currentPlaybackWorkspace]
+/// resolves them to SystemPlaying.
+Scenario? currentBackgroundWorkspace(PlaybackScenarioStore store) {
+  final identity = useAppIdentityStore();
+  final entryId = identity.state.activeEntryId;
+  final entry = entryId == null ? null : identity.entryById(entryId);
+  if (entry != null && !entry.sharedWithDefault) {
+    final id = entry.backgroundWorkspaceScenarioId;
+    if (id != null) {
+      for (final s in store.state.scenarios) {
+        if (s.id == id) return s;
+      }
+    }
+  }
+  return store.backgroundWorkspace;
+}
+
+/// Ensures and returns the CURRENT context's 副音 workspace, lazily creating an
+/// independent entry's own background workspace and persisting its id back onto
+/// the entry (mirrors [ensurePlaybackWorkspace]). Preferences stay global; only
+/// the queue/definition is per context, so this is the 副音 source to resolve.
+Future<Scenario> ensureBackgroundPlaybackWorkspace() async {
+  final store = usePlaybackScenarioStore();
+  final identity = useAppIdentityStore();
+  final entryId = identity.state.activeEntryId;
+  final entry = entryId == null ? null : identity.entryById(entryId);
+  if (entry != null && !entry.sharedWithDefault) {
+    final bg = await store
+        .ensureEntryBackgroundWorkspace(entry.backgroundWorkspaceScenarioId);
+    if (entry.backgroundWorkspaceScenarioId != bg.id) {
+      await identity.upsertEntry(
+          entry.copyWith(backgroundWorkspaceScenarioId: bg.id));
+    }
+    return bg;
+  }
+  return store.ensureBackgroundWorkspace();
+}
+
 /// Starts playback of [tapped] inside the (already configured) [scenario]
 /// workspace via the scenario playback provider.
 Future<void> playInScenario(
@@ -76,7 +121,13 @@ Future<void> playInScenario(
   String storageId,
   String itemPath,
 ) {
-  final canonical = canonicalOccurrencePath(itemPath);
+  // SAF single-picked files carry no segment path: their identity is the
+  // document uri (see MediaNode.occurrencePath / backgroundOccurrencePath).
+  // Fall back to the tapped file's uri when the caller omits itemPath, so the
+  // scenario entry never collapses onto `storageId:` (the old empty-path bug).
+  final sourcePath =
+      itemPath.isNotEmpty ? itemPath : (tapped.uri.isNotEmpty ? tapped.uri : '');
+  final canonical = canonicalOccurrencePath(sourcePath);
   final entry = PlaybackEntry(
     file: tapped,
     storageId: storageId,

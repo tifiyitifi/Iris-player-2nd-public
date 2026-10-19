@@ -3,6 +3,7 @@ import 'package:iris/features/background_playback/background_playback_gate.dart'
 import 'package:iris/features/background_playback/contributions/background_playback_settings_contribution.dart';
 import 'package:iris/features/meta_settings/contributions/settings_catalog.dart';
 import 'package:iris/features/meta_settings/engine/def_visibility.dart';
+import 'package:iris/features/meta_settings/model/enum/setting_value_type.dart';
 import 'package:iris/features/meta_settings/model/enum/setting_widget_kind.dart';
 import 'package:iris/features/meta_settings/view/widgets/editor_bindings.dart';
 import 'package:iris/features/meta_settings/view/widgets/setting_editors.dart';
@@ -15,11 +16,10 @@ void main() {
       final keys = SettingsCatalog.defs
           .where((d) => d.key.startsWith('background_playback.'))
           .toList();
-      expect(keys, hasLength(33));
+      expect(keys, hasLength(31));
       expect(
         keys.map((d) => d.key),
         containsAll([
-          'background_playback.sourceManage',
           'background_playback.followFgSwitch',
           'background_playback.rateLock',
           'background_playback.allowSameFile',
@@ -60,8 +60,6 @@ void main() {
           // Snap-to-saved-boundary (卡值） + its release memory bound.
           'background_playback.snapEnabled',
           'background_playback.snapReleaseLimit',
-          // Candidate-source rules + the zero-active fallback hint.
-          'background_playback.fallbackBanner',
           // 自动使用已保存的映射 (E 节 playback switch).
           'background_playback.useSavedMapping',
         ]),
@@ -75,10 +73,19 @@ void main() {
           BackgroundPlaybackSettingsContribution.groupHeaderKey);
     });
 
+    test('the default-anchoring row is informational (no options)', () {
+      final def = SettingsCatalog.defs
+          .singleWhere((d) => d.key == 'background_playback.alignDefault');
+      // Anchoring is decided automatically, so the row must not offer an enum
+      // of choices; it only explains the rule.
+      expect(def.valueType, SettingValueType.json);
+      expect(def.enumValues, isEmpty);
+      expect(def.editorKey, 'bg_align_default');
+    });
+
     test('every bg editor key has a registered binding', () {
       EditorBindings.ensureRegistered();
       for (final key in [
-        'bg_sources',
         'bg_follow_fg_switch',
         'bg_rate_lock',
         'bg_allow_same_file',

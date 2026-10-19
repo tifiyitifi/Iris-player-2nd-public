@@ -63,6 +63,31 @@ StorageListErrorKind? emptyLocalListingKind({
   return null;
 }
 
+/// One listed entity's filesystem facts, with a FAILED stat degraded instead of
+/// propagated.
+///
+/// `FileSystemEntity.stat()` throws for a single unreadable entry (a locked file
+/// on Windows, a child that vanished between `list()` and the stat, a
+/// permission-denied subtree). Letting that escape aborted the WHOLE directory:
+/// the folder reported "no items" although it held plenty. Size and mtime are not
+/// needed to play the file — playback opens it by path — so the row is kept with
+/// unknown facts (`0` / null).
+///
+/// [onError] receives the caught error so the caller can log it (the raw path
+/// stays with the caller).
+Future<({int size, DateTime? modified})> statFactsOrUnknown(
+  Future<FileStat> Function() stat, {
+  void Function(Object error)? onError,
+}) async {
+  try {
+    final s = await stat();
+    return (size: s.size, modified: s.modified);
+  } catch (e) {
+    onError?.call(e);
+    return (size: 0, modified: null);
+  }
+}
+
 /// Localized names the local-disk enumeration needs.
 ///
 /// Pulling them out is what makes the enumeration context-free, so it can run
@@ -297,12 +322,20 @@ Future<PlayQueueState?> getLocalPlayQueue(String filePath) async {
       .map((entry) => PlayQueueItem(file: entry.value, index: entry.key))
       .toList();
 
-  final clickedFile = filteredFiles.where((file) => file.uri == filePath).first;
+  // Match by NORMALIZED path, not raw string equality: the picker's path and
+  // the listing's `entity.path` can differ in separators (or drive-letter case)
+  // for the SAME file. The old unguarded `.first` turned a match miss into a
+  // `StateError` out of pickLocalFile.
+  final index = filteredFiles.indexWhere(
+    (file) => sameLocalPath(file.uri, filePath),
+  );
+  // No match means the picked file is not in this listing: play NOTHING rather
+  // than silently playing the folder's first row. pickLocalFile handles null.
+  if (index < 0) return null;
 
-  final index = filteredFiles.indexOf(clickedFile);
   return PlayQueueState(
     playQueue: playQueue,
-    currentIndex: index < 0 || index >= playQueue.length ? 0 : index,
+    currentIndex: index,
   );
 }
 
@@ -379,13 +412,19 @@ Future<FileListResult> getLocalFilesResult(
     return FileListResult.empty;
   }
 
-  final Map<String, List<FileSystemEntity>> groupedEntities = {};
+  // Stream to avoid OOM on huge dirs (50w). Yields every 200 entries keep UI alive.
+  //
+  // The pairing rule is the SAME one every remote/SAF listing uses
+  // ([getSubtitleMap]): a subtitle binds to the sibling video it extends by the
+  // LONGEST dot-separated name prefix — never merely the first segment, which
+  // cross-attached a whole series (`Show.S01E01.*` and `Show.S02E01.*`), and
+  // never the exact basename, which dropped a language-segmented subtitle
+  // (`Show.S01E01.zh-ru.ass`) entirely.
+  final List<FileSystemEntity> entities = [];
   int listCount = 0;
   try {
-    // Stream to avoid OOM on huge dirs (50w). Yields every 200 entries keep UI alive.
     await for (final entity in directory.list()) {
-      final baseName = p.basenameWithoutExtension(entity.path);
-      groupedEntities.putIfAbsent(baseName, () => []).add(entity);
+      entities.add(entity);
       if (++listCount % 200 == 0) await Future<void>.delayed(Duration.zero);
     }
   } catch (e) {
@@ -401,61 +440,48 @@ Future<FileListResult> getLocalFilesResult(
   final subtitleExtensions = {'ass', 'srt', 'vtt', 'sub'};
   int statCount = 0;
 
-  for (final group in groupedEntities.values) {
-    final videos = group
-        .where((e) => e is! Directory && checkContentType(e.path) == ContentType.video)
-        .toList();
-    final subtitles = group.where((e) {
-      final ext = p.extension(e.path).replaceFirst('.', '');
-      return e is! Directory && subtitleExtensions.contains(ext);
-    }).toList();
-    final others = group.where((e) => !videos.contains(e) && !subtitles.contains(e)).toList();
+  final subtitleMap = getSubtitleMap<FileSystemEntity>(
+    files: entities,
+    getName: (e) => p.basename(e.path),
+    getUri: (e) => e.path,
+  );
 
-    for (final video in videos) {
-      final videoStat = await video.stat();
-      if (++statCount % 100 == 0) await Future<void>.delayed(Duration.zero);
-      final associatedSubtitles = subtitles.map((sub) {
-        final baseName = p.basenameWithoutExtension(video.path);
-        String subTitleName = p.basename(sub.path);
-        final regex = RegExp(r'^' + RegExp.escape(baseName) + r'\.(.+?)\.');
-        final match = regex.firstMatch(subTitleName);
-        if (match != null) {
-          subTitleName = match.group(1) ?? subTitleName;
-        }
-        return Subtitle(name: subTitleName, uri: sub.path);
-      }).toList();
+  for (final entity in entities) {
+    final name = p.basename(entity.path);
+    final isDir = entity is Directory;
+    final ext = p.extension(name).replaceFirst('.', '').toLowerCase();
 
-      fileItems.add(FileItem(
-        storageId: storage.id,
-        storageType: storage.type,
-        name: p.basename(video.path),
-        uri: video.path,
-        path: [...path, p.basename(video.path)],
-        isDir: false,
-        size: videoStat.size,
-        lastModified: videoStat.modified,
-        type: ContentType.video,
-        subtitles: associatedSubtitles,
-      ));
-    }
+    // A subtitle is an association, never a row of its own.
+    if (!isDir && subtitleExtensions.contains(ext)) continue;
 
-    for (final entity in others) {
-      final stat = await entity.stat();
-      if (++statCount % 100 == 0) await Future<void>.delayed(Duration.zero);
-      final isDir = entity is Directory;
-      fileItems.add(FileItem(
-        storageId: storage.id,
-        storageType: storage.type,
-        name: p.basename(entity.path),
-        uri: entity.path,
-        path: [...path, p.basename(entity.path)],
-        isDir: isDir,
-        size: isDir ? 0 : stat.size,
-        lastModified: stat.modified,
-        type: isDir ? ContentType.other : checkContentType(entity.path),
-        subtitles: [],
-      ));
-    }
+    final isVideo = !isDir && checkContentType(name) == ContentType.video;
+    // One unreadable entry must not abort the directory (see
+    // [statFactsOrUnknown]): the row is kept with unknown size/mtime.
+    final facts = await statFactsOrUnknown(
+      entity.stat,
+      onError: (e) =>
+          areaKeyLog.w('getLocalFiles stat failed for ${entity.path}: $e'),
+    );
+    if (++statCount % 100 == 0) await Future<void>.delayed(Duration.zero);
+    fileItems.add(FileItem(
+      storageId: storage.id,
+      storageType: storage.type,
+      name: name,
+      uri: entity.path,
+      path: [...path, name],
+      isDir: isDir,
+      size: isDir ? 0 : facts.size,
+      lastModified: facts.modified,
+      type: isDir
+          ? ContentType.other
+          : isVideo
+              ? ContentType.video
+              : checkContentType(name),
+      // The subtitle's OWN file name is the display label, so an `.ass`/`.srt`
+      // pair stays distinguishable in the track panel (the old language-suffix
+      // label collapsed both to `zh-ru`).
+      subtitles: isVideo ? subtitleMap[subtitleMapKey(name)] ?? [] : [],
+    ));
   }
 
   // An empty listing on Android without the permission is a denial (scoped
@@ -548,7 +574,6 @@ Future<FileListResult> getContentFilesResult(
   List<FileItem> fileItems = [];
 
   for (final file in files) {
-    final basename = p.basenameWithoutExtension(file.name).split('.').first;
     fileItems.add(FileItem(
       name: file.name,
       uri: file.uri,
@@ -557,7 +582,9 @@ Future<FileListResult> getContentFilesResult(
       size: file.isDir ? 0 : file.length,
       lastModified: DateTime.fromMillisecondsSinceEpoch(file.lastModified),
       type: file.isDir ? ContentType.other : checkContentType(file.name),
-      subtitles: isVideoFile(file.name) ? subtitleMap[basename] ?? [] : [],
+      subtitles: isVideoFile(file.name)
+          ? subtitleMap[subtitleMapKey(file.name)] ?? []
+          : [],
     ));
   }
 

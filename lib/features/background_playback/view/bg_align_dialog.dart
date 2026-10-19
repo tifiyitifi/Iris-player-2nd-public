@@ -5,7 +5,6 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/engine/background_playback_engine.dart';
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
-import 'package:iris/features/background_playback/model/enum/bg_align_default.dart';
 import 'package:iris/features/background_playback/model/enum/bg_align_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/services/background_alignment.dart';
@@ -14,8 +13,15 @@ import 'package:iris/features/virtual_media/interaction/controller/foreground_wi
 import 'package:iris/models/player.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/warning_dialogs.dart';
+import 'package:iris/utils/format_duration_to_minutes.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:provider/provider.dart';
+
+/// Which half of the editor a tap on one of the three shared modes targets.
+///
+/// Local-only UI state (never persisted): `update` seeks the running pair right
+/// now; `saveDefault` is read-only — the automatic rule owns the default.
+enum _AlignScope { update, saveDefault }
 
 /// The ONE 副音 alignment editor, shared by two shells:
 ///
@@ -24,28 +30,25 @@ import 'package:provider/provider.dart';
 /// - the quick-bar 对齐 floating card (`BgQuickPanel.align`), which stays
 ///   non-modal so playback keeps running underneath.
 ///
-/// Which half of the editor a tap on one of the three shared modes targets.
+/// 对齐设置 opens with a two-tab switch, mirroring the two things a user can
+/// ask of an anchor:
+/// - 「更新对齐」 re-aligns the RUNNING pair right now: the three [BgAlignMode]
+///   anchors (00:00↔00:00, bg 00:00 at the current fg moment, bg percent at the
+///   current fg moment) plus the read-only line for what the AUTOMATIC rule
+///   applied. Nothing can be re-aligned until 副音 is mixing, so the modes then
+///   stay listed (the card stays reachable for inspection) but render disabled;
+/// - 「默认对齐」 is read-only: the default is decided AUTOMATICALLY from the two
+///   real durations (`resolveAutoAlignAnchor`), so the tab only explains the
+///   rule — there is no option to pick.
 ///
-/// Local-only UI state (never persisted): `update` seeks the running pair
-/// right now, `saveDefault` only rewrites the persisted [BgAlignDefault] for
-/// future alignments and leaves the running pair untouched.
-enum _AlignScope { update, saveDefault }
-
-/// It carries two semantic sections split right after the percent slider:
-/// - 「对齐设置」: a scope switch (「更新对齐」 applies to the running pair
-///   now vs 「默认对齐」 persists for future alignments only), the three
-///   shared [BgAlignMode] anchors (00:00↔00:00, bg 00:00 at the current fg
-///   moment, bg percent at the current fg moment), a hint row inside the
-///   默认对齐 scope showing the current default, and a decoupled percent
-///   slider (tune first, then pick the percent mode; dragging never seeks);
-/// - 「其它设置」: the mandatory remaining-time threshold
-///   (`alignAutoPauseRemainSec`) and the [BgExhaustedAction] taken when the
-///   current 副音 file ends.
+/// Below both tabs sits a decoupled percent slider (tune first, then pick the
+/// percent mode; dragging never seeks), then 「其它设置」: the mandatory
+/// remaining-time threshold (`alignAutoPauseRemainSec`) and the
+/// [BgExhaustedAction] taken when the current 副音 file ends.
 ///
-/// Both inline hints are dismissible forever (the X persists into
-/// `AppState.suppressedWarnings`, restorable from Settings → Warning
-/// dialogs), so a save stays visible at a glance with no popup until the
-/// user opts out.
+/// The anchoring note and the percent caption are dismissible forever (the X
+/// persists into `AppState.suppressedWarnings`, restorable from Settings →
+/// Warning dialogs).
 ///
 /// The content reads NO `MediaQuery` and owns no text field (the threshold
 /// is still picked through a slider dialog), so it is safe in both non-modal
@@ -61,31 +64,34 @@ class BgAlignContent extends HookWidget {
     useListenable(engine);
 
     final mode = store.select(context, (s) => s.alignMode);
-    final def = store.select(context, (s) => s.alignDefault);
-    // 副音 not active (gate closed): editing here is pre-configuration only —
-    // hide the "update now" scope and keep the default ("takes effect next
-    // alignment") surface, so the user can set it up before enabling.
+    // 副音 not active: this card is still reachable (a saved-preference surface),
+    // so it stays inspectable — but there is no running pair to re-align.
     final gateOpen = store.select(context, (s) => s.gateOpen);
+    // The tab switch is local-only (never persisted) and never forced: with the
+    // gate shut the 更新对齐 modes are shown disabled instead of hidden.
+    final scope = useState(_AlignScope.update);
+    final _AlignScope effective = scope.value;
+    // The live preview below needs a real 副音 duration; an unknown one has
+    // nothing to map onto.
+    final bool alignReady = engine.duration > Duration.zero;
+    // The automatic rule compares against the foreground FILE duration (the 副音
+    // side never virtualizes), so the tail anchor's skipped opening is only
+    // computable with it. Duration-only on purpose: the per-tick position
+    // subscription belongs to the leaves, not to this whole editor.
+    final int fgDurMs = useForegroundDuration(context).durationMs;
     final percent = store.select(context, (s) => s.alignPercent);
     final warnSec = store.select(context, (s) => s.alignAutoPauseRemainSec);
     final exhausted = store.select(context, (s) => s.bgExhaustedAction);
-    // Dismiss-forever memory of the two inline hints (restorable from
-    // Settings → Warning dialogs).
+    // Dismiss-forever memory of the percent caption (restorable from
+    // Settings → Warning dialogs). The anchoring note is ALWAYS shown: it is the
+    // whole 「默认对齐」 tab, and the tab itself is optional to open.
     final appStore = useAppStore();
     final suppressed = appStore.select(context, (s) => s.suppressedWarnings);
-    final showDefaultHint =
-        shouldShowWarning(suppressed, kWarningBgAlignDefaultHint);
     final showPercentHint =
         shouldShowWarning(suppressed, kWarningBgAlignPercentHint);
 
-    // Scope + slider draft are local-only: switching scope or dragging the
-    // slider rebuilds nothing outside this content and writes nothing until
-    // the user commits (tap a mode / release the slider).
-    final scope = useState(_AlignScope.update);
-    // While the gate is shut the live "update" scope does not exist; the
-    // effective scope is always the persisted default.
-    final _AlignScope effective =
-        gateOpen ? scope.value : _AlignScope.saveDefault;
+    // The slider draft is local-only: dragging it rebuilds nothing outside this
+    // content and writes nothing until the user commits (release the slider).
     final percentDraft = useState(percent);
     // Re-sync when the persisted share changes elsewhere (e.g. the settings
     // page); a no-op while dragging since the store only changes on release.
@@ -110,6 +116,7 @@ class BgAlignContent extends HookWidget {
         currentFgMs: fgPos,
         bgDurMs: bgDur,
         percent: percent,
+        fgDurMs: fgDurMs,
       );
       store.setAlignOffset(offset);
       store.setAlignMode(mode: m, percent: percent, rerun: false);
@@ -129,39 +136,72 @@ class BgAlignContent extends HookWidget {
         fgPosMs: fgPos,
         bgDurMs: bgDur,
         percent: percent,
+        fgDurMs: fgDurMs,
       );
       store.noteSystemSeek();
       unawaited(engine.seek(Duration(milliseconds: target)));
       store.clearBgExhausted();
     }
 
-    /// Persists [m] as the default for future alignments. Deliberately
-    /// seek-free: the running pair keeps playing exactly as it was.
-    void saveDefault(BgAlignMode m) {
-      unawaited(store.setAlignDefault(defaultForAlignMode(m)));
+    void onModeTap(BgAlignMode m) => applyUpdate(m);
+
+    // The running pair's current mode is the only highlight: there is no
+    // persisted default anymore.
+    bool modeSelected(BgAlignMode m) => mode == m;
+
+    /// The LIVE "after aligning: video X → Sub Audio Y" line for one mode.
+    ///
+    /// The three modes only differ in WHICH 副音 moment maps to the video's
+    /// current moment, and that is impossible to picture from a label — so the
+    /// result is shown as numbers. A mapped position at/after the file's end is
+    /// called out explicitly (it is the case users read as "对齐错了").
+    String? previewFor(BgAlignMode m) {
+      // Pre-configuration (no 副音 running): there is no live pair to preview.
+      if (!gateOpen || !alignReady) return null;
+      final int fgNow = fgPhysicalPositionNow(context);
+      final int bgDur = engine.duration.inMilliseconds;
+      final int target = bgAlignTargetMs(
+        mode: m,
+        fgPosMs: fgNow,
+        bgDurMs: bgDur,
+        percent: percentDraft.value,
+        fgDurMs: fgDurMs,
+      );
+      final String bgText =
+          formatDurationToMinutes(Duration(milliseconds: target));
+      if (target >= bgDur) {
+        return t.bg_align_preview_beyond(bgText);
+      }
+      return t.bg_align_preview(
+        formatDurationToMinutes(Duration(milliseconds: fgNow)),
+        bgText,
+      );
     }
 
-    void onModeTap(BgAlignMode m) {
-      if (effective == _AlignScope.update) {
-        applyUpdate(m);
-      } else {
-        saveDefault(m);
+    /// Label of [m], carrying the numbers that make the answer concrete: the
+    /// percent mode shows the chosen share, and 尾部锚定 shows how much of the
+    /// 副音 opening is skipped to make both files end together.
+    String modeLabel(BgAlignMode m) {
+      switch (m) {
+        case BgAlignMode.sameClock:
+          return t.bg_align_mode_same_clock;
+        case BgAlignMode.bgHeadAtFg:
+          return t.bg_align_mode_bg_head;
+        case BgAlignMode.bgPercent:
+          return t.bg_align_mode_bg_percent_value(percentDraft.value);
+        case BgAlignMode.tailAtFg:
+          final int skip = bgAlignTargetMs(
+            mode: BgAlignMode.tailAtFg,
+            fgPosMs: fgPhysicalPositionNow(context),
+            bgDurMs: engine.duration.inMilliseconds,
+            percent: percentDraft.value,
+            fgDurMs: fgDurMs,
+          );
+          return t.bg_align_mode_tail(
+            formatDurationToMinutes(Duration(milliseconds: skip)),
+          );
       }
     }
-
-    // Each scope highlights its own current value, so the two never read as
-    // duplicates: update shows the running mode, default shows the persisted
-    // one.
-    bool modeSelected(BgAlignMode m) => effective == _AlignScope.update
-        ? mode == m
-        : def == defaultForAlignMode(m);
-
-    String defaultLabel() => switch (def) {
-          BgAlignDefault.fgHead => t.bg_align_default_fg_head,
-          BgAlignDefault.fgPosition => t.bg_align_default_fg_position,
-          BgAlignDefault.bgPercent =>
-            t.bg_align_mode_bg_percent_value(percent),
-        };
 
     Future<void> editWarn() async {
       final v = await _showIntSliderDialog(
@@ -183,62 +223,86 @@ class BgAlignContent extends HookWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _sectionTitle(context, t.bg_align_section_align),
-          // Gate shut: no 副音 is running, so the update-now scope is hidden —
-          // only the persisted default (for the next activation) is editable.
-          if (gateOpen)
-            SegmentedButton<_AlignScope>(
-              segments: [
-                ButtonSegment(
-                  value: _AlignScope.update,
-                  label: Text(t.bg_align_scope_update),
-                ),
-                ButtonSegment(
-                  value: _AlignScope.saveDefault,
-                  label: Text(t.bg_align_scope_default),
-                ),
-              ],
-              selected: {scope.value},
-              onSelectionChanged: (s) => scope.value = s.first,
-            ),
+          // Two tabs: 「更新对齐」 re-aligns the RUNNING pair right now;
+          // 「默认对齐」 is read-only — the default is decided AUTOMATICALLY
+          // (`resolveAutoAlignAnchor`), so the tab only explains the rule. The
+          // switch stays visible even while 副音 is inactive: this card is a
+          // saved-preference surface, kept reachable for pre-configuration and
+          // inspection.
+          SegmentedButton<_AlignScope>(
+            segments: [
+              ButtonSegment(
+                value: _AlignScope.update,
+                label: Text(t.bg_align_scope_update),
+              ),
+              ButtonSegment(
+                value: _AlignScope.saveDefault,
+                label: Text(t.bg_align_scope_default),
+              ),
+            ],
+            selected: {scope.value},
+            onSelectionChanged: (s) => scope.value = s.first,
+          ),
           const SizedBox(height: 8),
-          _radio(
-            context,
-            selected: modeSelected(BgAlignMode.fromFgHead),
-            title: t.bg_align_mode_from_fg_head,
-            onTap: () => onModeTap(BgAlignMode.fromFgHead),
-          ),
-          const SizedBox(height: 4),
-          _radio(
-            context,
-            selected: modeSelected(BgAlignMode.atFgPosition),
-            title: t.bg_align_mode_at_position,
-            onTap: () => onModeTap(BgAlignMode.atFgPosition),
-          ),
-          const SizedBox(height: 4),
-          _radio(
-            context,
-            selected: modeSelected(BgAlignMode.bgPercent),
-            title: t.bg_align_mode_bg_percent_value(percent),
-            onTap: () => onModeTap(BgAlignMode.bgPercent),
-          ),
-          // The default hint lives only in the 默认对齐 scope: it explains
-          // the pending default and makes a save visible at a glance, while
-          // the 更新对齐 scope stays a pure seek surface. With the gate shut it
-          // is ALWAYS shown (and its dismiss X removed): it carries the only
-          // framing the user sees — this setting applies on the next start.
-          if (effective == _AlignScope.saveDefault &&
-              (showDefaultHint || !gateOpen)) ...[
-            const SizedBox(height: 8),
-            _defaultHint(
+          if (effective == _AlignScope.update) ...[
+            // Nothing to re-align until 副音 is mixing: the three manual anchors
+            // stay listed (stable structure) but render disabled.
+            if (!gateOpen) ...[
+              Text(
+                t.bg_align_inactive_hint,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 6),
+            ],
+            _radio(
               context,
-              current: t.bg_align_default_current(defaultLabel()),
-              note: t.bg_align_default_effect_hint,
-              hideTooltip: t.bg_align_hint_hide_forever,
-              onHide: gateOpen
-                  ? () => unawaited(
-                        appStore.suppressWarning(kWarningBgAlignDefaultHint),
-                      )
-                  : null,
+              enabled: gateOpen,
+              selected: modeSelected(BgAlignMode.sameClock),
+              title: t.bg_align_mode_same_clock,
+              subtitle: previewFor(BgAlignMode.sameClock),
+              onTap: () => onModeTap(BgAlignMode.sameClock),
+            ),
+            const SizedBox(height: 4),
+            _radio(
+              context,
+              enabled: gateOpen,
+              selected: modeSelected(BgAlignMode.bgHeadAtFg),
+              title: t.bg_align_mode_bg_head,
+              subtitle: previewFor(BgAlignMode.bgHeadAtFg),
+              onTap: () => onModeTap(BgAlignMode.bgHeadAtFg),
+            ),
+            const SizedBox(height: 4),
+            _radio(
+              context,
+              enabled: gateOpen,
+              selected: modeSelected(BgAlignMode.bgPercent),
+              title: modeLabel(BgAlignMode.bgPercent),
+              subtitle: previewFor(BgAlignMode.bgPercent),
+              onTap: () => onModeTap(BgAlignMode.bgPercent),
+            ),
+            // What the AUTOMATIC rule decided for the running pair (see
+            // `resolveAutoAlignAnchor`). 尾部锚定 has no manual radio, so
+            // without this read-only line the applied anchor would be invisible
+            // — and the user could not tell why the 副音 started mid-file.
+            if (alignReady) ...[
+              const SizedBox(height: 6),
+              Text(
+                t.bg_align_auto_applied(modeLabel(mode)),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ] else ...[
+            // Read-only: the default anchoring IS the automatic rule, so this
+            // tab only explains it. Never dismissible — it is the tab's whole
+            // content, and the tab itself is optional to open.
+            _autoRuleHint(
+              context,
+              title: t.bg_align_auto_rule_title,
+              body: t.bg_align_auto_rule,
             ),
           ],
           const Divider(height: 24),
@@ -313,16 +377,12 @@ class BgAlignContent extends HookWidget {
         ),
       );
 
-  /// The default hint (默认对齐 scope only): shows the current persisted
-  /// default plus the "next alignment, current playback untouched" note, so
-  /// a save is visible at a glance with no popup. The X hides it forever
-  /// (restorable from Settings → Warning dialogs).
-  Widget _defaultHint(
+  /// The default-anchoring note: a read-only explanation of the AUTOMATIC rule.
+  /// Never dismissible — it is the whole 「默认对齐」 tab.
+  Widget _autoRuleHint(
     BuildContext context, {
-    required String current,
-    required String note,
-    required String hideTooltip,
-    VoidCallback? onHide,
+    required String title,
+    required String body,
   }) {
     final theme = Theme.of(context);
     return Container(
@@ -346,10 +406,10 @@ class BgAlignContent extends HookWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(current, style: theme.textTheme.labelMedium),
+                Text(title, style: theme.textTheme.labelMedium),
                 const SizedBox(height: 2),
                 Text(
-                  note,
+                  body,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -357,18 +417,12 @@ class BgAlignContent extends HookWidget {
               ],
             ),
           ),
-          if (onHide != null)
-            _hintHideButton(
-              key: const ValueKey('bg_align_default_hint_hide'),
-              tooltip: hideTooltip,
-              onHide: onHide,
-            ),
         ],
       ),
     );
   }
 
-  /// Compact 24px dismiss button shared by the inline hints: tap hides
+  /// Compact 24px dismiss button used by the percent hint: tap hides it
   /// forever (persisted), long-press/hover explains where to bring it back.
   static Widget _hintHideButton({
     required Key key,
@@ -393,13 +447,17 @@ class BgAlignContent extends HookWidget {
     BuildContext context, {
     required bool selected,
     required String title,
+    String? subtitle,
     required VoidCallback onTap,
     VoidCallback? onLongPress,
+    bool enabled = true,
   }) {
     final theme = Theme.of(context);
+    final Color fg =
+        enabled ? theme.colorScheme.primary : theme.disabledColor;
     return InkWell(
-      onTap: onTap,
-      onLongPress: onLongPress,
+      onTap: enabled ? onTap : null,
+      onLongPress: enabled ? onLongPress : null,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
@@ -411,10 +469,35 @@ class BgAlignContent extends HookWidget {
                   ? Icons.radio_button_checked_rounded
                   : Icons.radio_button_unchecked_rounded,
               size: 20,
-              color: theme.colorScheme.primary,
+              color: fg,
             ),
             const SizedBox(width: 8),
-            Expanded(child: Text(title, style: theme.textTheme.bodyMedium)),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: enabled ? null : theme.disabledColor,
+                    ),
+                  ),
+                  // The live mapping this mode would produce right now — the
+                  // modes are otherwise indistinguishable from their labels.
+                  if (subtitle != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        subtitle,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -605,9 +688,12 @@ Future<void> showBgAlignModal(
         enabled: store.state.enabled,
         bgExhausted: store.state.bgExhausted,
       )) {
-    final int target = bgAlignTargetMs(
+    final int target = modalCloseRealignTargetMs(
       mode: store.state.alignMode,
       fgPosMs: fgPhysicalPositionNow(context),
+      // The FILE duration, not null: 尾部锚定's anchor is `fgDur ↔ bgDur`, and a
+      // missing one degraded it to 同刻度 on close only.
+      fgDurMs: fgPhysicalDurationNow(context),
       bgDurMs: engine.duration.inMilliseconds,
       percent: store.state.alignPercent,
     );

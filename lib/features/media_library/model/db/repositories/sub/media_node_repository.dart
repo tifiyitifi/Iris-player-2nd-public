@@ -167,6 +167,48 @@ class MediaNodeRepository {
     ];
   }
 
+  /// Resolves existing FILE nodes by their persisted SAF document [uri].
+  ///
+  /// A SAF single-picked file has an EMPTY path, so the document uri is the
+  /// only identity that can round-trip it (see [MediaNode.occurrencePath]).
+  /// Vanished rows are simply absent.
+  Future<List<MediaNode>> nodesByUris(Set<String> uris) async {
+    if (uris.isEmpty) return const [];
+    final rows = await _nodesDao.getByUris(uris);
+    return rows
+        .map(MediaNodeDriftAdapter.fromDb)
+        .where((n) => n.maybeMap(file: (_) => true, orElse: () => false))
+        .toList(growable: false);
+  }
+
+  /// Resolves existing FILE nodes for canonical media keys, ALSO matching SAF
+  /// single-picked rows through their persisted document `uri`.
+  ///
+  /// [nodesByMediaKeys] addresses rows via the DB `path` column, but a SAF
+  /// single-picked file stores an EMPTY path and carries its identity in `uri`
+  /// ([MediaNode.occurrencePath] returns the document uri for it). A path-keyed
+  /// lookup can therefore never see it. [alsoByUris] carries those document
+  /// uris (from the live files) and is resolved through [nodesByUris]; the
+  /// union is returned, de-duplicated by node identity. Vanished rows stay
+  /// absent — callers silently skip them, exactly as before.
+  Future<List<MediaNode>> nodesByMediaKeysOrUris(
+    Set<String> keys, {
+    Iterable<String> alsoByUris = const [],
+    int concurrency = 16,
+  }) async {
+    final pathNodes = await nodesByMediaKeys(keys, concurrency: concurrency);
+    final uris = <String>{for (final u in alsoByUris) if (u.isNotEmpty) u};
+    if (uris.isEmpty) return pathNodes;
+    final uriNodes = await nodesByUris(uris);
+    if (uriNodes.isEmpty) return pathNodes;
+    final seen = <String>{for (final n in pathNodes) n.id};
+    return <MediaNode>[
+      ...pathNodes,
+      for (final n in uriNodes)
+        if (seen.add(n.id)) n,
+    ];
+  }
+
   Future<List<MediaNode>> _nodesInStorage(
     String storageId,
     List<String> paths,

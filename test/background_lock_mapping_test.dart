@@ -41,6 +41,29 @@ void main() {
           reason: 'the 0-length entry is skipped at the boundary');
     });
 
+    test('bgContinuationPublishable refuses an unresolved prefix', () {
+      // Known through index 0 → publishable there; an unknown/zero entry inside
+      // the prefix makes offsetOf() understated, so a pin built from it would be
+      // WRONG — refuse until the durations resolve.
+      final full = BgQueueTimeline(
+        const [threeMinutes, threeMinutes, threeMinutes],
+      );
+      expect(bgContinuationPublishable(full, 0), isTrue);
+      expect(bgContinuationPublishable(full, 2), isTrue);
+
+      final hole = BgQueueTimeline(
+        const [threeMinutes, 0, threeMinutes],
+        unknownIndices: const {1},
+      );
+      expect(bgContinuationPublishable(hole, 0), isTrue);
+      expect(bgContinuationPublishable(hole, 1), isFalse,
+          reason: 'the open entry itself has no resolved duration');
+      expect(bgContinuationPublishable(hole, 2), isFalse,
+          reason: 'an unresolved entry sits inside the prefix');
+
+      expect(bgContinuationPublishable(full, -1), isFalse);
+    });
+
     test('empty timeline degrades to (0,0)', () {
       final t = BgQueueTimeline(const []);
       expect(t.isEmpty, isTrue);
@@ -90,13 +113,42 @@ void main() {
       expect(target.localMs, 2 * 60 * 1000);
     });
 
-    test('negative target clamps to the queue head', () {
+    test('negative target clamps to the queue head by default', () {
       final target = resolveLockTarget(
         fgMs: 1000,
         offsetMs: 10 * 60 * 1000,
         timeline: timeline,
       );
       expect(target.fileIndex, 0);
+      expect(target.localMs, 0);
+      expect(target.wrapped, isFalse);
+    });
+
+    test('negative target counts BACK through the list under wrapBackward', () {
+      // "fg 退格回 0" with a 5:00 offset: virtual −5:00, counted back from the
+      // 9:00 list end → 4:00 → file B at 1:00 (NOT the queue head).
+      final target = resolveLockTarget(
+        fgMs: 0,
+        offsetMs: 5 * 60 * 1000,
+        timeline: timeline,
+        wrapBackward: true,
+      );
+      expect(target.wrapped, isTrue);
+      expect(target.virtualMs, 4 * 60 * 1000);
+      expect(target.fileIndex, 1);
+      expect(target.localMs, 1 * 60 * 1000);
+    });
+
+    test('wrapBackward is inert on a zero-length timeline', () {
+      final target = resolveLockTarget(
+        fgMs: 0,
+        offsetMs: 1000,
+        timeline: BgQueueTimeline(const [0, 0]),
+        wrapBackward: true,
+      );
+      // No positive total to count back through: the head clamp stands.
+      expect(target.virtualMs, 0);
+      expect(target.wrapped, isFalse);
       expect(target.localMs, 0);
     });
 

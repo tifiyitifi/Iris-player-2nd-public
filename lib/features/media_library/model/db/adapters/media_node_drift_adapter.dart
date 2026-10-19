@@ -1,10 +1,16 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:iris/features/media_library/model/enum/media_node.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/db/storage_scope.dart';
+import 'package:iris/models/file.dart' show Subtitle;
+import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
+
+final _log = AreaKeyLog(LogKeys.legacyDb);
 
 extension MediaNodeDriftAdapter on MediaNode {
   static MediaNode fromDb(MediaNodesTableData row) {
@@ -56,6 +62,7 @@ extension MediaNodeDriftAdapter on MediaNode {
       sizeInBytes: row.sizeInBytes,
       durationMs: row.durationMs,
       uri: row.uri,
+      subtitles: _decodeSubtitles(row.subtitlesJson),
       width: row.width,
       height: row.height,
       modifiedAt: row.modifiedAt,
@@ -80,6 +87,31 @@ extension MediaNodeDriftAdapter on MediaNode {
   static String? _canonicalParentOrNull(String? raw) {
     final canonical = canonicalDbPathOrNull(raw);
     return (canonical == null || canonical.isEmpty) ? null : canonical;
+  }
+
+  /// The `media_nodes.path` value for a FILE node: the storage-relative path, or
+  /// the document `uri` when the path is EMPTY.
+  ///
+  /// A SAF single-picked file (`ACTION_OPEN_DOCUMENT`) is NOT under a tree, so it
+  /// has no segment path and its only stable identity is the persisted document
+  /// uri — which [MediaNode.occurrencePath] already uses. The DB's
+  /// `UNIQUE(data_scope_id, path)` is what every upsert and path-keyed lookup is
+  /// built on, so writing `path = ''` for it made the SECOND single pick of a
+  /// storage overwrite the first (only the last one survived) and let a duration
+  /// write-back address whichever single pick happened to own the empty path.
+  /// Storing the uri as the canonical path gives each single pick its own row
+  /// while keeping `occurrencePath` (and every media key derived from it)
+  /// unchanged: a uri canonicalizes to itself.
+  static String canonicalFilePath({
+    required String storageId,
+    required List<String> path,
+    String? uri,
+  }) {
+    final domain = canonicalDbPath(path.join('/'));
+    // Prefer the real segment path; fall back to the uri ONLY when there is no
+    // path to speak of (a path-less SAF single pick, or any uri-only row).
+    final resolved = domain.isNotEmpty ? domain : canonicalDbPath(uri ?? '');
+    return StoragePathCodec.relativize(storageId, resolved);
   }
 
   /// Parent path in the canonical DB form, with the storage root normalised to
@@ -137,8 +169,13 @@ extension MediaNodeDriftAdapter on MediaNode {
         );
       },
       file: (file) {
-        final path = StoragePathCodec.relativize(
-            file.storageId, canonicalDbPath(file.path.join('/')));
+        // The uri is the identity of a path-less SAF single pick, so it becomes
+        // the canonical path (see [canonicalFilePath]).
+        final path = canonicalFilePath(
+          storageId: file.storageId,
+          path: file.path,
+          uri: file.uri,
+        );
         final parentRaw = _canonicalParentOrNull(
             file.parentPath ?? _calcParentPath(file.path));
         final parent = _relativizedParentOrNull(file.storageId, parentRaw);
@@ -160,6 +197,7 @@ extension MediaNodeDriftAdapter on MediaNode {
           // (rescan-preserving rule — a plain rescan never wipes probe data).
           durationMs: _probeValue(file.durationMs),
           uri: _probeTextValue(file.uri),
+          subtitlesJson: _subtitlesValue(file.subtitles),
           width: _probeValue(file.width),
           height: _probeValue(file.height),
           pixelCount: _probeValue(_pixelCountOf(file.width, file.height)),
@@ -196,6 +234,64 @@ extension MediaNodeDriftAdapter on MediaNode {
   /// across rescans that cannot see it).
   static Value<String?> _probeTextValue(String? v) =>
       v == null ? const Value.absent() : Value(v);
+
+  /// Whether a stored `subtitles_json` payload and a freshly listed set carry
+  /// the same external tracks — the comparison the incremental scan needs.
+  ///
+  /// Adding or deleting a subtitle BESIDE a video leaves the video's own size
+  /// and mtime untouched, so a size/mtime-only skip predicate keeps serving the
+  /// stale set forever: a deleted track is offered (and fails to load) on every
+  /// open, and a new one never appears.
+  ///
+  /// NULL [storedJson] (never captured — a pre-v50 row) is deliberately NOT
+  /// "same": the row is re-upserted once so it converges on a known list. NULL
+  /// [listed] means the caller's lane cannot see subtitles at all, so there is
+  /// nothing to converge and the upsert would carry `Value.absent()` anyway.
+  static bool sameSubtitles(String? storedJson, List<Subtitle>? listed) {
+    if (storedJson == null) return false;
+    if (listed == null) return true;
+    // Fast path for the overwhelmingly common "no external tracks" row: one
+    // string compare instead of a JSON decode on every file of a 500k scan.
+    if (storedJson == '[]') return listed.isEmpty;
+    if (listed.isEmpty) return false;
+    final stored = _decodeSubtitles(storedJson);
+    if (stored == null) return false;
+    return sameSubtitleLists(stored, listed);
+  }
+
+  /// Order-insensitive equality of two decoded association sets.
+  static bool sameSubtitleLists(List<Subtitle>? a, List<Subtitle>? b) {
+    if (a == null || b == null) return a == null && b == null;
+    if (a.length != b.length) return false;
+    return a.toSet().containsAll(b);
+  }
+
+  /// JSON-encodes [subtitles] for the `subtitles_json` column.
+  ///
+  /// NULL (unknown) writes ABSENT so an upsert from a lane that cannot see
+  /// subtitles never clears the stored associations; a known list — including
+  /// the empty one — is written verbatim (`[]` records "known to have none").
+  static Value<String?> _subtitlesValue(List<Subtitle>? subtitles) {
+    if (subtitles == null) return const Value.absent();
+    return Value(jsonEncode([for (final s in subtitles) s.toJson()]));
+  }
+
+  /// Decodes `subtitles_json`. NULL stays NULL (unknown); a malformed value
+  /// degrades to the empty list rather than failing the row read.
+  static List<Subtitle>? _decodeSubtitles(String? raw) {
+    if (raw == null) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const <Subtitle>[];
+      return [
+        for (final entry in decoded)
+          if (entry is Map) Subtitle.fromJson(entry.cast<String, dynamic>()),
+      ];
+    } catch (e) {
+      _log.w('MediaNodeDriftAdapter: bad subtitles_json, ignoring: $e');
+      return const <Subtitle>[];
+    }
+  }
 
   /// Cached resolution metric; derived at write time so ORDER BY stays a
   /// plain column.

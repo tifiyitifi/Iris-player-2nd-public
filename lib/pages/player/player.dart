@@ -42,6 +42,8 @@ import 'package:iris/features/background_playback/store/use_background_playback_
 import 'package:iris/features/control_group/view/control_group_floating_button.dart';
 import 'package:iris/features/playback_tools/view/frame_tools_float_panel.dart';
 import 'package:iris/features/osd/view/osd_overlay.dart';
+import 'package:iris/features/screen_lock/store/use_screen_lock_store.dart';
+import 'package:iris/features/screen_lock/view/screen_lock_overlay.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/ab_loop_overlay.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/key_sequence_overlay.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
@@ -126,10 +128,23 @@ class Player extends HookWidget {
     useAppLifecycle();
 
     // Latch-proof scrub state: the player page owns every scrub surface, so
-    // leaving it must drop any session whose end event was lost.
+    // leaving it must drop any session whose end event was lost. The screen
+    // lock is dropped with it: a lock must never outlive the session it armed
+    // (the next video would otherwise open with the guard silently still on).
     useEffect(() {
-      return () => useScrubDragStore().resetAll();
+      return () {
+        useScrubDragStore().resetAll();
+        useScreenLockStore().reset();
+      };
     }, const <Object?>[]);
+
+    // Screen lock (see features/screen_lock): drives the whole-player chrome
+    // gate. Armed → the controls are dropped so nothing shows under the guard,
+    // and the auto-hide timer is cancelled (hideControl does it) so the bar
+    // cannot resurface while locked. Released → chrome stays hidden until the
+    // user taps, which is the normal post-lock state.
+    final bool screenLocked =
+        useScreenLockStore().select(context, (s) => s.locked);
 
     final cover = useCover();
 
@@ -393,6 +408,18 @@ class Player extends HookWidget {
       return () => progressHideTimer.value?.cancel();
     }, []);
 
+    // Screen lock armed → drop the chrome (control bar + title + progress chip).
+    // This runs on the lock EDGE only; the released edge deliberately does
+    // nothing, so nothing re-shows the bar on unlock (leaving no startup
+    // side-effect: a plain `showControl()` on the initial false would have
+    // armed the click latch at boot).
+    useEffect(() {
+      if (!screenLocked) return null;
+      hideControl();
+      usePlayerUiStore().updateIsShowProgress(false);
+      return null;
+    }, [screenLocked]);
+
     useEffect(() {
       if (isDesktop) {
         windowManager.setTitle(title);
@@ -504,7 +531,11 @@ class Player extends HookWidget {
             // used to fall straight through to app exit below.
             switch (resolvePlayerBackDisposition(
                 isShowGestureTips:
-                    usePlayerUiStore().state.isShowGestureTips)) {
+                    usePlayerUiStore().state.isShowGestureTips,
+                isScreenLocked: useScreenLockStore().state.locked)) {
+              case PlayerBackDisposition.unlockScreen:
+                useScreenLockStore().unlock();
+                return;
               case PlayerBackDisposition.closeGestureGuide:
                 usePlayerUiStore().updateIsShowGestureTips(false);
                 return;
@@ -665,6 +696,18 @@ class Player extends HookWidget {
                           clampDropAppendPercent(dropZonePercent),
                     ),
                   ),
+                // Screen lock guard — TOPMOST on purpose: its full-screen
+                // barrier must swallow every pointer before the gesture layer
+                // (or any other overlay below) can see one. The chrome reuses
+                // the normal title content and clears the camera cutout; it
+                // shows/hides showControl-style and either edge button unlocks.
+                ScreenLockOverlay(
+                  title: title,
+                  queueLabel: queueLabel,
+                  tagSuffix: tagSuffix,
+                  bgTitleSuffix: bgTitleSuffix,
+                  bgTitleNoMedia: bgTitleNoMedia,
+                ),
               ],
             );
           },

@@ -8,6 +8,50 @@ import 'package:iris/features/settings_transfer/services/transfer_service.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/widgets/dialogs/show_message_dialog.dart';
 
+/// Asks whether to keep exporting when some selected sections failed.
+///
+/// Returns true when the user accepts a partial file, false to abort. Takes a
+/// [NavigatorState] (captured before the awaits) so it survives the export
+/// sheet being popped, matching the flow's other dialogs.
+Future<bool> _confirmPartialExport(
+  NavigatorState navigator,
+  List<String> failedSections,
+) async {
+  if (!navigator.mounted) return false;
+  final ok = await showDialog<bool>(
+    context: navigator.context,
+    builder: (ctx) {
+      final t = getLocalizations(ctx);
+      return AlertDialog(
+        title: Text(t.transfer_export_partial_title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.transfer_export_partial_body),
+            const SizedBox(height: 8),
+            // One line per section, each already localized: no sentence is
+            // assembled from fragments.
+            for (final key in failedSections)
+              Text('- ${TransferSectionX.fromKey(key)?.label(t) ?? key}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(t.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(t.transfer_export_partial_continue),
+          ),
+        ],
+      );
+    },
+  );
+  return ok ?? false;
+}
+
 Future<void> showTransferExportDialog(BuildContext context) async {
   final selected = <String>{for (final k in TransferCatalog.allKeys) k};
   // Encryption: only when networkStorages selected
@@ -147,18 +191,34 @@ Future<void> showTransferExportDialog(BuildContext context) async {
                   Navigator.pop(ctx);
 
                   try {
-                    final jsonStr = await TransferService.buildExport(
+                    final result = await TransferService.buildExport(
                       selectedSections: sel,
                       passphrase: hasNet ? pass : null,
                       passphraseKind: hasNet ? kind : null,
                     );
-                    // Ensure no plaintext password when encrypted
-                    if (hasNet && pass.isNotEmpty) {
-                      // quick check that file doesn't contain raw password substrings is done in tests,
-                      // not here.
+                    // A section whose encoder failed is written as `payload: []`,
+                    // indistinguishable from an empty one: without this the file
+                    // reads as a complete backup while restoring nothing for that
+                    // section. Let the user choose whether a partial file is
+                    // still worth keeping.
+                    if (result.isPartial) {
+                      final proceed = await _confirmPartialExport(
+                          navigator, result.failedSections);
+                      if (!proceed) return;
                     }
                     final fileName = await getDefaultTransferFileName(encrypted: hasNet && pass.isNotEmpty);
-                    await saveTransferFile(jsonStr, fileName);
+                    await saveTransferFile(result.json, fileName);
+                    // The audit records a SUCCESSFUL export, so it is written
+                    // here — after the file landed and after the partial-export
+                    // choice above. Recording it in `buildExport` left an "ok"
+                    // entry behind when the user declined the partial file.
+                    if (hasNet) {
+                      await TransferService.auditExport(
+                        sections: sel,
+                        encrypted: true,
+                        passphraseKind: kind,
+                      );
+                    }
                     await showMessageDialog(navigator, message: t.export_success, type: MessageDialogType.success);
                   } catch (e) {
                     await showMessageDialog(navigator, message: '${t.export_failed}: $e', type: MessageDialogType.error);

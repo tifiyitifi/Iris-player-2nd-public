@@ -135,6 +135,15 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     return out;
   }
 
+  /// Every node whose persisted document [uri] is one of [uris]. A SAF
+  /// single-picked file carries no path, so the document uri is its only
+  /// identity (see [MediaNode.occurrencePath]).
+  Future<List<MediaNodesTableData>> getByUris(Iterable<String> uris) {
+    final list = uris.toSet().toList(growable: false);
+    if (list.isEmpty) return Future.value(const []);
+    return (select(mediaNodesTable)..where((t) => t.uri.isIn(list))).get();
+  }
+
   /// Upserts by `(storage_id, path)` and preserves the playback_* progress
   /// columns (rescan-preserving rule). [MediaNode.toCompanion] intentionally
   /// omits progress, so the conflict update never touches it.
@@ -367,6 +376,72 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     );
   }
 
+  /// Moves ONE node row to [newPath] (same storage), rewriting its name and
+  /// normalized name. Used for a case-only rename on a case-insensitive
+  /// filesystem: the row keeps its id, probe data and playback progress instead
+  /// of being deleted and re-inserted. Returns the number of rows affected.
+  Future<int> renameNodePath({
+    required String storageId,
+    required String oldPath,
+    required String newPath,
+    required String name,
+  }) {
+    return (update(mediaNodesTable)
+          ..where((t) =>
+              t.dataScopeId.equals(StorageScope.of(storageId)) &
+              t.path.equals(oldPath)))
+        .write(MediaNodesTableCompanion(
+      path: Value(newPath),
+      name: Value(name),
+      normalizedName: Value(name.toLowerCase()),
+    ));
+  }
+
+  /// Rewrites the ABSOLUTE local subtitle URIs stored in `subtitles_json` that
+  /// live under [oldBase].
+  ///
+  /// The video path is storage-relative and gets rebuilt at open time, but an
+  /// external subtitle is an absolute snapshot captured at scan time. Without
+  /// this, a drive-letter remap (E: → F:) left every subtitle pointing at the
+  /// old drive while its video played from the new one. Returns the number of
+  /// rows written.
+  Future<int> remapSubtitleUris({
+    required String storageId,
+    required String oldBase,
+    required String newBase,
+  }) async {
+    if (oldBase.isEmpty || newBase.isEmpty || oldBase == newBase) return 0;
+    final rows = await customSelect(
+      'SELECT id, subtitles_json FROM media_nodes '
+      'WHERE data_scope_id = ? AND subtitles_json IS NOT NULL '
+      "AND subtitles_json <> '[]'",
+      variables: [Variable.withString(StorageScope.of(storageId))],
+    ).get();
+    var changed = 0;
+    for (final row in rows) {
+      try {
+        final raw = row.read<String>('subtitles_json');
+        final next = remapSubtitleJsonUris(
+          raw,
+          oldBase: oldBase,
+          newBase: newBase,
+        );
+        if (next == null) continue;
+        await customStatement(
+          'UPDATE media_nodes SET subtitles_json = ? WHERE id = ?',
+          [next, row.read<int>('id')],
+        );
+        changed++;
+      } catch (e) {
+        // One row's bad payload must not abort the shared remap transaction
+        // (see remapSubtitleJsonUris). Skip it and keep going.
+        AreaKeyLog(LogKeys.legacyDb)
+            .w('remapSubtitleUris: skipped row ${row.read<int>('id')}: $e');
+      }
+    }
+    return changed;
+  }
+
   /// Marks a directory node as scan-done with current timestamp.
   Future<void> markScanDone(String storageId, String path) async {
     final canonical = StoragePathCodec.relativize(storageId, canonicalDbPath(path));
@@ -502,7 +577,17 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
       String storageId, String path) async {
     final canonical = StoragePathCodec.relativize(storageId, canonicalDbPath(path));
     final row = await getByPath(storageId, canonical);
-    if (row != null || canonical == path) return row;
+    if (row != null) return row;
+    // A SAF document uri now keeps its `content://` scheme (`safSegmentsOf`),
+    // while rows written before that fix sit under the COLLAPSED key
+    // (`content:/…` — the form v23 repaired). Address both so an existing single
+    // pick is never orphaned by a query built from the live uri.
+    final collapsed = collapsedSafSchemePath(canonical);
+    if (collapsed != null) {
+      final legacy = await getByPath(storageId, collapsed);
+      if (legacy != null) return legacy;
+    }
+    if (canonical == path) return row;
     return getByPathRaw(storageId, path);
   }
 
@@ -755,10 +840,12 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     final rows = await customSelect(
       "SELECT path, name FROM media_nodes "
       "WHERE data_scope_id = ? AND node_kind = 'file' "
-      'AND path LIKE ? AND uri IS NULL LIMIT ?',
+      // The SAF tree id is percent-encoded and may contain `_`; escape the
+      // prefix so `%`/`_` are literals, exactly like every other LIKE here.
+      "AND path LIKE ? ESCAPE '\\' AND uri IS NULL LIMIT ?",
       variables: [
         Variable.withString(StorageScope.of(storageId)),
-        Variable.withString('$treePrefix/%'),
+        Variable.withString('${escapeLike(treePrefix)}/%'),
         Variable.withInt(limit),
       ],
       readsFrom: {mediaNodesTable},
@@ -817,8 +904,10 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
   }
 
   /// Resolves the exact stored `path` of a row for [path]: returns the
-  /// canonical form when a canonical row exists, else the caller's raw form
-  /// when a legacy (leading-slash) row exists, else null.
+  /// canonical form when a canonical row exists, else the COLLAPSED SAF scheme
+  /// form of a pre-v23 row (`content://a/b` → `content:/a/b`, the shape
+  /// MigrationV23 left behind), else the caller's raw form when a legacy
+  /// (leading-slash) row exists, else null.
   ///
   /// A null return means the write is silently dropped by the caller — log
   /// it so a path-shape mismatch between producers and the DB is visible
@@ -827,6 +916,15 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     final canonical = StoragePathCodec.relativize(storageId, canonicalDbPath(path));
     final canonicalRow = await getByPath(storageId, canonical);
     if (canonicalRow != null) return canonical;
+    // A SAF document uri keeps its `content://` scheme, while rows written
+    // before that fix sit under the COLLAPSED key: address both, exactly like
+    // [getByPathCanonical], so a duration/dims write-back onto a pre-fix single
+    // pick is not dropped as "no row".
+    final collapsed = collapsedSafSchemePath(canonical);
+    if (collapsed != null) {
+      final collapsedRow = await getByPath(storageId, collapsed);
+      if (collapsedRow != null) return collapsed;
+    }
     if (canonical == path) {
       AreaKeyLog(LogKeys.legacyDb)
           .w('resolveStoredPath miss: no row for $storageId:$path');

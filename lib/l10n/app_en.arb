@@ -311,6 +311,9 @@
   "transfer_export_pass_empty": "A passphrase is required to export network storages",
   "transfer_export_pass_numeric_bad": "Numeric passphrase needs at least 4 digits",
   "transfer_export_pass_too_short": "Passphrase needs at least 4 characters",
+  "transfer_export_partial_title": "Some sections failed to export",
+  "transfer_export_partial_body": "These sections could not be exported. Export the rest anyway? The saved file will not contain them.",
+  "transfer_export_partial_continue": "Export the rest",
   "transfer_import_decrypt_title": "Enter passphrase to decrypt",
   "transfer_import_pass_label": "Passphrase",
   "transfer_import_pass_empty": "Passphrase cannot be empty",
@@ -881,7 +884,7 @@
   "set_window_fit_mode_desc": "Fit the window to each video's resolution on open, or keep the current window size (desktop only)",
 
   "set_snake_fine_window_desc": "+-seconds around the anchor (shared)",
-  "set_seek_step_seconds_desc": "One shared step: double-tap, vertical swipe and dial corners",
+  "set_seek_step_seconds_desc": "Shared step for double-tap, vertical swipe and dial corners. The value is a minimum target: the media-kit backend lands on the nearest keyframe, so the real jump can be larger than the step (priority: smooth playback).",
   "set_keyboard_shortcut_scheme_desc": "PotPlayer-aligned Windows keys. Falls back to IRIS classic while the metadata system is off",
   "set_desktop_control_bar_layout_desc": "Three rows: position/duration above a full-width seek bar, then the buttons. Falls back to the one-line bar while the metadata system is off",
   "set_warning_dialog_prefs_desc": "Choose which recoverable warnings may be silenced. Destructive and error dialogs always show",
@@ -1622,7 +1625,6 @@
   "lib_open_with": "Open with another app",
   "lib_play_append": "Play Append",
   "lib_add_as_source": "Add as Source",
-  "lib_add_as_bg_source": "Add as audio source",
   "lib_add_as_vm_merge": "Add as virtual merge",
   "lib_create_library": "Create Library",
   "lib_batch_create": "Batch Create Libraries",
@@ -1827,6 +1829,8 @@
   "control_group_floating_show_portrait": "Show in portrait",
   "control_group_floating_show_desktop": "Show on desktop",
   "control_group_button_tip": "Switch bottom control group",
+  "screen_lock_lock": "Lock screen",
+  "screen_lock_unlock": "Unlock",
   "control_group_playback": "Playback controls",
   "control_group_background": "Sub-audio controls",
   "phone_mode_normal": "Normal controls",
@@ -2379,6 +2383,30 @@
   "track_subtitle": "Subtitle",
   "track_audio": "Audio",
   "track_sync_reset": "Reset",
+  "track_sync_earlier": "{seconds}s earlier",
+  "@track_sync_earlier": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "track_sync_later": "{seconds}s later",
+  "@track_sync_later": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "track_sync_step": "±{seconds}s",
+  "@track_sync_step": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "track_subtitle_load_failed": "Could not load subtitle \"{name}\". The file may be missing on the server or blocked by it.",
+  "@track_subtitle_load_failed": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
   "osd_dock_shown": "Playlist dock shown",
   "osd_dock_hidden": "Playlist dock hidden",
   "osd_dock_docked": "Playlist: docked",
@@ -2750,12 +2778,33 @@
   "update_download_interrupted": "The download was interrupted.",
   "update_download_size_mismatch": "The downloaded file does not match the expected size.",
   "update_download_hash_mismatch": "The downloaded file does not match the published checksum.",
+  "update_checksum_unavailable": "This release publishes no checksum index, so the download is only checked against its advertised size.",
+  "update_checksum_unlisted": "The release's checksum index does not list {file}, so the download was refused. The package on the release page may be incomplete or modified; please try again later.",
+  "@update_checksum_unlisted": {
+    "placeholders": {
+      "file": {"type": "String"}
+    }
+  },
+  "update_verification_unavailable": "This release publishes neither a checksum index nor a size for {file}, so the update could not be verified and was not downloaded. Please try again later.",
+  "@update_verification_unavailable": {
+    "placeholders": {
+      "file": {"type": "String"}
+    }
+  },
   "update_download_not_writable": "IRIS could not write the update package to this device. There may not be enough free space, or its update folder may not be writable. Nothing is wrong with your network — free up some space and try again.",
   "update_install_confirm_title": "Install update",
   "update_install_confirm_body": "IRIS will close and the update will be installed. The current playback position is saved first.",
+  "update_install_confirm_body_portable": "IRIS will close, the portable updater overwrites the program files, then IRIS reopens automatically. userdata is kept.",
   "update_install_failed": "The installer could not be started.",
+  "update_handoff_integrity_failed": "The downloaded package no longer matches what was verified, so it was not installed. It has been deleted - please download it again.",
   "update_install_needs_permission_title": "Permission required",
   "update_install_needs_permission_body": "Allow IRIS to install this update, then try again.",
+  "update_install_path_unsupported": "IRIS could not start the portable updater: a folder path contains a character Windows' command interpreter expands (such as % ! & ^ or parentheses), so the update cannot be handed over automatically. Run portable_update_by_zip.ps1 from the IRIS folder by hand and point it at this package:\n{path}",
+  "@update_install_path_unsupported": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
   "update_open_settings": "Open settings",
   "update_will_download": "Will download: {name} · {size}",
   "@update_will_download": {
@@ -2768,6 +2817,25 @@
   "@update_use_universal": {
     "placeholders": {
       "size": {"type": "String"}
+    }
+  },
+  "update_portable_blocked_title": "Cannot update automatically",
+  "update_portable_blocked_updater_missing": "This portable package has no portable updater next to the executable (portable_update_by_zip.ps1), so IRIS cannot overwrite its own program files. Download the full portable package from the release page again.",
+  "update_portable_blocked_package_unusable": "The downloaded update package is incomplete or damaged. It has been deleted and nothing was installed - please download it again.",
+  "update_portable_blocked_not_writable": "The folder holding IRIS cannot be written to (usually because it was extracted into a read-only location such as Program Files), so IRIS cannot overwrite its own files. Move the whole IRIS folder somewhere writable and try again.",
+  "update_report_applied_title": "Update installed",
+  "update_report_applied_body": "Updated to v{version}.",
+  "@update_report_applied_body": {
+    "placeholders": {
+      "version": {"type": "String"}
+    }
+  },
+  "update_report_incomplete_title": "The last update did not finish",
+  "update_report_incomplete_body": "The last attempt was to update to v{version}, but IRIS started on the old version, which means the program files were not replaced. The downloaded package is kept in {folder} - double-click portable_update_by_zip.bat next to the executable to finish the update by hand.",
+  "@update_report_incomplete_body": {
+    "placeholders": {
+      "version": {"type": "String"},
+      "folder": {"type": "String"}
     }
   },
   "set_legacy_compat_row": "Legacy compatibility",
@@ -2795,6 +2863,12 @@
   "dlg_known_issues_vm_multiselect_body": "In the scenario play queue, a merged virtual item (the [vm]-prefixed row) does not take part in multi-select: it shows no checkbox, and bulk operations (exclude, remove from tag, and the keyboard bulk-remove keys) skip it. Tapping to play is unaffected. To exclude or un-tag its media, act on the individual real files that make up the merge instead.",
   "dlg_known_issues_scenario_sort_header": "Scenario play queue: sorting by modified date groups by folder first",
   "dlg_known_issues_scenario_sort_body": "When the scenario play queue has 同目录连续 (same-directory-contiguous) enabled, it sorts by DIRECTORY first and by the selected field second, so a modified-time sort is not one global time order: only files inside the same folder are ordered by time, whereas PotPlayer's playlist sorts the whole list by date. This is why the queue can look differently ordered from PotPlayer. Untick same-directory-contiguous in the sort menu for a flat, whole-list sort. The timestamp is the file's modification time captured at scan time (millisecond precision); entries that were never scanned carry no timestamp and always sort last.",
+  "dlg_known_issues_seek_step_header": "Step seek is keyframe-quantised (media_kit / mpv)",
+  "dlg_known_issues_seek_step_body": "Fast step seek (left/right, double-tap) uses mpv's native relative keyframe seek, the same one mpv's own arrow keys use. It lands on the nearest keyframe, so the setting's seconds are a minimum rather than an exact distance: on a file whose keyframe interval is larger than the step, one press jumps a whole keyframe interval (e.g. a 3 s step lands ≈ 4 s on a 4 s-GOP file). mpv behaves identically. Seeking to exactly N seconds would require a precise seek, which decodes frame-by-frame from the previous keyframe and visibly freezes the picture; IRIS deliberately prioritises smooth playback over seek precision.",
+  "dlg_known_issues_bg_anchor_header": "Automatic anchoring for Sub Audio alignment",
+  "dlg_known_issues_bg_anchor_body": "When Sub Audio starts, or when you switch to another Sub Audio file (from the list, or with the previous/next buttons), the anchor is decided automatically from the two real durations: Sub Audio LONGER than the video → same clock (video 10:00 ↔ Sub Audio 10:00, and the Sub Audio keeps playing past the video's end); Sub Audio SHORTER and the video's remaining time fits inside it → the Sub Audio's END is aligned with the video's END (the Sub Audio can no longer run out early, but its opening is skipped by that difference, so it may start mid-file); otherwise → Sub Audio 00:00 at the video's current position. Default anchoring is no longer a selectable option — the alignment dialog only explains this rule, and its manual modes are live updates: a manual \"update alignment\" lasts for the current session only, and the automatic rule returns after a restart. A tail-anchored pair also skips the \"Sub Audio is about to run out\" prompt, because it runs out exactly when the video does.",
+  "dlg_known_issues_bg_anchor_vm_header": "Tail-anchored Sub Audio and Virtual Media segment switches",
+  "dlg_known_issues_bg_anchor_vm_body": "Sub Audio alignment always targets the CURRENT REAL FILE, so it never follows Virtual Media merge rules. A tail anchor carries a non-zero offset; when a Virtual Media session switches to another physical segment (or the video advances to the next episode), the foreground file changes and that offset no longer matches, so the Sub Audio and the video can fall out of sync. Use \"update alignment\" in the alignment dialog to re-anchor by hand; automatic re-anchoring across a file switch belongs to the scope rules and is not implemented yet.",
   "play_backend_mediakit": "Media Kit",
   "play_backend_fvp": "FVP",
   "play_landscape_controls": "Phone landscape controls",
@@ -2867,28 +2941,57 @@
   "bg_ratio_live_hint": "Live mode: dragging applies immediately and is saved when you let go.",
   "bg_ratio_no_current_media": "No media is playing, so only the global pair can be edited.",
   "bg_align_title": "Align Sub Audio",
-  "bg_align_mode_from_fg_head": "Same timeline (00:00 ↔ 00:00): Sub Audio follows the video clock",
-  "bg_align_mode_at_position": "Sub Audio starts at its 00:00 at the video's current position",
-  "bg_align_section_align": "Alignment",
-  "bg_align_section_other": "Other",
-  "bg_align_scope_update": "Update alignment",
-  "bg_align_scope_default": "Default alignment",
-  "bg_align_default_current": "Current default: {value}",
-  "@bg_align_default_current": {
+  "bg_align_mode_same_clock": "Same clock: Sub Audio jumps to the video's current position and then follows it 1:1",
+  "bg_align_mode_bg_head": "Sub Audio from 00:00: its start aligns with the video's current position",
+  "bg_align_mode_tail": "Sub Audio's end aligned with the video's end (its opening is skipped by {skip})",
+  "@bg_align_mode_tail": {
     "placeholders": {
-      "value": {
+      "skip": {
         "type": "String"
       }
     }
   },
-  "bg_align_default_effect_hint": "Takes effect on the next alignment; current playback is untouched.",
+  "bg_align_auto_applied": "Auto anchoring: {mode}",
+  "@bg_align_auto_applied": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_align_section_align": "Alignment",
+  "bg_align_section_other": "Other",
+  "bg_align_scope_update": "Update alignment",
+  "bg_align_scope_default": "Default alignment",
+  "bg_align_inactive_hint": "Sub Audio isn't active yet, so alignment can't be applied.",
+  "bg_align_auto_rule_title": "Default anchoring",
+  "bg_align_auto_rule": "Decided automatically from the two real durations, each time Sub Audio starts or you switch to another Sub Audio file: Sub Audio not shorter than the video → same clock; Sub Audio shorter and the video's remaining time fits inside it → the Sub Audio's end aligns with the video's end; otherwise → Sub Audio 00:00 at the video's current position. No manual choice is needed.",
   "bg_align_percent_adjust_hint": "Tune the share here first, then tap the percent option above.",
   "bg_align_hint_hide_forever": "Don't show again (re-enable in Settings → Warning dialogs)",
-  "bg_align_mode_bg_percent_value": "Start at {percent}% of the Sub Audio file",
+  "bg_align_mode_bg_percent_value": "Sub Audio from {percent}%: that point aligns with the video's current position",
   "@bg_align_mode_bg_percent_value": {
     "placeholders": {
       "percent": {
         "type": "int"
+      }
+    }
+  },
+  "bg_align_preview": "After aligning: video {fg} → Sub Audio {bg}",
+  "@bg_align_preview": {
+    "placeholders": {
+      "fg": {
+        "type": "String"
+      },
+      "bg": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_align_preview_beyond": "After aligning: Sub Audio would land past its end ({bg}) — it will start over or continue with the next file",
+  "@bg_align_preview_beyond": {
+    "placeholders": {
+      "bg": {
+        "type": "String"
       }
     }
   },
@@ -2898,15 +3001,34 @@
   "bg_exhausted_section_note": "Handles a Sub Audio file ending within a single video; unrelated to the activation scope.",
   "bg_exhausted_next_bg": "Play the next Sub Audio, starting at the video position where the previous one ended",
   "bg_exhausted_stop_restore": "Pause Sub Audio and restore the video's own audio",
-  "bg_align_default_fg_head": "Same timeline",
-  "bg_align_default_fg_position": "Sub Audio from 00:00",
-  "bg_align_default_bg_percent": "From share",
   "bg_exhausted_next_bg_short": "Next Sub Audio",
   "bg_exhausted_stop_restore_short": "Pause, restore video",
   "bg_queue_sync_rebuild": "Rebuild the list",
-  "bg_queue_sync_append": "Append new only",
+  "bg_queue_sync_append": "Only on new additions",
   "bg_queue_same_file_title": "Already playing in the foreground",
   "bg_queue_same_file_body": "This video is the one playing in the foreground, so it cannot play as Sub Audio at the same time. It stays in the list and becomes available once you switch to another video. To allow both at once, turn on 允许前景与副音同一文件.",
+  "bg_duration_unknown": "Duration unknown",
+  "bg_duration_probing": "Reading duration…",
+  "bg_duration_failed": "Duration read failed",
+  "bg_duration_failed_title": "Sub-audio duration unavailable",
+  "bg_duration_failed_body": "Could not read the duration of \"{name}\". Without it Sub Audio cannot be aligned to the video. Check that the file is still accessible, then retry.",
+  "@bg_duration_failed_body": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "bg_duration_network": "Duration not probed (network storage)",
+  "bg_duration_retry": "Read duration again",
+  "bg_duration_unknown_body": "The duration of \"{name}\" has not been resolved yet, so Sub Audio cannot be aligned to the video. Network storages are not probed automatically.",
+  "@bg_duration_unknown_body": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "bg_align_update_to_current": "Update to current",
   "bg_align_auto_pause_label": "Ask before the aligned Sub Audio runs out",
   "bg_align_auto_pause_desc": "When the aligned Sub Audio has less than this much left, raise the alignment popup. Skipped when the end action keeps playing the next Sub Audio, since that continues automatically.",
@@ -2923,14 +3045,6 @@
   "bg_align_head_option": "Sub Audio 00:00 — aligned to the video's current position",
   "bg_align_percent_prefix": "Start at",
   "bg_align_percent_suffix": "% of the Sub Audio file, aligned to the video's current position",
-
-  "bg_align_from_head": "From the beginning (aligned to the video's current position)",
-  "bg_align_from_mid": "From the remembered share",
-  "bg_align_ask": "Always ask",
-  "bg_align_remember": "Remember this choice (don't ask again)",
-  "bg_align_remember_hint": "Remembering stops this prompt for shorter Sub Audio files. Restore it any time with \"Restore always ask\", or in Settings → Sub Audio alignment default.",
-  "bg_align_restore_ask": "Restore \"always ask\"",
-  "bg_align_fg_head_option": "Restart the video from 00:00 — Sub Audio also starts at 00:00",
   "bg_continuation_title": "Sub Audio continues across files",
   "bg_continuation_intro": "The Sub Audio file ended before the video. Continuing on the looping Sub Audio list:",
   "bg_continuation_from_align": "This alignment left the current video position without Sub Audio. Had it played out naturally, it would pass through:",
@@ -2951,9 +3065,6 @@
   "bg_continuation_omitted": "… (earlier items omitted)",
   "dlg_warn_bg_continuation_title": "Sub Audio cross-file continuation",
   "dlg_warn_bg_continuation_desc": "Explains, when a Sub Audio file ends before the video, how the Sub Audio list was walked and where playback continues",
-  "dlg_warn_bg_source_manage_title": "Staged source editing",
-  "dlg_warn_bg_source_manage_desc": "Edits to Sub Audio sources here are staged: nothing is saved until you press the ✓ button, and discarding leaves the current sources untouched",
-  "bg_sources_storage_id_hint": "Storage ID",
   "bg_step_swap_only": "Next/Prev: swap Sub Audio only (the video stays put)",
   "bg_step_follow_link": "Next/Prev: also move the video (follows the link)",
   "bg_step_mode_swap_only": "Swap Sub Audio only",
@@ -2989,14 +3100,14 @@
   "set_bg_keep_warm": "Keep a Sub Audio player ready at startup",
   "set_bg_keep_warm_desc": "Preloads for background playback so turning Sub Audio on is instant. Costs one idle player for the whole session.",
   "set_bg_keep_warm_off_notice": "This preload exists to make background playback start instantly. If you rarely use Sub Audio you can turn it off; starting it later will take a moment and may flash.",
-  "set_bg_align_default": "Sub Audio alignment default",
-  "set_bg_align_default_desc": "The alignment applied whenever a Sub Audio file is aligned. Open the alignment popup for the live update and this default.",
+  "set_bg_align_default": "Sub Audio default anchoring",
+  "set_bg_align_default_desc": "Chosen automatically from the two durations; no option to pick. Tap to see the rule.",
   "set_bg_align_warn": "Ask before the Sub Audio runs out (seconds)",
   "set_bg_align_warn_desc": "Raise the alignment popup when the aligned Sub Audio has less than this many seconds left (default 5, range 1–120). Skipped when the end action keeps playing the next Sub Audio, since that continues automatically.",
   "set_bg_exhausted_action": "When the Sub Audio file ends",
   "set_bg_exhausted_action_desc": "Within a SINGLE video (unrelated to the activation scope): play the next queued Sub Audio, walking the Sub Audio list as a loop so a track is always audible, or pause Sub Audio and restore the video's own audio.",
   "set_bg_queue_sync_mode": "When a tagged video joins the list",
-  "set_bg_queue_sync_mode_desc": "The running Sub Audio list is built when Sub Audio starts, so a video tagged afterwards only appears after a rebuild. Rebuilding re-reads the source rules and keeps the playing video in place; appending adds just the new videos to the end and never moves what is queued. Applies only while Sub Audio is running.",
+  "set_bg_queue_sync_mode_desc": "The running Sub Audio list is a window resolved when Sub Audio starts, so a video tagged afterwards only appears after a reconcile. Rebuilding re-reads the sources whenever the list changes (reorder, removal or growth) and keeps the playing video in place; the additions-only option reacts just when a new video joins and then reconciles the same window around the playing video — it never materializes the whole large list. Applies only while Sub Audio is running.",
   "set_bg_fg_window_zoom": "APB foreground zoom",
   "set_bg_fg_window_zoom_desc": "When the foreground is much longer than the Sub Audio file, show only this many times the Sub Audio length on the foreground axis, so the A–B mapping does not collapse to a point. 1 disables the zoom (range 1.0–10.0).",
   "set_bg_fg_window_push_bg": "q pushes the Sub Audio mapping",
@@ -3098,16 +3209,6 @@
   "bg_layout_fullscreen": "Fullscreen",
   "bg_layout_pip": "Picture-in-picture (coming soon)",
   "bg_layout_split": "Split view (coming soon)",
-  "set_bg_sources": "Sub Audio sources",
-  "set_bg_sources_desc": "Ordered candidate sources — Tag members, Folders, single Files, or Folder + Tag intersections. Matching media must be scanned into the library",
-  "bg_sources_count_zero": "Default",
-  "bg_sources_empty_default": "No rules yet — candidates come from the built-in default (the \"Background Voice Candidate\" tag). Add a rule to override it.",
-  "bg_sources_empty_hint": "Tap the source list to add Tag / Folder / File / Folder+Tag rules",
-  "bg_sources_add": "Add source",
-  "bg_sources_remove": "Remove source",
-  "bg_sources_move_up": "Move up",
-  "bg_sources_move_down": "Move down",
-  "bg_sources_tags_error": "Failed to load tags",
   "bg_src_kind_tag": "Tag",
   "bg_src_kind_path": "Folder",
   "bg_src_kind_file": "File",
@@ -3202,15 +3303,6 @@
       "path": {"type": "String"}
     }
   },
-  "bg_source_manage_open": "Manage sources",
-  "bg_source_manage_title": "Sub Audio source manager",
-  "bg_source_manage_staged_hint": "Edits are staged — press ✓ to apply, or discard to leave the current sources unchanged",
-  "bg_source_manage_load_failed": "Could not load Sub Audio sources.",
-  "bg_source_manage_save_failed": "Some changes could not be saved; the source list may be only partially updated.",
-  "bg_source_manage_confirm": "Apply",
-  "bg_source_manage_discard": "Discard",
-  "set_bg_fallback_banner": "Show the no-active-source hint",
-  "set_bg_fallback_banner_desc": "Shows a closable banner in Sub Audio sources when no rule is active and the built-in source takes over",
   "bg_mapping_missing_title": "Mapped file unavailable",
   "bg_mapping_missing_body": "The file saved for this mapped segment is missing or not scanned: {name}. Playing natural Sub Audio instead.",
   "@bg_mapping_missing_body": {
@@ -3429,8 +3521,6 @@
   "dlg_warn_bg_align_exit_desc": "Confirms exiting the align editor without saving the A–B window",
   "dlg_warn_bg_align_silence_title": "Silent (no file) save",
   "dlg_warn_bg_align_silence_desc": "Explains, the first time, that saving a silent segment stores the span without a Sub Audio file",
-  "dlg_warn_bg_align_default_hint_title": "Default-alignment hint",
-  "dlg_warn_bg_align_default_hint_desc": "Inline hint in the align editor showing the persisted default and its next-alignment effect",
   "dlg_warn_bg_align_percent_hint_title": "Percent-slider hint",
   "dlg_warn_bg_align_percent_hint_desc": "Inline caption under the align editor's percent slider",
   "dlg_warn_bg_align_snap_title": "Snap usage guide",
@@ -3495,10 +3585,6 @@
   "set_cache_preset_low": "Low",
   "set_cache_preset_balanced": "Balanced",
   "set_cache_preset_high": "High",
-  "set_playback_step_seek_mode": "Step seek mode",
-  "set_playback_step_seek_mode_desc": "How rapid ← / → (and phone double-taps) are scheduled. Adaptive keeps every step while the key is held and, on release, jumps straight to the last target so playback resumes at once; both modes land every press precisely. Applies to the Media Kit backend only.",
-  "set_step_seek_mode_precise": "Precise (drop oldest)",
-  "set_step_seek_mode_adaptive": "Adaptive (no dropped steps)",
   "startup_failed_title": "Startup failed",
   "startup_failed_body": "IRIS could not finish starting up. Your data has not been modified.\n\n$error",
   "@startup_failed_body": {

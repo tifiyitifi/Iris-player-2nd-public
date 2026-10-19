@@ -444,6 +444,9 @@ class RecursiveScanService {
           // playback / virtual-merge can open the file without rebuilding a
           // mangled path. Plain rows keep null (playableUri fallback).
           uri: isSafPath(item.uri) ? item.uri : null,
+          // Subtitle associations come from the listing and are persisted so
+          // DB-resolved entries (scenario / tag / queue) can offer them too.
+          subtitles: item.subtitles,
           modifiedAt: item.lastModified,
         ));
       }
@@ -589,23 +592,27 @@ class RecursiveScanService {
     final List<MediaNodesTableData> existing = canonicalDir.isEmpty
         ? await nodesDao.getRootLevelNodes(storageId)
         : await nodesDao.getDirectChildren(storageId, canonicalDir);
-    // Use normalized name as canonical key so case-only renames (Windows)
-    // do not produce duplicate rows. Fallback to lower-case.
-    final existingByNorm = <String, MediaNodesTableData>{};
+    // Case is identity on a case-sensitive filesystem. Folding unconditionally
+    // merged `photo.JPG` and `photo.jpg` into one existence key there (the
+    // stale row of a deleted twin was never removed and each file was compared
+    // against the wrong row). On NTFS/SMB a case-only rename is the SAME file,
+    // so folding stays deliberate.
+    final bool foldCase =
+        pathRidesCaseInsensitiveFs(storage.basePath.join('/'));
+    String nameKeyOf(String name) => foldCase ? name.toLowerCase() : name;
+    final existingByName = <String, MediaNodesTableData>{};
     for (final MediaNodesTableData row in existing) {
-      final norm = row.normalizedName ?? row.name.toLowerCase();
-      existingByNorm[norm] = row;
+      existingByName[nameKeyOf(row.name)] = row;
     }
-    final freshByNorm = <String, MediaNode>{};
+    final freshByName = <String, MediaNode>{};
     for (final MediaNode n in freshNodes) {
-      freshByNorm[n.normalizedNameValue] = n;
+      freshByName[nameKeyOf(n.name)] = n;
     }
 
     final toDeleteFiles = <String>[];
     final toDeleteDirPrefixes = <String>[];
     for (final MediaNodesTableData row in existing) {
-      final norm = row.normalizedName ?? row.name.toLowerCase();
-      if (!freshByNorm.containsKey(norm)) {
+      if (!freshByName.containsKey(nameKeyOf(row.name))) {
         if (row.nodeKind == MediaNodeKind.directory) {
           toDeleteDirPrefixes.add(row.path);
         } else {
@@ -618,7 +625,7 @@ class RecursiveScanService {
     final toDeleteTypeChangeFiles = <String>[];
     final toDeleteTypeChangePrefixes = <String>[];
     for (final MediaNode node in freshNodes) {
-      final MediaNodesTableData? row = existingByNorm[node.normalizedNameValue];
+      final MediaNodesTableData? row = existingByName[nameKeyOf(node.name)];
       if (row == null) {
         toUpsert.add(node);
         continue;
@@ -641,7 +648,20 @@ class RecursiveScanService {
         final probeSame = (node.durationMs == null || row.durationMs == node.durationMs) &&
             (node.width == null || row.width == node.width) &&
             (node.height == null || row.height == node.height);
-        if (sameSize && sameModified && sameType && probeSame) continue;
+        // The association set is part of "unchanged": adding or deleting a
+        // subtitle in the same directory does NOT touch the video's size or
+        // mtime, so a size/mtime-only predicate would serve the stale set
+        // forever — a deleted track offered (and failing to load) on every
+        // open, a new one never appearing. Rows whose associations were never
+        // captured (pre-v50) are still re-upserted once, so they gain them.
+        if (sameSize &&
+            sameModified &&
+            sameType &&
+            probeSame &&
+            MediaNodeDriftAdapter.sameSubtitles(
+                row.subtitlesJson, node.subtitles)) {
+          continue;
+        }
       } else {
         final sameModified = row.modifiedAt == node.modifiedAt;
         if (sameModified) continue;

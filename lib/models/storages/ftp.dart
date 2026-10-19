@@ -8,8 +8,8 @@ import 'package:iris/models/storages/storage.dart';
 import 'package:iris/utils/check_content_type.dart';
 import 'package:iris/utils/get_subtitle_map.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/path_conv.dart';
 import 'package:iris/utils/storage_path_guard.dart';
-import 'package:path/path.dart' as p;
 import 'package:pure_ftp/pure_ftp.dart';
 final areaKeyLog = AreaKeyLog(LogKeys.legacyDb);
 
@@ -99,12 +99,15 @@ Future<FileListResult> _listFtpFiles(
 
     final files = await client.fs.listDirectory();
 
-    final baseUri =
-        'ftp?host=${storage.host}&port=${storage.port}&path=${path.join('/').replaceAll('//', '/')}';
+    final basePath = path.join('/').replaceAll('//', '/');
 
     String getUri(String fileName) {
-      final separator = baseUri.endsWith('/') ? '' : '/';
-      return Uri.encodeFull('$baseUri$separator$fileName');
+      final separator = basePath.endsWith('/') ? '' : '/';
+      // Same single encoder as playback (`media_uri.dart` `ftpPlayableUri`): a
+      // name carrying `&` / `#` used to be left raw by `Uri.encodeFull` and
+      // truncated the proxy query.
+      return 'ftp?host=${storage.host}&port=${storage.port}'
+          '&path=${encodeFtpProxyPath('$basePath$separator$fileName')}';
     }
 
     final subtitleMap = getSubtitleMap<FtpEntry>(
@@ -120,7 +123,6 @@ Future<FileListResult> _listFtpFiles(
         areaKeyLog.w('getFTPFiles skip traversal file: ${file.name}');
         continue;
       }
-      final basename = p.basenameWithoutExtension(file.name).split('.').first;
       fileItems.add(
         FileItem(
           storageId: storage.id,
@@ -136,7 +138,9 @@ Future<FileListResult> _listFtpFiles(
           type: file.isDirectory
               ? ContentType.other
               : checkContentType(file.name),
-          subtitles: isVideoFile(file.name) ? subtitleMap[basename] ?? [] : [],
+          subtitles: isVideoFile(file.name)
+              ? subtitleMap[subtitleMapKey(file.name)] ?? []
+              : [],
         ),
       );
     }

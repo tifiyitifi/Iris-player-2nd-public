@@ -32,13 +32,8 @@ const String kWarningBgAlignSilenceNoFile = 'bgAlignSilenceNoFile';
 /// side of the centre).
 const String kWarningBgAlignMovePointHint = 'bgAlignMovePointHint';
 
-/// Inline hint inside the 对齐 editor's 默认对齐 scope: shows the persisted
-/// default and its next-alignment effect. Dismissible like a warning (the X
-/// hides it forever; the settings warning panel brings it back).
-const String kWarningBgAlignDefaultHint = 'bgAlignDefaultHint';
-
 /// Inline caption under the 对齐 editor's percent slider: tune first, then
-/// pick the percent mode. Dismissible/restorable like [kWarningBgAlignDefaultHint].
+/// pick the percent mode. Dismissible/restorable from the settings panel.
 const String kWarningBgAlignPercentHint = 'bgAlignPercentHint';
 
 /// Full first-use explanation of the align editor's snap-to-saved-boundary
@@ -98,12 +93,6 @@ const String kWarningVmMergeConcept = 'vmMergeConcept';
 /// Restorable from Settings → About → "IRIS feature guide".
 const String kWarningAppOverview = 'appOverview';
 
-/// Explains, on first use of the play-queue's 副音 source manager, that edits
-/// are STAGED — nothing takes effect until the bottom ✓ is pressed. Recoverable
-/// — the manager stays usable either way and the notice is restorable from
-/// Settings → Warning dialogs.
-const String kWarningBgSourceManage = 'bgSourceManage';
-
 /// Every id the settings panel offers a toggle for, in display order.
 const List<String> kSuppressibleWarningIds = <String>[
   kWarningPhysicalDeleteRecycle,
@@ -115,7 +104,6 @@ const List<String> kSuppressibleWarningIds = <String>[
   kWarningBgAlignExitDiscard,
   kWarningBgAlignSilenceNoFile,
   kWarningBgAlignMovePointHint,
-  kWarningBgAlignDefaultHint,
   kWarningBgAlignPercentHint,
   kWarningBgAlignSnapGuide,
   kWarningBgAlignSnapNone,
@@ -128,7 +116,6 @@ const List<String> kSuppressibleWarningIds = <String>[
   kWarningTagCommandGrammar,
   kWarningVmMergeConcept,
   kWarningAppOverview,
-  kWarningBgSourceManage,
 ];
 
 bool shouldShowWarning(List<String> suppressedWarnings, String id) =>

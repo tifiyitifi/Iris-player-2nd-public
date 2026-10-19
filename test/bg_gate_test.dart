@@ -9,6 +9,7 @@ import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/models/file.dart';
+import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:zustand/zustand.dart';
 
@@ -83,6 +84,51 @@ void main() {
 
     store.openGate(mediaKey: 'fg', stepForward: true);
     expect(store.state.currentIndex, 0);
+  });
+
+  test('openGate stepForward at the pool end STOPS instead of replaying',
+      () async {
+    // Repeat.none, already on the last entry: 下一首 has nowhere to go. It must
+    // keep the loaded track PAUSED and must not restart the run — bumping the run
+    // with the stale index re-opened (replayed) the same last track.
+    await store.enableWithQueue([_f('b1'), _f('b2')]);
+    store.set(store.state.copyWith(bgRepeat: Repeat.none));
+    await store.jumpTo(1);
+    store.stopGate();
+    final int runSeq = store.state.bgRunSeq;
+
+    store.openGate(mediaKey: 'fg', stepForward: true);
+
+    expect(store.state.currentIndex, 1, reason: 'nowhere to advance to');
+    expect(store.state.bgAutoPlay, isFalse,
+        reason: 'a blocked 下一首 must not replay the loaded track');
+    expect(store.state.bgRunSeq, runSeq,
+        reason: 'nothing moved, so the run must not restart');
+  });
+
+  test('openGate stepForward all-excluded stays paused and does not restart',
+      () async {
+    // Every candidate is the foreground file: the guard skips them all, so this
+    // is the same "blocked" verdict as Repeat.none at the end.
+    final fg = _f('fg.mp4');
+    await usePlayQueueStore().update(
+      playQueue: [PlayQueueItem(file: fg, index: 0)],
+      index: 0,
+    );
+    store.set(store.state.copyWith(shuffle: false));
+    await store.enableWithQueue(
+      [fg, _f('fg.mp4')],
+      applyScope: BgApplyScope.currentOnly,
+      anchorKey: 'fg',
+    );
+    await store.jumpTo(0);
+    store.stopGate();
+    final int runSeq = store.state.bgRunSeq;
+
+    store.openGate(mediaKey: 'fg', stepForward: true);
+
+    expect(store.state.bgAutoPlay, isFalse);
+    expect(store.state.bgRunSeq, runSeq);
   });
 
   test('openGate stepForward skips the foreground file (double-play guard)',

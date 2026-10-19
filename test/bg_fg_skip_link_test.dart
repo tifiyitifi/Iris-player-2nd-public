@@ -236,6 +236,28 @@ void main() {
         isTrue,
       );
     });
+
+    test('an armed latch with NO seek issued consumes at once', () {
+      // A zero-target alignment skips its seek (see the zero--target latch in
+      // `background_runtime_scope`): nothing was sent, so nothing can land, and
+      // waiting for the deadline only froze the mirror for ~900ms.
+      expect(
+        shouldConsumeSystemSeekLatch(
+          armed: true,
+          bgJump: false,
+          deadlineExpired: false,
+          seekIssued: false,
+        ),
+        isTrue,
+      );
+      // The default stays "a seek went out", so every other arming site keeps
+      // waiting for its landing.
+      expect(
+        shouldConsumeSystemSeekLatch(
+            armed: true, bgJump: false, deadlineExpired: false),
+        isFalse,
+      );
+    });
   });
 
   group('clampScopedFgTarget', () {

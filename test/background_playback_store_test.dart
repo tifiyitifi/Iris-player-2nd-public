@@ -101,7 +101,26 @@ void main() {
 
     tearDown(() => store.dispose());
 
-    test('enableWithQueue starts shuffled at index 0 and refuses empty',
+    test('a fresh enable re-arms the duration probe', () async {
+      // A member that failed on the last run must be retried: the verdict sets
+      // gate which entries the probe observer will try, so a stale failure kept
+      // the run red until an app restart.
+      store.set(store.state.copyWith(
+        enabled: true,
+        bgDurationFailedKeys: const {'s1:a'},
+        bgDurationUnknownKeys: const {'s1:b'},
+      ));
+      final before = store.state.bgDurationProbeSeq;
+
+      await store.enableWithQueue(files);
+
+      expect(store.state.bgDurationFailedKeys, isEmpty);
+      expect(store.state.bgDurationUnknownKeys, isEmpty);
+      expect(store.state.bgDurationProbeSeq, before + 1,
+          reason: 'the observer fingerprints on the seq, so it must change');
+    });
+
+    test('enableWithQueue starts at index 0 and refuses empty',
         () async {
       await store.enableWithQueue(files);
       expect(store.state.enabled, isTrue);
@@ -164,7 +183,7 @@ void main() {
       expect(store.state.bgAutoPlay, isFalse);
     });
 
-    test('toggleShuffle anchors the current file at the head', () async {
+    test('toggleShuffle flips the flag and keeps the current file', () async {
       store.set(store.state.copyWith(
         enabled: true,
         shuffle: false,
@@ -173,27 +192,23 @@ void main() {
       ));
       await store.toggleShuffle();
       expect(store.state.shuffle, isTrue);
-      expect(
-        backgroundMediaKey(store.state.queue.first),
-        backgroundMediaKey(_f('c')),
-      );
+      // 副音's order is owned by the reserved tag view (a DB write); with no DB
+      // the window is left as-is and the file that was playing stays current.
       expect(store.state.queue.toSet(), files.toSet());
-      // The head moved under the cursor: the index must follow it, otherwise
-      // it keeps pointing at whatever song landed on the old slot.
-      expect(store.state.currentIndex, 0);
       expect(
         backgroundMediaKey(store.currentFile!),
         backgroundMediaKey(_f('c')),
       );
     });
 
-    test('replaceQueue keeps the current file by key or restarts at the head',
+    test('replaceQueue keeps the current file by key, or pauses at the head',
         () async {
       store.set(store.state.copyWith(
         enabled: true,
         shuffle: false,
         queue: files,
         currentIndex: 2, // currently c
+        bgAutoPlay: true,
       ));
       final refreshed = [_f('d'), _f('a'), _f('c')];
       await store.replaceQueue(refreshed);
@@ -201,9 +216,13 @@ void main() {
         backgroundMediaKey(store.currentFile!),
         backgroundMediaKey(_f('c')),
       );
+      expect(store.state.bgAutoPlay, isTrue,
+          reason: 'the playing file survived the refresh');
 
       await store.replaceQueue([_f('x')]);
       expect(backgroundMediaKey(store.currentFile!), backgroundMediaKey(_f('x')));
+      expect(store.state.bgAutoPlay, isFalse,
+          reason: 'a file that left the pool must stop, not switch silently');
     });
 
     test('toggleFgMute/bgMute flip their own track only', () async {

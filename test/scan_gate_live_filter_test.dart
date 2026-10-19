@@ -1,31 +1,33 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/scenario_playback/actions/scan_play_gate.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
+
+ScenarioSourceSpec _dir(String storageId, String path, {bool recursive = true}) =>
+    (
+      storageId: storageId,
+      path: path,
+      recursive: recursive,
+      kind: ScenarioSourceKind.folder,
+    );
 
 void main() {
   group('filterLiveScanRoots', () {
     test('drops live roots, keeps actionable ones', () {
-      final dirs = const [
-        (storageId: 'a', path: 'A', recursive: true),
-        (storageId: 'b', path: 'B', recursive: true),
-      ];
+      final dirs = [_dir('a', 'A'), _dir('b', 'B')];
       final out = filterLiveScanRoots(dirs, (d) => d.storageId == 'b');
       expect(out.map((e) => e.storageId), ['a']);
     });
 
     test('all live filters to empty', () {
-      final dirs = const [
-        (storageId: 'b', path: 'B', recursive: true),
-      ];
+      final dirs = [_dir('b', 'B')];
       expect(filterLiveScanRoots(dirs, (_) => true), isEmpty);
     });
 
     test('a live root on the same storage does not hide a SIBLING root', () {
       // The store is single-flight but scans one root set; D:/A being scanned
       // must not make D:/B look live (that silently skipped its scan-now).
-      final dirs = const [
-        (storageId: 'd', path: 'D:/A', recursive: true),
-        (storageId: 'd', path: 'D:/B', recursive: true),
-      ];
+      final dirs = [_dir('d', 'D:/A'), _dir('d', 'D:/B')];
       final out = filterLiveScanRoots(
         dirs,
         (dir) => isScanLiveForState(

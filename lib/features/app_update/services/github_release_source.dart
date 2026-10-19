@@ -34,16 +34,28 @@ class UpdateSource {
   static String tagUrl(String tag) =>
       'https://github.com/$repoSlug/releases/tag/$tag';
 
+  /// The checksum index the release publishes next to its packages
+  /// (`SHA256SUMS.txt`).
+  ///
+  /// Built from [repoSlug] like every other release URL: the downloader used to
+  /// spell the slug out itself, so a rename would have silently left the digest
+  /// check fetching from the old repository — the one URL the user is never
+  /// shown and therefore the one nobody would notice.
+  static String checksumUrl(String tag) =>
+      'https://github.com/$repoSlug/releases/download/$tag/SHA256SUMS.txt';
+
   static const Duration connectTimeout = Duration(seconds: 8);
   static const Duration readTimeout = Duration(seconds: 10);
 }
 
-/// How many `latest` probes one check may take.
+/// How many `latest` probes a check may FOLLOW (the redirect budget).
 ///
 /// A rename puts one more unanswered probe in front of the real one and a
 /// transfer another. The bound is what keeps a redirect loop or a captive
-/// portal from turning a version check into a hang.
-const int _maxLatestHops = 3;
+/// portal from turning a version check into a hang. The FIRST request is not a
+/// follow, so a check costs at most `_maxLatestRedirects + 1` requests (the
+/// release-source test pins that to <= 4).
+const int _maxLatestRedirects = 3;
 
 /// Reads the newest published tag without spending API quota.
 ///
@@ -71,8 +83,11 @@ Future<String?> fetchLatestReleaseTag({
       request.followRedirects = false;
       request.headers.set(HttpHeaders.userAgentHeader, _userAgent());
       final response = await request.close().timeout(readTimeout);
-      // Drain so the connection can be released promptly.
-      await response.drain<void>();
+      // Drain so the connection can be released promptly. Under the SAME
+      // deadline: `readTimeout` used to cover only the headers, so a body that
+      // stalled after them (a captive portal) hung the whole version check with
+      // no dialog and no way out.
+      await response.drain<void>().timeout(readTimeout);
       final status = response.statusCode;
       final location = response.headers.value(HttpHeaders.locationHeader);
       final isRedirect = status >= 300 && status < 400;
@@ -85,7 +100,7 @@ Future<String?> fetchLatestReleaseTag({
 
       // A redirect naming no tag is not necessarily a bad answer. Only a
       // redirect can be one, so nothing else is walked here.
-      final moved = isRedirect && hop < _maxLatestHops
+      final moved = isRedirect && hop < _maxLatestRedirects
           ? latestProbeTarget(location: location, asked: asked)
           : null;
       if (moved == null) {

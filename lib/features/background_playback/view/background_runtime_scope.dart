@@ -9,11 +9,13 @@ import 'package:iris/features/background_playback/engine/background_playback_eng
 import 'package:iris/features/background_playback/engine/background_queue_logic.dart';
 import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
 import 'package:iris/features/background_playback/hooks/use_foreground_scope_key.dart';
+import 'package:iris/features/background_playback/model/enum/bg_align_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
 import 'package:iris/features/background_playback/model/enum/bg_cross_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
 import 'package:iris/features/background_playback/services/background_alignment.dart';
+import 'package:iris/features/background_playback/services/background_duration_probe.dart';
 import 'package:iris/features/background_playback/services/background_lock_mapping.dart';
 import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/view/bg_align_dialog.dart';
@@ -21,12 +23,13 @@ import 'package:iris/features/background_playback/view/bg_continuation_dialog.da
 import 'package:iris/features/virtual_media/interaction/controller/foreground_window_resolver.dart';
 import 'package:iris/features/background_playback/services/background_sync_logic.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/background_playback/view/bg_duration_probe_observer.dart';
 import 'package:iris/features/background_playback/view/bg_queue_sync_observer.dart';
-import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
+import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_scrub_drag_store.dart';
@@ -87,13 +90,28 @@ class BackgroundRuntimeScope extends HookWidget {
     final bgUserAlignSeq = bg.select(context, (s) => s.bgUserAlignSeq);
     // The AUTHORITATIVE user-alignment offset (non-null after any alignment):
     // while set, the mirror keeps the pair on IT instead of re-deriving one from
-    // samples, so a user alignment outranks the linkage level.
+    // samples, so a user alignment outranks the linkage level. [alignOffsetMs]
+    // is FILE-LOCAL; [alignVirtualOffset] is its pinned queue-VIRTUAL
+    // counterpart (see the pin effect below) and is what the mirror compares.
     final alignOffsetMs = bg.select(context, (s) => s.alignOffsetMs);
+    final alignVirtualOffset =
+        bg.select(context, (s) => s.alignVirtualOffsetMs);
+    // The ALIGNED 副音 file's media key: what locates its prefix in the current
+    // window, so a window rebuild re-derives the pin instead of keeping the old
+    // window's one (see the pin effect below).
+    final alignOffsetAnchorKey =
+        bg.select(context, (s) => s.alignOffsetAnchorKey);
+    final alignOffsetSeq = bg.select(context, (s) => s.alignOffsetSeq);
     // One-shot cross-file continuation (natural completion / empty alignment)
     // under BgExhaustedAction.nextBg.
     final bgContinuationSeq = bg.select(context, (s) => s.bgContinuationSeq);
     final bgContinuationFromAlign =
         bg.select(context, (s) => s.bgContinuationFromAlign);
+    // The 副音 LIST's own repeat mode. It owns whether the position mapping and
+    // the natural-completion continuation may loop the queue past its ends:
+    // `all` loops, every other mode stops at the list's end ("向后自动播放完尊重
+    // 列表设置").
+    final Repeat bgRepeat = bg.select(context, (s) => s.bgRepeat);
     // Suppressed-warning memory (the continuation explainer can be silenced
     // forever); selected in build because a hook must not run inside an effect.
     final suppressedWarnings =
@@ -507,21 +525,10 @@ class BackgroundRuntimeScope extends HookWidget {
           if (queue.isEmpty || !BackgroundPlaybackGate.enabled) {
             return const <int>[];
           }
-          final keys = <String>{
-            for (final f in queue) canonicalKey(f.storageId, f.path.join('/')),
-          };
           try {
-            final nodes = await DbModule.mediaNodeRepo.nodesByMediaKeys(keys);
-            final byKey = <String, int>{};
-            for (final n in nodes) {
-              final f = n.maybeMap(file: (v) => v, orElse: () => null);
-              final d = f?.durationMs;
-              if (f == null || d == null || d <= 0) continue;
-              byKey[canonicalKey(f.storageId, f.path.join('/'))] = d;
-            }
+            final byKey = await resolvedBgDurationsByKey(queue);
             return <int>[
-              for (final f in queue)
-                byKey[canonicalKey(f.storageId, f.path.join('/'))] ?? 0,
+              for (final f in queue) byKey[backgroundMediaKey(f)] ?? 0,
             ];
           } catch (_) {
             return <int>[for (var i = 0; i < queue.length; i++) 0];
@@ -532,7 +539,10 @@ class BackgroundRuntimeScope extends HookWidget {
     );
 
     // The current file's live duration (engine snapshot) may be fresher than
-    // the DB row, so it always overrides the resolved one.
+    // the DB row, so it always overrides the resolved one. Every remaining
+    // non-positive entry is UNKNOWN — never "0 ms of media" — and is marked so
+    // the position mapping stands down instead of acting on a fabricated
+    // position (see [BgQueueTimeline.tryVirtualPositionOf]).
     final timeline = useMemoized(
       () {
         final base = durationsFuture.data ?? const <int>[];
@@ -543,10 +553,78 @@ class BackgroundRuntimeScope extends HookWidget {
         if (currentIndex >= 0 && currentIndex < d.length && live > 0) {
           d[currentIndex] = live;
         }
-        return BgQueueTimeline(d);
+        final unknown = <int>{
+          for (var i = 0; i < d.length; i++)
+            if (d[i] <= 0) i,
+        };
+        return BgQueueTimeline(d, unknownIndices: unknown);
       },
       [durationsFuture.data, queue, currentIndex, engine.duration],
     );
+
+    // ── Session alignment offset: FILE-LOCAL → queue-VIRTUAL (PINNED) ──
+    //
+    // [BackgroundPlaybackState.alignOffsetMs] is derived by
+    // `resolveAlignmentOffsetMs` (dialog) / the automatic rule (alignment effect
+    // below) on the aligned 副音 FILE's axis, while every consumer compares
+    // positions on the queue's VIRTUAL axis (`bgVirtual` already carries the
+    // file's prefix). Leaving the units mixed reported a phantom drift equal to
+    // the prefix, which the 高同步 correction then kept "fixing" — the 对齐偏颇.
+    //
+    // The conversion is `fileLocalOffset - prefix`, where the prefix is the
+    // ALIGNED file's virtual start IN THE CURRENT WINDOW — which is why the pin
+    // tracks that file's media KEY rather than a numeric index, and why it is
+    // re-derived instead of frozen once the queue moves on: the window is rebuilt
+    // underneath a live run (shuffle toggle, candidate re-resolve, tag sync), the
+    // aligned file then sits at a DIFFERENT prefix, and keeping the old pin left
+    // the pair off by the difference. A cross-file continuation keeps the pair,
+    // so deriving from the aligned file's own prefix is still correct there. The
+    // one case that keeps the previous pin is the aligned file having LEFT the
+    // window (see [resolveAlignAnchorIndex]).
+    final prevAlignOffsetSeq = useRef(alignOffsetSeq);
+    useEffect(() {
+      final bool fresh = alignOffsetSeq != prevAlignOffsetSeq.value;
+      if (fresh) prevAlignOffsetSeq.value = alignOffsetSeq;
+      if (alignOffsetMs == null) return null;
+      final String? anchorKey = alignOffsetAnchorKey;
+      final List<String> queueKeys = [
+        for (final f in queue) backgroundMediaKey(f),
+      ];
+      final int? anchorIndex = resolveAlignAnchorIndex(
+        anchorKey: anchorKey,
+        queueKeys: queueKeys,
+        // No key yet means no pin yet: the aligned file is the OPEN one.
+        fallbackIndex: anchorKey == null ? currentIndex : null,
+      );
+      if (anchorIndex == null) return null;
+      // Derive the pin only from a prefix the MIRROR will also accept. An entry
+      // between the aligned file and the current one that is still unresolved
+      // makes `offsetOf(anchor)` and `offsetOf(current)` move by DIFFERENT
+      // amounts when the probe lands, and the mirror then sees a jump equal to
+      // that difference and keeps "fixing" it — the phantom drift. Keeping the
+      // previous pin until both prefixes are known costs nothing: while the
+      // prefix through the current entry is unknown the mirror stands down
+      // anyway ([BgQueueTimeline.mappingUsableThrough] at the drift effect).
+      final int prefixUpto =
+          anchorIndex > currentIndex ? anchorIndex : currentIndex;
+      if (!timeline.mappingUsableThrough(prefixUpto)) return null;
+      useBackgroundPlaybackStore().setAlignVirtualOffset(
+        offsetMs: alignmentVirtualOffsetMs(
+          fileLocalOffsetMs: alignOffsetMs,
+          fileVirtualStartMs: timeline.offsetOf(anchorIndex),
+        ),
+        anchorIndex: anchorIndex,
+        anchorKey: anchorKey ?? queueKeys[anchorIndex],
+      );
+      return null;
+    }, [
+      alignOffsetSeq,
+      alignOffsetMs,
+      alignOffsetAnchorKey,
+      currentIndex,
+      queue,
+      timeline,
+    ]);
 
     final lastFgMs = useRef<int?>(null);
     final lastFgAt = useRef(DateTime.now());
@@ -573,6 +651,11 @@ class BackgroundRuntimeScope extends HookWidget {
     final systemSeekRef = useRef(bgSystemSeekSeq);
     final systemSeekArmed = useRef(false);
     final systemSeekDeadline = useRef<DateTime?>(null);
+
+    /// Whether the note that armed the latch actually SENT a seek. A zero-target
+    /// alignment issues none, and holding the mirror for the deadline then just
+    /// froze it (see [shouldConsumeSystemSeekLatch]).
+    final systemSeekIssued = useRef(true);
     // The fg-side twin: a foreground seek THIS mirror issues (bg-master seek or
     // roll) is not a user fg gesture. Its landing must be swallowed, otherwise
     // it is mapped back onto the bg queue and the two timelines ping-pong.
@@ -698,15 +781,22 @@ class BackgroundRuntimeScope extends HookWidget {
       }
       if (timeline.isEmpty) return null;
 
-      final int bgVirtual = timeline.virtualPositionOf(currentIndex, bgMs);
-      // User alignment is AUTHORITATIVE: while [alignOffsetMs] is set the pair's
-      // offset IS it, and the mirror must never re-derive one from a sample
-      // (which would silently undo the user's alignment on the next drift). The
-      // derived [lockOffsetMs] only owns the offset until the first alignment.
-      final int effectiveOffset = alignOffsetMs ?? lockOffsetMs.value;
-      final bool offsetReady = alignOffsetMs != null || lockOffsetReady.value;
+      // An entry the duration probe has not resolved yet makes the virtual axis
+      // meaningless — never mirror against a fabricated position.
+      final int? bgVirtualOrNull =
+          timeline.tryVirtualPositionOf(currentIndex, bgMs);
+      if (bgVirtualOrNull == null) return null;
+      final int bgVirtual = bgVirtualOrNull;
+      // User alignment is AUTHORITATIVE: while the pinned [alignVirtualOffset]
+      // is set the pair's offset IS it, and the mirror must never re-derive one
+      // from a sample (which would silently undo the user's alignment on the
+      // next drift). The derived [lockOffsetMs] only owns the offset until the
+      // first alignment. Both are on the queue-VIRTUAL axis.
+      final int effectiveOffset = alignVirtualOffset ?? lockOffsetMs.value;
+      final bool offsetReady =
+          alignVirtualOffset != null || lockOffsetReady.value;
       void anchor() {
-        if (alignOffsetMs != null) return;
+        if (alignVirtualOffset != null) return;
         lockOffsetMs.value = fgMs - bgVirtual;
         lockOffsetReady.value = true;
       }
@@ -739,6 +829,7 @@ class BackgroundRuntimeScope extends HookWidget {
             armed: true,
             bgJump: bgJump,
             deadlineExpired: bgExpired,
+            seekIssued: systemSeekIssued.value,
           );
       final bool fgLanding = fgSystemSeekArmed.value &&
           shouldConsumeSystemSeekLatch(
@@ -821,6 +912,21 @@ class BackgroundRuntimeScope extends HookWidget {
         // (仅当前), never park the player exactly at its end: that raises a
         // genuine completion and auto-advances the queue.
         final int fgTarget = bgVirtual + effectiveOffset;
+        // A settled-sample drift correction is NOT a user 副音 move: it must
+        // never rewind the video. Right after an activation the 副音 position
+        // can still report its head (its alignment seek not landed yet), and
+        // mapping that onto the video — plus the 仅当前 clamp turning a
+        // behind-target into `seek(0)` — is exactly the 「开启副音把播放进度
+        // 归 0」 report. Only a real 副音 move (bgJump) may rewind.
+        if (!bgMasterMaySeekFg(
+          fromRealBgMove: bgJump,
+          fgTarget: fgTarget,
+          fgMs: fgMs,
+        )) {
+          _mirrorLog.d('bg-master drift hold target=$fgTarget fg=$fgMs');
+          anchor();
+          return null;
+        }
         suppressUntil.value = now.add(const Duration(milliseconds: 400));
         // 仅当前: 副音 exists only inside the current PHYSICAL foreground
         // window, so the target is clamped into IT — clamping against the
@@ -912,6 +1018,11 @@ class BackgroundRuntimeScope extends HookWidget {
         return null;
       }
 
+      // The 副音 list's own repeat setting owns whether a foreground seek may
+      // leave the file list: `all` loops it in BOTH directions, every other mode
+      // stops at its ends. Backwards additionally stands down under 仅当前,
+      // where the mapped position is bounded by the foreground file's window.
+      final bool loopList = bgRepeat == Repeat.all;
       final target = resolveLockTarget(
         fgMs: fgMs,
         offsetMs: effectiveOffset,
@@ -919,8 +1030,21 @@ class BackgroundRuntimeScope extends HookWidget {
         // The 副音 queue is a virtual continuous track: a target past its end
         // loops back to an earlier file at the corresponding position ("如果
         // bg seek 不到 → 循环回更前面的媒体衔接后对应位置").
-        wrap: true,
+        wrap: loopList,
+        // A target BEFORE the head counts back the same way: the foreground
+        // jumped back (退格回 0), and the elapsed 副音 durations decide which
+        // earlier entry it lands in ("按几个 bg duration 落到哪个之前的
+        // position").
+        wrapBackward: loopList && applyScope != BgApplyScope.currentOnly,
       );
+      // A cross-file roll is located against the WHOLE timeline: with an entry
+      // whose duration is still unknown the total is understated and the modulo
+      // would land on the wrong file. Leave the pair alone until the probe
+      // resolves it (the row is flagged in the queue list).
+      if (bgLockTargetRolls(target, currentIndex) && !timeline.fullyKnown) {
+        anchor();
+        return null;
+      }
       suppressUntil.value = now.add(const Duration(milliseconds: 400));
       if (bgLockTargetRolls(target, currentIndex)) {
         unawaited(
@@ -938,6 +1062,7 @@ class BackgroundRuntimeScope extends HookWidget {
         // drift could be skipped.
         //
         // Our own bg seek: its landing must not be read back as a bg gesture.
+        systemSeekIssued.value = true;
         bg.noteSystemSeek();
         unawaited(engine.seek(Duration(milliseconds: target.localMs)));
       }
@@ -960,11 +1085,16 @@ class BackgroundRuntimeScope extends HookWidget {
       scopeApplied,
       engine.isInitializing,
       mappedOwnsBg,
+      bgRepeat,
       fg.posMs,
       fgRate,
       fgWindow.durationMs,
       fgWindow.virtualOffsetMs,
-      alignOffsetMs,
+      // The pinned queue-VIRTUAL offset (not the file-local [alignOffsetMs]): a
+      // mirror that re-anchors when this changes must see the offset the pair is
+      // actually held at, and must NOT be disturbed by the file-local value
+      // alone (it is pinned/frozen independently).
+      alignVirtualOffset,
       engine.position.inMilliseconds,
       timeline,
       currentIndex,
@@ -1003,15 +1133,19 @@ class BackgroundRuntimeScope extends HookWidget {
       }
       final highSync = shouldSyncPosition(link: seekLink, level: lockLevel);
       final fgDur = fg.durMs;
-      final int effectiveOffset = alignOffsetMs ?? lockOffsetMs.value;
-      final bool offsetReady = alignOffsetMs != null || lockOffsetReady.value;
+      final int effectiveOffset = alignVirtualOffset ?? lockOffsetMs.value;
+      final bool offsetReady =
+          alignVirtualOffset != null || lockOffsetReady.value;
       if (applyScope != BgApplyScope.currentOnly ||
           !highSync ||
           editing ||
           mappedOwnsBg ||
           fgDur <= 0 ||
           !offsetReady ||
-          timeline.isEmpty) {
+          timeline.isEmpty ||
+          // The window is derived from the queue prefix: an unresolved duration
+          // anywhere up to the current entry invalidates it.
+          !timeline.mappingUsableThrough(currentIndex)) {
         store.publishSeekWindow();
         return null;
       }
@@ -1028,10 +1162,12 @@ class BackgroundRuntimeScope extends HookWidget {
           fgDurMs: fgDur,
         ),
       );
-      final bgVirtual = timeline.virtualPositionOf(
+      final int? bgVirtualOrNull = timeline.tryVirtualPositionOf(
         currentIndex,
         engine.position.inMilliseconds,
       );
+      if (bgVirtualOrNull == null) return null;
+      final int bgVirtual = bgVirtualOrNull;
       if (engine.isPlaying &&
           shouldPauseBgPastWindow(
             bgVirtualMs: bgVirtual,
@@ -1075,7 +1211,7 @@ class BackgroundRuntimeScope extends HookWidget {
       timeline,
       currentIndex,
       isScrubbing,
-      alignOffsetMs,
+      alignVirtualOffset,
     ]);
 
     // NOTE: while the align editor is open, the bg position is driven by the
@@ -1090,7 +1226,7 @@ class BackgroundRuntimeScope extends HookWidget {
     //
     // A run's FIRST file is aligned from the persisted default; every USER
     // switch (queue step/jump) re-applies the mode so the new file lands where
-    // the setting says (`fromFgHead` → `bgPos = fgPos`). A natural completion is
+    // the setting says (`sameClock` → `bgPos = fgPos`). A natural completion is
     // owned by the scope ([BgExhaustedAction.nextBg]) and chains from the new
     // file's 00:00 without re-aligning.
     final firstAlignDoneForRun = useRef(false);
@@ -1169,22 +1305,39 @@ class BackgroundRuntimeScope extends HookWidget {
       firstAlignDoneForRun.value = true;
       final store = useBackgroundPlaybackStore();
       final int fgPos = fgWindow.positionMs;
+      final int fgDur = fgWindow.durationMs;
       final int bgDur = engine.duration.inMilliseconds;
-      // Publish the AUTHORITATIVE offset of this alignment BEFORE any seek: the
-      // mirror then keeps the pair on the user's anchor instead of re-deriving
-      // one from the landing (which would drop a non-zero offset).
-      final int offset = resolveAlignmentOffsetMs(
-        mode: alignMode,
-        currentFgMs: fgPos,
+      // ── The AUTOMATIC anchoring rule (see [resolveAutoAlignAnchor]) ──
+      //
+      // Every FRESH anchor — the first open of a run, a user switch (list click
+      // or panel step), or an explicit restart — is decided from the two REAL
+      // durations. The persisted 「默认对齐」 no longer drives it, and the 副音
+      // side never virtualizes and never takes an estimated duration. A manual
+      // 「更新对齐」 never reaches this chain (it publishes its own offset and
+      // seeks itself via `setAlignMode(rerun: false)`), so it stays authoritative
+      // for the session.
+      final auto = resolveAutoAlignAnchor(
         bgDurMs: bgDur,
-        percent: alignPercent,
+        fgDurMs: fgDur,
+        fgPosMs: fgPos,
+      );
+      // Publish the AUTHORITATIVE offset of this alignment BEFORE any seek: the
+      // mirror then keeps the pair on this anchor instead of re-deriving one from
+      // the landing (which would drop a non-zero offset).
+      final int offset = alignmentOffsetMs(
+        fgAnchorMs: auto.fgAnchorMs,
+        bgAnchorMs: auto.bgAnchorMs,
       );
       store.setAlignOffset(offset);
+      // Display + threshold input: the alignment editor shows which answer the
+      // rule produced, and the remaining-time prompt stands down under 尾部锚定.
+      store.setAlignMode(mode: auto.mode, rerun: false);
       final int target = bgAlignTargetMs(
-        mode: alignMode,
+        mode: auto.mode,
         fgPosMs: fgPos,
         bgDurMs: bgDur,
         percent: alignPercent,
+        fgDurMs: fgDur,
       );
       // Under nextBg the alignment must never park the 副音 at the current
       // file's tail when the mapped position lies BEYOND it: the current fg
@@ -1194,17 +1347,45 @@ class BackgroundRuntimeScope extends HookWidget {
       // seek below).
       final bool needsContinuation =
           bgExhaustedAction == BgExhaustedAction.nextBg &&
-          bgDur > 0 &&
-          fgPos - offset >= bgDur;
-      if (needsContinuation) {
+              bgDur > 0 &&
+              fgPos - offset >= bgDur;
+      if (needsContinuation &&
+          currentIndex >= 0 &&
+          currentIndex < queue.length &&
+          bgContinuationPublishable(timeline, currentIndex)) {
+        // Publish THIS alignment's queue-VIRTUAL pin BEFORE handing the
+        // continuation over: `setAlignOffset` deliberately KEEPS the previous
+        // pin, and the pin effect (declared above) re-derives it only on the
+        // NEXT build — while the continuation effect runs in the same flush and
+        // reads `alignVirtualOffset` directly. It would otherwise compute the
+        // landing from the PREVIOUS alignment's offset. The aligned file is the
+        // OPEN one here (this chain runs on a fresh anchor), so its prefix is
+        // `offsetOf(currentIndex)` — the same value the pin effect derives.
+        if (currentIndex >= 0 && currentIndex < queue.length) {
+          store.setAlignVirtualOffset(
+            offsetMs: alignmentVirtualOffsetMs(
+              fileLocalOffsetMs: offset,
+              fileVirtualStartMs: timeline.offsetOf(currentIndex),
+            ),
+            anchorIndex: currentIndex,
+            anchorKey: backgroundMediaKey(queue[currentIndex]),
+          );
+        }
+        systemSeekIssued.value = true;
         store.noteSystemSeek();
         store.requestBgContinuation(fromAlign: true);
         return null;
       }
+      // Latch the landing even when the target IS 0: the mirror must hold until
+      // 副音's position has settled, otherwise a stale head sample is judged as
+      // drift and drags the video onto it (see [bgMasterMaySeekFg]).
+      //
+      // …but a ZERO target sends no seek, so there is no landing to hold for:
+      // recording that lets the latch consume on the next sample instead of
+      // freezing the mirror until the 900ms deadline.
+      systemSeekIssued.value = target > 0;
+      store.noteSystemSeek();
       if (target > 0) {
-        // A system landing: latch it so the mirror swallows the jump instead of
-        // driving the foreground with it.
-        store.noteSystemSeek();
         unawaited(engine.seek(Duration(milliseconds: target)));
       }
       store.clearBgExhausted();
@@ -1216,7 +1397,9 @@ class BackgroundRuntimeScope extends HookWidget {
       openKey,
       alignReady,
       alignPercent,
-      alignMode,
+      // NOT `alignMode`: the mode is an OUTPUT of this effect (published for the
+      // editor's display), so depending on it would only cause a second, no-op
+      // pass.
       bgUserAlignSeq,
       tiledSeekSeq,
       tiledTargetIndex,
@@ -1239,8 +1422,7 @@ class BackgroundRuntimeScope extends HookWidget {
     // already parked past the ceiling is skipped — the §2c window owns it.
     final autoPauseLatched = useRef(false);
     final autoPauseOpenKey = useRef<String?>(null);
-    final bgCeilingLocalMs =
-        bg.select(context, (s) => s.bgSeekCeilingLocalMs);
+    final bgCeilingLocalMs = bg.select(context, (s) => s.bgSeekCeilingLocalMs);
     useEffect(() {
       final store = useBackgroundPlaybackStore();
       if (!enabled || !gateOpen) {
@@ -1264,6 +1446,10 @@ class BackgroundRuntimeScope extends HookWidget {
         bgPosMs: pos,
         thresholdSec: alignAutoPauseRemainSec,
         ceilingLocalMs: bgCeilingLocalMs,
+        // A tail-anchored pair (see [BgAlignMode.tailAtFg]) runs out exactly when
+        // the VIDEO does: the prompt would only fire in the last seconds of both,
+        // so it is skipped.
+        tailAnchored: alignMode == BgAlignMode.tailAtFg,
       )) {
         autoPauseLatched.value = false;
         return null;
@@ -1284,6 +1470,8 @@ class BackgroundRuntimeScope extends HookWidget {
       enabled,
       gateOpen,
       alignAutoPauseRemainSec,
+      // The automatic rule's answer: 尾部锚定 suppresses the prompt.
+      alignMode,
       editing,
       alignPanelOpen,
       bgCeilingLocalMs,
@@ -1312,33 +1500,115 @@ class BackgroundRuntimeScope extends HookWidget {
     // continuation runs in a `finally` so a dismissed/failed dialog can never
     // strand the queue on the completed file.
     final prevContinuationSeq = useRef(bgContinuationSeq);
+    // A request stays PENDING until it has actually acted: the mapping needs the
+    // queue's resolved durations, which can arrive one probe pass after the
+    // request (a cold start). Dropping it there is what left 副音 silent on the
+    // completed file.
+    final continuationPending = useRef(false);
     useEffect(() {
-      if (bgContinuationSeq == prevContinuationSeq.value) return null;
-      prevContinuationSeq.value = bgContinuationSeq;
-      if (!enabled || !gateOpen || bgExhausted) return null;
-      if (bgExhaustedAction != BgExhaustedAction.nextBg) return null;
-      if (editing || mappedOwnsBg) return null;
+      if (bgContinuationSeq != prevContinuationSeq.value) {
+        prevContinuationSeq.value = bgContinuationSeq;
+        continuationPending.value = true;
+      }
+      if (!continuationPending.value) return null;
       final store = useBackgroundPlaybackStore();
-      if (timeline.isEmpty || timeline.totalMs <= 0) {
-        // No known duration to locate in: stop rather than guess.
-        store.setPlaying(false);
-        unawaited(engine.pause());
+      if (!enabled ||
+          !gateOpen ||
+          bgExhausted ||
+          bgExhaustedAction != BgExhaustedAction.nextBg) {
+        continuationPending.value = false;
+        return null;
+      }
+      if (editing || mappedOwnsBg) {
+        // Another owner holds the pair right now (A-B editor, E-节 mapping):
+        // keep the request pending so it lands once that owner releases it.
+        return null;
+      }
+      // Wait for the duration resolve instead of guessing from a half-built
+      // timeline: `timeline` is a dependency, so the request re-evaluates the
+      // moment the probe lands.
+      if (durationsFuture.connectionState == ConnectionState.waiting &&
+          (timeline.isEmpty || timeline.totalMs <= 0 || !timeline.fullyKnown)) {
+        return null;
+      }
+      continuationPending.value = false;
+      // 保证有副音: the looping timeline cannot be located in (an unresolved or
+      // failed duration would make the modulo land on the wrong entry), so map
+      // NOTHING — walk the queue ONE entry forward instead of stopping 副音.
+      // `step` honours the list repeat (`none` stops at the end and clears
+      // `bgAutoPlay` itself) and, being a natural system move, leaves the
+      // alignment chain alone; the new file starts at its own head, and the
+      // 高同步 drift correction re-parks it once the durations resolve.
+      if (timeline.isEmpty || timeline.totalMs <= 0 || !timeline.fullyKnown) {
+        unawaited(() async {
+          final int before = store.state.currentIndex;
+          final bool moved = await store.step(
+            forward: true,
+            excludedKey: excludedForegroundKey(),
+          );
+          // Nowhere to advance to (`Repeat.none` at the list's end): the setting
+          // owns that, and `step` already cleared `bgAutoPlay`, so the engine
+          // pauses there.
+          if (!moved) return;
+          // The list looped back onto the entry that is ALREADY open (a
+          // single-entry queue): no re-open follows, so restart it explicitly —
+          // otherwise the request would leave 副音 silent again.
+          if (store.state.currentIndex == before) {
+            store.setPlaying(true);
+            systemSeekIssued.value = true;
+            store.noteSystemSeek();
+            await engine.replay();
+          }
+        }());
         return null;
       }
       final int fgMs = fgWindow.positionMs;
-      final int offset = alignOffsetMs ?? lockOffsetMs.value;
+      final int offset = alignVirtualOffset ?? lockOffsetMs.value;
+      // The 副音 list's repeat setting owns whether the mapping may leave the
+      // list: `all` loops it, every other mode stops at its end.
+      final bool loopList = bgRepeat == Repeat.all;
       final target = resolveBgContinuation(
         fgMs: fgMs,
         offsetMs: offset,
         timeline: timeline,
+        wrap: loopList,
       );
       if (target == null) return null;
       final bool fromAlign = bgContinuationFromAlign;
+      // Without the loop mode the mapping can only CLAMP a target that ran past
+      // the list onto the LAST entry's tail: the list is over. Nothing can be
+      // continued onto — the landing would sit on the tail it already completed
+      // and re-complete forever — so BOTH paths STOP here: the natural
+      // completion silently, and the ALIGNMENT path without its explainer (the
+      // dialog would only promise a landing that instantly ends again).
+      final bool listOver = !loopList &&
+          bgVirtualTargetMs(fgMs: fgMs, offsetMs: offset) >= timeline.totalMs;
+      if (listOver) {
+        store.setPlaying(false);
+        unawaited(engine.pause());
+        return null;
+      }
 
       void apply() {
         // A system landing: the open + local seek, with the landing swallowed so
         // the mirror never drives the foreground with it.
         store.setPlaying(true);
+        if (target.index == currentIndex) {
+          // The landing sits inside the file that is ALREADY open: the queue
+          // does not move, so nothing re-opens the engine — and a natural end
+          // left it paused behind its own `_ended` latch, which `setPlaying`
+          // cannot clear (bgAutoPlay is already true, so the autoplay sync sees
+          // no change). Resume HERE: our own seek (swallowed by the mirror) to
+          // the mapped position, then play.
+          systemSeekIssued.value = true;
+          store.noteSystemSeek();
+          unawaited(() async {
+            await engine.seek(Duration(milliseconds: target.localMs));
+            if (!context.mounted) return;
+            await engine.play();
+          }());
+          return;
+        }
         unawaited(store.requestLockTarget(
           index: target.index,
           targetMs: target.localMs,
@@ -1385,7 +1655,24 @@ class BackgroundRuntimeScope extends HookWidget {
       });
       return null;
       // ignore: prefer_const_constructors
-    }, [bgContinuationSeq]);
+    }, [
+      bgContinuationSeq,
+      timeline,
+      durationsFuture.connectionState,
+      bgRepeat,
+      // Guard inputs are dependencies too: a request left PENDING by another
+      // owner (the A-B editor / an E-节 mapping) must re-evaluate when that owner
+      // releases the pair, and must be dropped when the run itself goes away.
+      enabled,
+      gateOpen,
+      bgExhausted,
+      bgExhaustedAction,
+      editing,
+      mappedOwnsBg,
+      // The pair's pinned virtual offset: a pending request must re-evaluate on
+      // it (a landing computed from a stale one would leave 副音 off-anchor).
+      alignVirtualOffset,
+    ]);
 
     // A Virtual Media block carrying a SAVED mapping outranks the VM scope rule
     // ("任何实际视频保存的规则映射大于这个规则"): the VM link bumps this when
@@ -1414,6 +1701,15 @@ class BackgroundRuntimeScope extends HookWidget {
           width: 0,
           height: 0,
           child: BgQueueSyncObserver(),
+        ),
+        // Duration resolution of the queue: probes what `media_nodes` lacks and
+        // publishes the failures for the queue list (see the widget's docs).
+        const Positioned(
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          child: BgDurationProbeObserver(),
         ),
       ],
     );

@@ -38,7 +38,6 @@ abstract final class SettingTexts {
         'resume_on_startup' => t.set_resume_on_startup,
         'drop_append_zone_percent' => t.set_drop_append_zone_percent,
         'playback_cache_preset' => t.set_playback_cache_preset,
-        'playback_step_seek_mode' => t.set_playback_step_seek_mode,
         'controls_title_settings' => t.controls_title_settings,
         'minimal_title_settings' => t.minimal_title_settings,
         'warning_dialog_prefs' => t.set_warning_dialog_prefs,
@@ -69,7 +68,6 @@ abstract final class SettingTexts {
         'set_bg_rate_lock' => t.set_bg_rate_lock,
         'set_bg_allow_same_file' => t.set_bg_allow_same_file,
         'set_bg_video_layout' => t.set_bg_video_layout,
-        'set_bg_sources' => t.set_bg_sources,
         'set_bg_keep_warm' => t.set_bg_keep_warm,
         'set_bg_start_armed' => t.set_bg_start_armed,
         'set_bg_gate_stop_behavior' => t.set_bg_gate_stop_behavior,
@@ -113,7 +111,6 @@ abstract final class SettingTexts {
         'video_display_mode' => t.set_video_display_mode,
         'gesture_profile' => t.set_gesture_profile,
         'scan_rescan_reminder' => t.set_scan_rescan_reminder,
-        'set_bg_fallback_banner' => t.set_bg_fallback_banner,
         'transfer_audit_title' => t.transfer_audit_title,
         'center_zone_inward' => t.center_zone_inward,
         'center_zone_outward' => t.center_zone_outward,
@@ -150,7 +147,6 @@ abstract final class SettingTexts {
         'resume_on_startup_desc' => t.set_resume_on_startup_desc,
         'drop_append_zone_percent_desc' => t.set_drop_append_zone_percent_desc,
         'playback_cache_preset_desc' => t.set_playback_cache_preset_desc,
-        'playback_step_seek_mode_desc' => t.set_playback_step_seek_mode_desc,
         'identity_entries_desc' => t.set_identity_entries_desc,
         'auto_resize_desc' => t.set_auto_resize_desc,
         'playlist_panel_mode_desc' => t.set_playlist_panel_mode_desc,
@@ -195,7 +191,6 @@ abstract final class SettingTexts {
         'set_bg_rate_lock_desc' => t.set_bg_rate_lock_desc,
         'set_bg_allow_same_file_desc' => t.set_bg_allow_same_file_desc,
         'set_bg_video_layout_desc' => t.set_bg_video_layout_desc,
-        'set_bg_sources_desc' => t.set_bg_sources_desc,
         'set_bg_keep_warm_desc' => t.set_bg_keep_warm_desc,
         'set_bg_keep_warm_off_notice' => t.set_bg_keep_warm_off_notice,
         'set_bg_start_armed_desc' => t.set_bg_start_armed_desc,
@@ -226,7 +221,6 @@ abstract final class SettingTexts {
         'set_bg_align_snap_desc' => t.set_bg_align_snap_desc,
         'set_bg_align_snap_release_limit_desc' =>
           t.set_bg_align_snap_release_limit_desc,
-        'set_bg_fallback_banner_desc' => t.set_bg_fallback_banner_desc,
         'set_tag_play_input_bar_desc' => t.set_tag_play_input_bar_desc,
         'set_tag_play_input_hint_desc' => t.set_tag_play_input_hint_desc,
         'set_tag_play_view_stack_desc' => t.set_tag_play_view_stack_desc,
@@ -271,11 +265,6 @@ abstract final class SettingTexts {
             'low' => t.set_cache_preset_low,
             'balanced' => t.set_cache_preset_balanced,
             'high' => t.set_cache_preset_high,
-            _ => name,
-          },
-        'playback.stepSeekMode' => switch (name) {
-            'precise' => t.set_step_seek_mode_precise,
-            'adaptive' => t.set_step_seek_mode_adaptive,
             _ => name,
           },
         'app.themeMode' => switch (name) {
@@ -404,12 +393,6 @@ abstract final class SettingTexts {
         'background_playback.vmScopeMode' => switch (name) {
             'perBlock' => t.bg_vm_scope_per_block,
             'wholeVirtual' => t.bg_vm_scope_whole,
-            _ => name,
-          },
-        'background_playback.alignDefault' => switch (name) {
-            'fgHead' => t.bg_align_default_fg_head,
-            'fgPosition' => t.bg_align_default_fg_position,
-            'bgPercent' => t.bg_align_default_bg_percent,
             _ => name,
           },
         'background_playback.exhaustedAction' => switch (name) {

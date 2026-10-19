@@ -7,6 +7,7 @@ import 'package:iris/features/control_group/domain/center_zone.dart';
 import 'package:iris/features/control_group/model/enum/player_control_group.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/features/control_group/view/control_group_floating_button.dart';
+import 'package:iris/globals.dart' show sidewayQuickColumnAttachedNotifier;
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/store/app_state.dart';
@@ -367,6 +368,42 @@ void main() {
         find.byKey(const ValueKey<String>('control_group_floating_button')),
         findsNothing,
       );
+    });
+
+    testWidgets('stands down while the side panel carries the 副音 column',
+        (tester) async {
+      tester.view.physicalSize = const Size(1400, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      addTearDown(() => sidewayQuickColumnAttachedNotifier.value = false);
+
+      final store = useControlGroupStore();
+      await store.initialized;
+      store.set(store.state.copyWith(
+        floatingButtonPortrait: false,
+        floatingButtonLandscape: false,
+        floatingButtonDesktop: true,
+      ));
+
+      await tester.pumpWidget(_harness(const ControlGroupFloatingButton()));
+      await tester.pumpAndSettle();
+      final Finder button =
+          find.byKey(const ValueKey<String>('control_group_floating_button'));
+      expect(button, findsOneWidget,
+          reason: 'precondition: the desktop flag alone shows the switch');
+
+      // The side-type panel attached its own 副音 quick column (published by
+      // `CircleSliderLayout`): the same controls are already on screen, so the
+      // switch button stands down instead of sitting on top of the strip.
+      sidewayQuickColumnAttachedNotifier.value = true;
+      await tester.pumpAndSettle();
+      expect(button, findsNothing);
+
+      // Column gone (switch off, group 2 active, a narrow budget) → the switch
+      // is the only way to the 副音 group again.
+      sidewayQuickColumnAttachedNotifier.value = false;
+      await tester.pumpAndSettle();
+      expect(button, findsOneWidget);
     });
   });
 

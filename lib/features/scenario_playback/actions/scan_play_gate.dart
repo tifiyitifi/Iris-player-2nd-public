@@ -10,6 +10,7 @@ import 'package:iris/features/scenario_playback/actions/pending_play_intent.dart
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_error.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/db/storage_path_codec.dart';
@@ -172,7 +173,12 @@ List<ScenarioSourceSpec> collapseGateDirs(List<ScenarioSourceSpec> dirs) {
       kept.add(path);
     }
     for (final path in kept) {
-      out.add((storageId: entry.key, path: path, recursive: true));
+      out.add((
+        storageId: entry.key,
+        path: path,
+        recursive: true,
+        kind: ScenarioSourceKind.folder,
+      ));
     }
   }
   return out;

@@ -1,7 +1,7 @@
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/models/file.dart';
-import 'package:iris/models/storages/storage.dart' show StorageType;
+import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_storage_store.dart';
 
 /// Converts a scanned [MediaFile] into the playback-side [FileItem] the 副音
@@ -11,8 +11,16 @@ import 'package:iris/store/use_storage_store.dart';
 ///
 /// Mirrors the node→file conversion in `tag_voice_candidate_source.dart` and
 /// `tag_play_controller._toEntry`; keep all three in sync.
-FileItem backgroundFileItemFromMediaFile(MediaFile f) {
-  final storage = useStorageStore().findById(f.storageId);
+FileItem backgroundFileItemFromMediaFile(
+  MediaFile f, {
+  Map<String, Storage?>? storages,
+}) {
+  final storage = storages == null
+      ? useStorageStore().findById(f.storageId)
+      : storages.putIfAbsent(
+          f.storageId,
+          () => useStorageStore().findById(f.storageId),
+        );
   return FileItem(
     storageId: f.storageId,
     storageType: storage?.type ?? StorageType.none,

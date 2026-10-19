@@ -19,13 +19,23 @@ library;
 /// documented graceful degradation (the alternative, refusing to follow, would
 /// be worse).
 class BgQueueTimeline {
-  BgQueueTimeline(List<int> durationsMs)
+  BgQueueTimeline(List<int> durationsMs, {Set<int> unknownIndices = const <int>{}})
       : durationsMs = List<int>.unmodifiable(
           durationsMs.map((d) => d < 0 ? 0 : d),
+        ),
+        unknownIndices = Set<int>.unmodifiable(
+          unknownIndices.where((i) => i >= 0 && i < durationsMs.length),
         ),
         prefixMs = _buildPrefix(durationsMs);
 
   final List<int> durationsMs;
+
+  /// Indices whose duration could NOT be resolved (a missing `media_nodes`
+  /// duration, a pending probe, or a probe failure). The 副音 queue marks them
+  /// explicitly so the mapping can STAND DOWN instead of fabricating a 0 — see
+  /// [tryVirtualPositionOf]. A 0 duration is indistinguishable from "unknown"
+  /// for a real file, so both count as unknown here.
+  final Set<int> unknownIndices;
 
   /// `prefixMs[i]` = virtual start offset of queue index `i`.
   final List<int> prefixMs;
@@ -42,15 +52,65 @@ class BgQueueTimeline {
   int get length => durationsMs.length;
   int get totalMs => prefixMs.isEmpty ? 0 : prefixMs.last;
 
+  /// True when at least one entry lacks a duration.
+  bool get hasUnknown => unknownIndices.isNotEmpty;
+
+  /// Whether [index]'s own duration is known.
+  bool knownAt(int index) =>
+      index >= 0 &&
+      index < length &&
+      !unknownIndices.contains(index) &&
+      durationsMs[index] > 0;
+
+  /// Whether the VIRTUAL mapping can be trusted THROUGH [index]: the timeline is
+  /// usable and every entry up to and including it carries a duration (those are
+  /// the prefix offsets the mapping is built from).
+  bool mappingUsableThrough(int index) {
+    if (isEmpty || totalMs <= 0 || index < 0) return false;
+    final upto = index >= length ? length - 1 : index;
+    for (var i = 0; i <= upto; i++) {
+      if (unknownIndices.contains(i) || durationsMs[i] <= 0) return false;
+    }
+    return true;
+  }
+
+  /// Whether a TOTAL/wrap-based mapping (a cross-file roll) can be trusted: the
+  /// modulo over an understated total would land on the wrong entry.
+  bool get fullyKnown {
+    if (isEmpty || totalMs <= 0) return false;
+    for (var i = 0; i < length; i++) {
+      if (unknownIndices.contains(i) || durationsMs[i] <= 0) return false;
+    }
+    return true;
+  }
+
   int offsetOf(int index) =>
       (index < 0 || index >= prefixMs.length) ? 0 : prefixMs[index];
 
   /// Virtual ms of `(index, localMs)`, clamped into the queue.
+  ///
+  /// NOTE: an unknown-duration entry collapses to 0 here (a documented graceful
+  /// degradation for the foreground queue). Callers that must not act on a
+  /// fabricated position — the 副音 position mirror — use
+  /// [tryVirtualPositionOf] instead.
   int virtualPositionOf(int index, int localMs) {
     if (isEmpty) return 0;
     final i = index.clamp(0, length - 1);
     final local = localMs.clamp(0, durationsMs[i]);
     return (offsetOf(i) + local).clamp(0, totalMs);
+  }
+
+  /// Virtual ms of `(index, localMs)`, or NULL when that entry's duration is
+  /// unknown (or the index is out of range).
+  ///
+  /// The NULL is the point: 副音's position must never be fabricated as 0, which
+  /// collapsed the mapping onto the queue head and let the continuous drift
+  /// correction drag the VIDEO there (「开启副音把播放进度归 0」).
+  int? tryVirtualPositionOf(int index, int localMs) {
+    if (isEmpty || index < 0 || index >= length) return null;
+    if (unknownIndices.contains(index) || durationsMs[index] <= 0) return null;
+    final local = localMs.clamp(0, durationsMs[index]);
+    return (offsetOf(index) + local).clamp(0, totalMs);
   }
 
   /// Maps a virtual position to `(index, localMs)`; the LATER entry wins at a
@@ -72,6 +132,18 @@ class BgQueueTimeline {
     return (lo, pos - prefixMs[lo]);
   }
 }
+
+/// Whether a cross-file continuation may be published for the OPEN queue entry
+/// at [index]: the mapped landing must be trusted, so every duration up to and
+/// including that entry has to be known ([BgQueueTimeline.mappingUsableThrough]).
+///
+/// An unknown prefix collapses those entries to 0 ms in [BgQueueTimeline.offsetOf],
+/// which understates the entry's virtual start and would publish a WRONG pin
+/// (frozen until the durations resolve). Skipping the continuation for this
+/// flush lets the normal seek path handle it and defers the pin to a later,
+/// trusted alignment.
+bool bgContinuationPublishable(BgQueueTimeline timeline, int index) =>
+    index >= 0 && timeline.mappingUsableThrough(index);
 
 /// A resolved foreground→副音 mapping target.
 class BgLockTarget {
@@ -121,38 +193,68 @@ bool bgLockTargetRolls(BgLockTarget target, int currentIndex) =>
 /// must wrap onto the entry carrying the same virtual position rather than
 /// restart the next file at its own 00:00 (which would silently re-anchor the
 /// offset). Returns null when the queue has no known duration to locate in.
+///
+/// [wrap] carries the 副音 list's own repeat setting: `Repeat.all` loops the
+/// list, every other mode stops at its end. With it off, a target that ran past
+/// the LAST entry clamps onto that entry's tail — the caller must treat "at or
+/// past the list end with no wrap" as exhausted (nothing left to continue
+/// with), never as a landing to resume on.
 ({int index, int localMs})? resolveBgContinuation({
   required int fgMs,
   required int offsetMs,
   required BgQueueTimeline timeline,
+  bool wrap = true,
 }) {
   if (timeline.isEmpty || timeline.totalMs <= 0) return null;
   final t = resolveLockTarget(
     fgMs: fgMs,
     offsetMs: offsetMs,
     timeline: timeline,
-    wrap: true,
+    wrap: wrap,
   );
   return (index: t.fileIndex, localMs: t.localMs);
 }
 
+/// Virtual 副音 position a foreground moment maps to (`fgMs - offsetMs`),
+/// unclamped. Callers compare it against `timeline.totalMs` to tell a real
+/// landing from "past the end of the list" (see [resolveBgContinuation]).
+int bgVirtualTargetMs({required int fgMs, required int offsetMs}) =>
+    fgMs - offsetMs;
+
 /// Maps `fgMs` onto the 副音 queue under a fixed `offsetMs`.
 ///
-/// `bgVirtual = fgMs - offsetMs`. A negative target clamps to the queue head;
-/// an overflow wraps (modulo the queue total) only under `wrap`, otherwise it
-/// clamps to the last file's end.
+/// `bgVirtual = fgMs - offsetMs`. A negative target clamps to the queue head —
+/// or counts BACK through the list when [wrapBackward] is on (the "fg jumped
+/// back to 00:00, so 副音 must re-derive where it lands" case). An overflow
+/// wraps (modulo the queue total) only under [wrap], otherwise it clamps to the
+/// last file's end.
+///
+/// [wrap] and [wrapBackward] both carry the 副音 list's own repeat setting
+/// (`Repeat.all` = allow crossing file boundaries), so the mapping can never
+/// loop a list the user pinned to a single pass; [wrapBackward] additionally
+/// stays off under the 仅当前 scope, where the mapped position is bounded by the
+/// foreground file's own window.
 BgLockTarget resolveLockTarget({
   required int fgMs,
   required int offsetMs,
   required BgQueueTimeline timeline,
   bool wrap = false,
+  bool wrapBackward = false,
 }) {
   if (timeline.isEmpty) return const BgLockTarget(0, 0, 0, false);
   final total = timeline.totalMs;
   var target = fgMs - offsetMs;
   var wrapped = false;
   if (target < 0) {
-    target = 0;
+    if (wrapBackward && total > 0) {
+      // Dart's `%` on ints already returns a non-negative result for a positive
+      // divisor, so this is "count back from the end": the earlier file the
+      // elapsed bg durations land in.
+      target = target % total;
+      wrapped = true;
+    } else {
+      target = 0;
+    }
   } else if (target >= total) {
     // `>=`: at EXACTLY the queue end (`target == total`, which is where a
     // lockstep natural completion of the LAST file lands) a wrap must still go

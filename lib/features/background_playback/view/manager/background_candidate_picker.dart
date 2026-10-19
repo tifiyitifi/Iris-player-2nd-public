@@ -1,18 +1,19 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:iris/features/background_playback/services/background_candidate_cache.dart';
+import 'package:iris/features/background_playback/services/background_scenario_pool.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_message_dialog.dart';
 
-/// Picks a replacement background file from the 副音 candidate pool (source
-/// rules → 「副音备选」tag fallback), with the same double-play guard the
-/// playback launcher uses.
+/// Picks a replacement background file from the 副音 candidate pool (the
+/// reserved 「副音备选」tag's view), with the same double-play guard the playback
+/// launcher uses.
 ///
-/// The pool comes from the session candidate cache (resolved once per
-/// source-rules revision) — opening the picker never re-scans the library.
+/// The pool is re-resolved on every call (`guardedBgPool` → the tag view): the
+/// retired source rules and their session cache are gone, so opening the picker
+/// reflects whatever the tag holds right now.
 ///
 /// Returns the chosen [FileItem], or null on cancel/empty. When the pool is
 /// empty the caller sees an explanatory dialog (project rule: Dialog, never

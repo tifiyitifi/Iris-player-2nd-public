@@ -8,6 +8,17 @@ int clampVmLocalMs(int? segDurMs, int localMs) {
   return localMs.clamp(0, segDur - 1);
 }
 
+/// Last SEEKABLE millisecond inside a segment: `segDur - 1`.
+///
+/// The same "one ms short of the end" contract as [clampVmLocalMs]: landing ON
+/// `segDur` fires an instant `completed`. A step seek therefore has to be bounded
+/// by THIS, not by the raw duration, or it hands the engine a delta whose landing
+/// the OSD and the persisted position deliberately avoid.
+int vmLastSeekableMs(int? segDurMs) {
+  final segDur = segDurMs ?? 0;
+  return segDur <= 0 ? 0 : segDur - 1;
+}
+
 /// One physical video inside a Virtual Media item.
 class VirtualSegment {
   /// Canonical media key `storageId:path` (the system-wide identity used by

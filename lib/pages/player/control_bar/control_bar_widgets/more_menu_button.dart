@@ -44,7 +44,6 @@ import 'package:iris/widgets/dialogs/show_open_link_dialog.dart';
 import 'package:iris/widgets/dialogs/show_control_group_floating_dialog.dart';
 import 'package:iris/widgets/dialogs/show_slider_type_dialog.dart';
 import 'package:iris/widgets/dialogs/show_rate_dialog.dart';
-import 'package:iris/widgets/dialogs/show_snake_fine_window_dialog.dart';
 import 'package:iris/widgets/popup.dart';
 import 'package:iris/widgets/popups/history.dart';
 import 'package:iris/widgets/popups/settings/settings.dart';
@@ -82,9 +81,6 @@ class MoreMenuButton extends HookWidget {
     final rate = useAppStore().select(context, (s) => s.rate);
     final runtimeOrientation = useAppStore().select(context, (s) => s.runtimeOrientation);
     final popupDirection = useAppStore().select(context, (s) => s.defaultPopupDirection);
-    // snakeFineSec retained as dead state (fine-tune axis retired); menu entry removed per spec.
-    // ignore: unused_local_variable
-    final int snakeFineSec = useAppStore().select(context, (s) => s.snakeFineWindowSeconds);
     final int seekStepSec = useAppStore().select(context, (s) => s.seekStepSeconds);
 
     final width = MediaQuery.sizeOf(context).width;
@@ -259,12 +255,16 @@ class MoreMenuButton extends HookWidget {
         if (shouldShowSidePanelEntry)
           _unifiedSidePanelItem(context, t, sidePanelTitle),
         // Fine-tune range retired — dial axis strip now mirrors global seek step.
-        // _snakeFineItem retained as dead code (showSnakeFineWindowDialog still exists).
+        // (The More-menu entry is gone; the dialog itself is still reachable
+        // from Settings → Play.)
         // Phone-only playback tools (float panel + capture).
         if (isMobilePlatform) ...[
           _frameToolsItem(context, t, frameToolsVisible),
           _screenshotItem(context, t),
         ],
+        // Screen lock is NOT here any more: the guard moved back onto the
+        // playback row (it took the slot the 副音 menu vacated), phone + tablet
+        // video only — see `ScreenLockButton`.
         // Floating bottom-group switch button (phones / desktop).
         _controlGroupItem(context, t),
         // Subtitle & audio tracks — moved from control bar (now seek step) to More.
@@ -395,73 +395,11 @@ class MoreMenuButton extends HookWidget {
     );
   }
 
-  PopupMenuItem _openFileItem(
-      BuildContext context, t, KeyboardShortcutScheme scheme) {    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.file_open_rounded, size: kMenuTileIconSizeTiny),
-        title: Text(t.open_file),
-        trailing: _hintText(context, DesktopShortcutHintTarget.openFile, scheme),
-      ),
-      onTap: () async {
-        showControl();
-        if (isAndroid) {
-          await pickContentFile();
-        } else {
-          await pickLocalFile();
-        }
-        showControl();
-      },
-    );
-  }
-
-  Widget? _hintText(
-      BuildContext context, DesktopShortcutHintTarget target, KeyboardShortcutScheme scheme) {
-    final String? label = shortcutHintLabel(target, scheme);
-    if (label == null) return null;
-    return Text(
-      label,
-      style: TextStyle(
-          fontSize: kMenuTextFontSizeShortcut, color: Theme.of(context).dividerColor),
-    );
-  }
-
   Widget? _hintFromLabel(BuildContext context, String? label) {
     if (label == null) return null;
     return Text(
       label,
       style: TextStyle(fontSize: kMenuTextFontSizeShortcut, color: Theme.of(context).dividerColor),
-    );
-  }
-
-  /// Jump-to-position entry (PotPlayer `G` parity; visible on all platforms).
-  PopupMenuItem _jumpToTimeItem(
-      BuildContext context, t, KeyboardShortcutScheme scheme) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.schedule_rounded, size: kMenuTileIconSizeTiny),
-        title: Text(t.menu_jump_to_time),
-        trailing: _hintText(context, DesktopShortcutHintTarget.jumpToTime, scheme),
-      ),
-      onTap: () => showControlForHover(
-          showJumpToTimeDialog(context, context.read<MediaPlayer>())),
-    );
-  }
-
-  PopupMenuItem _openLinkItem(
-      BuildContext context, t, KeyboardShortcutScheme scheme) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.file_present_rounded, size: kMenuTileIconSizeTiny),
-        title: Text(t.open_link),
-        trailing: _hintText(context, DesktopShortcutHintTarget.openLink, scheme),
-      ),
-      onTap: () async {
-        isDesktop ? await showOpenLinkDialog(context) : await showOpenLinkBottomSheet(context);
-        showControl();
-      },
     );
   }
 
@@ -473,56 +411,6 @@ class MoreMenuButton extends HookWidget {
         title: Text('${t.playback_speed}: ${rate}X'),
       ),
       onTap: () => showControlForHover(showRatePickerDialog(context)),
-    );
-  }
-
-  PopupMenuItem _historyItem(BuildContext context, t, PopupDirection popupDirec,
-      KeyboardShortcutScheme scheme) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.history_rounded, size: kMenuTileIconSize),
-        title: Text(t.history),
-        trailing: _hintText(context, DesktopShortcutHintTarget.history, scheme),
-      ),
-      onTap: () => showControlForHover(
-        showPopup(
-          context: context,
-          child: const History(),
-          direction: popupDirec,
-        ),
-      ),
-    );
-  }
-
-  PopupMenuItem _settingsItem(BuildContext context, t, PopupDirection popupDirec,
-      KeyboardShortcutScheme scheme) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.settings_rounded, size: kMenuTileIconSize),
-        title: Text(t.settings),
-        trailing: _hintText(context, DesktopShortcutHintTarget.settings, scheme),
-      ),
-      onTap: () => showControlForHover(
-        showPopup(
-          context: context,
-          child: const Settings(),
-          direction: popupDirec,
-        ),
-      ),
-    );
-  }
-
-  PopupMenuItem _exitItem(BuildContext context, t, KeyboardShortcutScheme scheme) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.exit_to_app_rounded, size: kMenuTileIconSize),
-        title: Text(t.exit),
-        trailing: _hintText(context, DesktopShortcutHintTarget.exit, scheme),
-      ),
-      onTap: () => AppExit.run(context.read<MediaPlayer>().saveProgress),
     );
   }
 
@@ -654,17 +542,6 @@ class MoreMenuButton extends HookWidget {
         subtitle: Text(t.menu_side_panel_desc),
       ),
       onTap: () => showControlForHover(showSliderTypeDialog(context)),
-    );
-  }
-
-  PopupMenuItem _snakeFineItem(BuildContext context, t, int sec) {
-    return PopupMenuItem(
-      child: ListTile(
-        mouseCursor: SystemMouseCursors.click,
-        leading: const Icon(Icons.tune_rounded, size: kMenuTileIconSize),
-        title: Text(t.menu_fine_tune(sec)),
-      ),
-      onTap: () => showControlForHover(showSnakeFineWindowDialog(context)),
     );
   }
 

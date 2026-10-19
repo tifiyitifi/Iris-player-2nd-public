@@ -47,6 +47,7 @@ class BackgroundQuickBar extends HookWidget {
     this.overlayColor,
     this.mirrorColumns = false,
     this.forceVisible = false,
+    this.trailingAction,
   });
 
   /// [Axis.vertical] = the side-panel column grid; [Axis.horizontal] = the
@@ -68,6 +69,16 @@ class BackgroundQuickBar extends HookWidget {
   /// OFF. Used by the bottom control-group toggle, which owns its own group
   /// visibility and must not depend on that switch.
   final bool forceVisible;
+
+  /// Extra action appended AFTER the standard buttons — the 副音 menu ("the
+  /// counterpart of More on the playback row"). Phone group 2 passes the menu
+  /// button here; the button itself belongs to the page layer, so it is handed
+  /// in rather than imported.
+  ///
+  /// The VERTICAL side-panel strip must leave it null: its width budget is
+  /// derived from [kQuickBarVerticalActionCount] without measuring the grid, so
+  /// an extra action there would under-reserve the strip.
+  final Widget? trailingAction;
 
   @override
   Widget build(BuildContext context) {
@@ -292,6 +303,9 @@ class BackgroundQuickBar extends HookWidget {
       assert(buttons.length == kQuickBarVerticalActionCount,
           '副音 quick strip action count drifted from '
           'kQuickBarVerticalActionCount');
+      assert(trailingAction == null,
+          'the vertical 副音 strip must not carry a trailing action: its '
+          'width budget is derived from kQuickBarVerticalActionCount');
       // Adaptive grid: the fewest columns (1..kQuickMaxColumns) that fit the
       // panel's current height, so a tall panel stays a single column and a
       // short one widens to two. Still taller than two columns? Fall back to
@@ -365,6 +379,7 @@ class BackgroundQuickBar extends HookWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         for (final b in buttons) b,
+        if (trailingAction != null) trailingAction!,
       ],
     );
   }

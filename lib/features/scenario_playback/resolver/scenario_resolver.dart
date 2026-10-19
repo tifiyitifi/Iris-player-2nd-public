@@ -167,6 +167,12 @@ class ScenarioResolver {
     List<MediaType>? Function()? scopedMediaTypes,
     Map<ScenarioSourceKind, ScenarioSourceProvider>? providers,
     Future<List<VirtualMediaRule>> Function()? vmRulesProvider,
+    /// Optional per-scenario VM gate: returns false to make [scenarioId]'s
+    /// resolution ignore virtual-merge rules entirely. 副音 workspaces opt out
+    /// (their list is a plain real-single-file list), while the foreground
+    /// scenarios keep merging — and ONE resolver serves both, so the switch
+    /// must be per-scenario. Null = VM enabled for every scenario.
+    Future<bool> Function(String scenarioId)? vmEnabledFor,
     int maxCachedItems = kResolveCacheMaxItems,
     ScenarioQueueIndexDao? queueIndexDao,
     MediaOrderDao? mediaOrderDao,
@@ -177,14 +183,13 @@ class ScenarioResolver {
     Future<List<({int tagId, int nodeId})>> Function(DateTime? addedAfter)?
         tagMembersByTag,
     bool useSharedIndexRead = kUseSharedIndexRead,
-  })  : providers = providers ?? {
-          ScenarioSourceKind.folder: FolderSourceProvider(
-            scopedMediaTypes: scopedMediaTypes ?? currentBrowseScopeMediaTypes,
-          ),
-          ScenarioSourceKind.file: const FileSourceProvider(),
-        },
+  })  : providers = providers ??
+            _defaultProviders(
+              scopedMediaTypes: scopedMediaTypes ?? currentBrowseScopeMediaTypes,
+            ),
         _vmRulesProvider =
             vmRulesProvider ?? VirtualMediaService.instance.enabledRules,
+        _vmEnabledFor = vmEnabledFor,
         _maxCachedItems = maxCachedItems,
         _queueIndexDao = queueIndexDao,
         _mediaOrderDao = mediaOrderDao,
@@ -197,9 +202,36 @@ class ScenarioResolver {
         // and the provider's listing cannot disagree on media types.
         _scopedMediaTypes = scopedMediaTypes ?? currentBrowseScopeMediaTypes;
 
+  /// The default source-provider map: the path-based providers only. A tag
+  /// membership is handled by the tag VIEW layer (`TagViewResolver`), not as a
+  /// scenario source.
+  static Map<ScenarioSourceKind, ScenarioSourceProvider> _defaultProviders({
+    required List<MediaType>? Function() scopedMediaTypes,
+  }) {
+    return <ScenarioSourceKind, ScenarioSourceProvider>{
+      ScenarioSourceKind.folder:
+          FolderSourceProvider(scopedMediaTypes: scopedMediaTypes),
+      ScenarioSourceKind.file: const FileSourceProvider(),
+    };
+  }
+
   /// Enabled VM rules, injectable for store-free tests. Production reads the
   /// cached [VirtualMediaService] snapshot.
   final Future<List<VirtualMediaRule>> Function() _vmRulesProvider;
+
+  /// Per-scenario VM gate (see the constructor). Null = enabled everywhere.
+  final Future<bool> Function(String scenarioId)? _vmEnabledFor;
+
+  /// Effective VM rules for [scenarioId]: the global set, or empty when the
+  /// scenario opts out (see [_vmEnabledFor]). Every VM read funnels through
+  /// here so a single per-scenario opt-out is enough — the merged page, the
+  /// derived queue index and the definition signature all agree.
+  Future<List<VirtualMediaRule>> _vmRulesFor(String scenarioId) async {
+    if (await _vmEnabledFor?.call(scenarioId) == false) {
+      return const <VirtualMediaRule>[];
+    }
+    return _vmRulesProvider();
+  }
 
   /// Item cap governing both the full-walk materialization and the retained
   /// merged-stream cache (see [kResolveCacheMaxItems]).
@@ -455,7 +487,7 @@ class ScenarioResolver {
     // VM rules are persisted rows: hashing their JSON keeps the signature
     // comparable across restarts, unlike the in-memory VM revision counter.
     mix('vmrules');
-    final vmRules = [...await _vmRulesProvider()]
+    final vmRules = [...await _vmRulesFor(scenarioId)]
       ..sort((a, b) => a.id.compareTo(b.id));
     for (final r in vmRules) {
       mix(jsonEncode(r.toJson()));
@@ -565,7 +597,7 @@ class ScenarioResolver {
       ));
     }
 
-    final vmRules = await _vmRulesProvider();
+    final vmRules = await _vmRulesFor(scenarioId);
     final plan = ScenarioQueueBuilder.build(
       stream: stream,
       rules: vmRules,
@@ -814,7 +846,7 @@ class ScenarioResolver {
     // groups are derived FROM that stream ("根据源实时计算") — no library-wide
     // snapshot exists anywhere. Rules activate/change → notifyRulesChanged →
     // playbackVersion bump re-resolves the open lists immediately.
-    final vmRules = await _vmRulesProvider();
+    final vmRules = await _vmRulesFor(scenarioId);
 
     // A temporary override view is never cached (it must not evict the
     // persisted view's entry); the persisted-config key carries every
@@ -1100,7 +1132,7 @@ class ScenarioResolver {
           virtualIndex: display,
           occurrenceId: PlaybackOccurrenceId(
             storageId: node.storageId,
-            path: node.path.join('/'),
+            path: node.occurrencePath,
             occurrenceIndex: row.occurrenceIndex,
           ),
         ));
@@ -1242,7 +1274,7 @@ class ScenarioResolver {
           virtualIndex: row.anchorRank,
           occurrenceId: PlaybackOccurrenceId(
             storageId: node.storageId,
-            path: node.path.join('/'),
+            path: node.occurrencePath,
             occurrenceIndex: row.occurrenceIndex,
           ),
         ));
@@ -1405,7 +1437,7 @@ class ScenarioResolver {
       virtualIndex: ordinal,
       occurrenceId: PlaybackOccurrenceId(
         storageId: node.storageId,
-        path: node.path.join('/'),
+        path: node.occurrencePath,
         occurrenceIndex: row.occurrenceIndex,
       ),
     );
@@ -1504,7 +1536,7 @@ class ScenarioResolver {
       totalMs += dur ?? 0;
       totalBytes += f?.sizeInBytes ?? 0;
       children.add(VirtualChildEntry(
-        mediaKey: canonicalKey(node.storageId, node.path.join('/')),
+        mediaKey: canonicalKey(node.storageId, node.occurrencePath),
         name: node.name,
         occurrenceIndex: m.occurrenceIndex,
         durationMs: dur,
@@ -1556,7 +1588,7 @@ class ScenarioResolver {
       virtualIndex: virtualIndex,
       occurrenceId: PlaybackOccurrenceId(
         storageId: first.storageId,
-        path: first.path.join('/'),
+        path: first.occurrencePath,
         occurrenceIndex: visible.first.occurrenceIndex,
       ),
     );
@@ -1891,7 +1923,7 @@ class ScenarioResolver {
     );
     final total = _estimateTotal(segments);
 
-    final vmRules = await _vmRulesProvider();
+    final vmRules = await _vmRulesFor(scenarioId);
     if (vmRules.isEmpty) {
       _vmRepresentativeOccurrence = const {};
       _streamCache = null;
@@ -2036,7 +2068,7 @@ class ScenarioResolver {
         media: node.copyWith(name: item.media.name),
         occurrenceId: PlaybackOccurrenceId(
           storageId: node.storageId,
-          path: node.path.join('/'),
+          path: node.occurrencePath,
           occurrenceIndex: occurrence.occurrenceIndex,
         ),
         duplicated: occurrence.occurrenceIndex > 0,
@@ -2063,17 +2095,27 @@ class ScenarioResolver {
       virtualIndex: display,
       occurrenceId: PlaybackOccurrenceId(
         storageId: resolved.storageId,
-        path: resolved.path.join('/'),
+        path: resolved.occurrencePath,
         occurrenceIndex: row.occurrenceIndex,
       ),
     );
   }
 
   /// The existing FILE node for `storageId:path`, or null when it vanished.
+  ///
+  /// A SAF single-picked file has an EMPTY path, so the occurrence stores its
+  /// document `uri` as the path (see [MediaNode.occurrencePath]); when the path
+  /// lookup misses and the value is a SAF media uri, fall back to a uri probe so
+  /// the row still round-trips.
   Future<MediaNode?> _mediaNodeFor(String storageId, String path) async {
     final nodes =
         await nodeRepo.nodesByMediaKeys({canonicalKey(storageId, path)});
-    return nodes.isEmpty ? null : nodes.first;
+    if (nodes.isNotEmpty) return nodes.first;
+    if (isSafMediaUri(path)) {
+      final byUri = await nodeRepo.nodesByUris({path});
+      if (byUri.isNotEmpty) return byUri.first;
+    }
+    return null;
   }
 
   /// The DISPLAY position of [element] under [scenarioId]'s persisted view.
@@ -2187,7 +2229,7 @@ class ScenarioResolver {
       shuffled: shuffled,
       seed: seed,
       sortDirection: effectiveDirection,
-      vmRules: await _vmRulesProvider(),
+      vmRules: await _vmRulesFor(scenarioId),
     );
 
     // Canonical match: producers may persist `/a/b`, `//a/b` or `a/b` for the
@@ -2508,7 +2550,7 @@ class _SourceSegment extends _Segment {
       virtualIndex: 0,
       occurrenceId: PlaybackOccurrenceId(
         storageId: nodes.first.storageId,
-        path: nodes.first.path.join('/'),
+        path: nodes.first.occurrencePath,
       ),
     );
   }
@@ -2708,7 +2750,7 @@ class _ExplicitSlot {
         virtualIndex: 0,
         occurrenceId: PlaybackOccurrenceId(
           storageId: item.storageId,
-          path: item.path,
+          path: node!.occurrencePath,
         ),
       );
     }

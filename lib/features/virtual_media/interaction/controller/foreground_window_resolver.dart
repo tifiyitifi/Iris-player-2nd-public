@@ -141,3 +141,20 @@ int fgPhysicalPositionNow(BuildContext context) {
     playerPositionMs: p.position.inMilliseconds,
   ).positionMs;
 }
+
+/// EVENT-time physical foreground DURATION (VM undone) — the duration twin of
+/// [fgPhysicalPositionNow].
+///
+/// Needed by handlers that anchor a 副音 seek on the foreground FILE duration
+/// (the 尾部锚定 alignment mode) after a dialog closed, where the build-phase
+/// `useForegroundDuration` is not callable and a null duration silently degrades
+/// the anchor to 同刻度.
+int fgPhysicalDurationNow(BuildContext context) {
+  final p = context.read<MediaPlayer>();
+  return foregroundWindowNow(
+    playerDurationMs: p.duration.inMilliseconds,
+    // The duration is the whole answer here; the position is deliberately not
+    // read (an event-time caller must not depend on a per-tick sample).
+    playerPositionMs: 0,
+  ).durationMs;
+}

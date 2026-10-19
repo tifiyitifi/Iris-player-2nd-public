@@ -39,6 +39,11 @@ class PathPrefixRemapService {
       await DbModule.mediaNodesDao.attachedDatabase.transaction(() async {
         await DbModule.mediaNodesDao.remapPathPrefix(
             storageId: storageId, oldBase: oldBase, newBase: newBase);
+        // External subtitles are stored as ABSOLUTE snapshots inside the row
+        // (the video path is rebuilt from the storage at open time). The path
+        // rewrite above does not touch that JSON, so remap it explicitly.
+        await DbModule.mediaNodesDao.remapSubtitleUris(
+            storageId: storageId, oldBase: oldBase, newBase: newBase);
         await DbModule.scanStatesDao.remapPathPrefix(
             storageId: storageId, oldBase: oldBase, newBase: newBase);
         await DbModule.scanQueueDao.remapPathPrefix(

@@ -45,7 +45,7 @@ class TagMembershipRevision {
   ///
   /// Single-consumer by design: two drainers would race for one batch, so
   /// derived consumers read their own signal off ONE coordinator (see
-  /// `BgSourceRevision`) instead of draining here directly.
+  /// `BgPoolRevision`) instead of draining here directly.
   Set<int> drainPending() {
     if (_pending.isEmpty) return const <int>{};
     final drained = _pending.toSet();

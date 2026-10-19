@@ -10,6 +10,7 @@ import 'package:iris/features/scenario_playback/actions/scenario_append_actions.
 import 'package:iris/features/scenario_playback/actions/scenario_override_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/scenario_playback/view/queue/paged_scenario_media_data_source.dart';
 import 'package:iris/models/db/app_database.dart';
@@ -80,7 +81,12 @@ void main() {
     await ScenarioOverrideActions.playSelectionInDefaultScenario(
       files: const [],
       directories: <ScenarioSourceSpec>[
-        (storageId: storageId, path: 'q2', recursive: true),
+        (
+          storageId: storageId,
+          path: 'q2',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
       sortField: ScenarioSortField.name,
       sortDirection: SortDirection.asc,
@@ -110,7 +116,12 @@ void main() {
     await ScenarioAppendActions.appendToDefaultScenario(
       const [],
       directories: <ScenarioSourceSpec>[
-        (storageId: storageId, path: 'p2', recursive: true),
+        (
+          storageId: storageId,
+          path: 'p2',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        ),
       ],
     );
     await Future<void>.delayed(const Duration(milliseconds: 120));

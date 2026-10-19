@@ -2553,11 +2553,12 @@ void main() {
     /// adapter's [canonicalDbPath] normalization — simulating legacy data
     /// whose slash convention differs from the write path.
     Future<void> insertRawSource(
-        String scenarioId, String storageId, String path) async {
+        String scenarioId, String storageId, String path,
+        {bool recursive = false}) async {
       await db.customStatement(
-        'INSERT INTO scenario_sources (scenario_id, storage_id, path) '
-        'VALUES (?, ?, ?)',
-        [scenarioId, storageId, path],
+        'INSERT INTO scenario_sources '
+        '(scenario_id, storage_id, path, recursive) VALUES (?, ?, ?, ?)',
+        [scenarioId, storageId, path, recursive ? 1 : 0],
       );
     }
 
@@ -2602,6 +2603,21 @@ void main() {
       final sources = await repo.getSources(src.id);
       expect(sources, hasLength(2));
       expect(sources.map((s) => s.path), containsAll(['A', 'B']));
+    });
+
+    test('dedupeSources widens the survivor when a duplicate was recursive',
+        () async {
+      final src = await createScenario('src');
+      // Oldest row is the non-recursive one; the recursive copy was written
+      // later. Healing must keep the WIDE scope, not silently narrow it.
+      await insertRawSource(src.id, 'st1', 'A');
+      await insertRawSource(src.id, 'st1', '/A', recursive: true);
+
+      await repo.dedupeSources();
+
+      final sources = await repo.getSources(src.id);
+      expect(sources, hasLength(1));
+      expect(sources.single.recursive, isTrue);
     });
   });
 }

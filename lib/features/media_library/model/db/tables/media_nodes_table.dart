@@ -76,6 +76,19 @@ class MediaNodesTable extends Table {
   /// Rescan-preserving like the probe columns: absent keeps the stored value.
   TextColumn get uri => text().nullable()();
 
+  /// External subtitle associations captured from the listing's FileItem
+  /// (`getSubtitleMap`), stored as a JSON array of `{"name","uri"}`.
+  ///
+  /// NULL means UNKNOWN — the row predates schema v50, or it was written by a
+  /// lane that cannot see subtitles (playback backfill, manual node edit). An
+  /// empty list is stored as `'[]'` and means "KNOWN to have none". Keeping the
+  /// two apart lets the incremental scan enrich a row exactly once instead of
+  /// rewriting every file on every scan.
+  ///
+  /// Rescan-preserving: absent keeps the stored value, so a writer that does not
+  /// know the associations never clears them.
+  TextColumn get subtitlesJson => text().nullable()();
+
   //
   // dir
   // Aggregates

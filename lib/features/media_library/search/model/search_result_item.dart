@@ -1,4 +1,5 @@
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
+import 'package:iris/models/file.dart' show Subtitle;
 
 /// Where a search result came from — drives the tile subtitle badge in the
 /// scenario context (F-008 / D4).
@@ -34,6 +35,11 @@ class SearchResultItem {
   /// Real SAF `content://` document URI for dbSource rows (null otherwise) so
   /// DB-resolved SAF search results stay playable/probeable.
   final String? uri;
+
+  /// External subtitle associations persisted on the DB row (schema v50).
+  /// Null for synthetic rows (explicit items / VM groups), which have none.
+  final List<Subtitle>? subtitles;
+
   final SearchResultOrigin origin;
 
   /// False for synthetic explicit items whose file is not in the media DB —
@@ -59,6 +65,7 @@ class SearchResultItem {
     this.sizeInBytes,
     this.durationMs,
     this.uri,
+    this.subtitles,
     required this.origin,
     this.available = true,
     this.vmScopeKey,

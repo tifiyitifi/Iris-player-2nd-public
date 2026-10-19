@@ -56,6 +56,8 @@ void main() {
       expect(text, contains('Alt + F4'));
       expect(text, contains('Task Manager'));
       expect(text, contains('does not mean the close failed'));
+      expect(text,
+          contains('prioritises smooth playback over seek precision'));
     });
   });
 
@@ -69,6 +71,9 @@ void main() {
           find.textContaining('window_manager native defect'), findsOneWidget);
       expect(find.textContaining('media-kit #1324'), findsOneWidget);
       expect(find.textContaining('Alt + F4'), findsOneWidget);
+      expect(
+          find.textContaining('prioritises smooth playback over seek precision'),
+          findsOneWidget);
       expect(find.text('Got it'), findsOneWidget);
     });
   });

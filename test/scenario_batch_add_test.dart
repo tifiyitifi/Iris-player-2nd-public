@@ -93,6 +93,53 @@ void main() {
     });
   });
 
+  group('addExplicitItem (single)', () {
+    // The table's UNIQUE(scenario_id, storage_id, path) is not the PK, so the
+    // single-add entry point must skip an already-present item exactly like the
+    // batch form — an insertOnConflictUpdate on it used to throw.
+    test('re-adding the same file is idempotent, not a constraint error',
+        () async {
+      final repo = DbModule.scenarioRepo;
+      final sys = await repo.ensureSystemPlayingScenario();
+
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'a.mp4');
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'a.mp4');
+
+      expect(await repo.getExplicitItems(sys.id), hasLength(1));
+    });
+
+    test('a non-canonical slash form is the same logical item', () async {
+      final repo = DbModule.scenarioRepo;
+      final sys = await repo.ensureSystemPlayingScenario();
+
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'shows/a.mp4');
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: '/shows/a.mp4');
+
+      expect(await repo.getExplicitItems(sys.id), hasLength(1));
+    });
+
+    test('a genuinely new file after a skipped duplicate continues addOrder',
+        () async {
+      final repo = DbModule.scenarioRepo;
+      final sys = await repo.ensureSystemPlayingScenario();
+
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'a.mp4');
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'a.mp4');
+      await repo.addExplicitItem(
+          scenarioId: sys.id, storageId: 's', path: 'b.mp4');
+
+      final items = await repo.getExplicitItems(sys.id);
+      expect(items.map((e) => e.path).toList(), ['a.mp4', 'b.mp4']);
+      expect(items.map((e) => e.addOrder).toList(), [1, 2]);
+    });
+  });
+
   group('addSources', () {
     test('adds every source with increasing sortOrder', () async {
       final repo = DbModule.scenarioRepo;

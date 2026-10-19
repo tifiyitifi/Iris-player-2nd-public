@@ -36,7 +36,7 @@ void main() {
         segmentIndex: 1,
         localMs: 10000,
         deltaMs: 10000,
-      );
+      )!;
       expect(r.virtualMs, 120000);
       expect(r.segIdx, 1);
       expect(r.localMs, 20000);
@@ -49,7 +49,7 @@ void main() {
         segmentIndex: 1,
         localMs: 10000,
         deltaMs: -15000,
-      );
+      )!;
       expect(r.virtualMs, 95000);
       expect(r.segIdx, 0);
       expect(r.localMs, 95000);
@@ -62,7 +62,7 @@ void main() {
         segmentIndex: 0,
         localMs: 95000,
         deltaMs: 10000,
-      );
+      )!;
       expect(r.virtualMs, 105000);
       expect(r.segIdx, 1);
       expect(r.localMs, 5000);
@@ -75,7 +75,7 @@ void main() {
         segmentIndex: 0,
         localMs: 95000,
         deltaMs: 5000,
-      );
+      )!;
       expect(r.virtualMs, 100000);
       expect(r.segIdx, 1);
       expect(r.localMs, 0);
@@ -83,10 +83,10 @@ void main() {
 
     test('clamps past tail and head', () {
       final item = _threeBy100();
-      final tail = handler.resolveRelativeSeek(item, segmentIndex: 2, localMs: 99000, deltaMs: 60000);
-      expect(tail.virtualMs, 300000);
+      final tail = handler.resolveRelativeSeek(item, segmentIndex: 2, localMs: 99000, deltaMs: 60000)!;
+      expect(tail.virtualMs, 299999);
       expect(tail.segIdx, 2);
-      final head = handler.resolveRelativeSeek(item, segmentIndex: 0, localMs: 1000, deltaMs: -60000);
+      final head = handler.resolveRelativeSeek(item, segmentIndex: 0, localMs: 1000, deltaMs: -60000)!;
       expect(head.virtualMs, 0);
       expect(head.segIdx, 0);
       expect(head.localMs, 0);
@@ -99,12 +99,12 @@ void main() {
         segmentIndex: 1,
         localMs: 10500,
         deltaMs: 5000,
-      );
+      )!;
       expect(r.virtualMs, 115500);
       expect(r.localMs, 15500);
     });
 
-    test('empty/zero-total item no-ops to (0,0,0)', () {
+    test('empty/zero-total item cannot resolve a relative move (null)', () {
       final item = VirtualMediaItem(
         ruleId: 'r',
         scopeKey: 'k',
@@ -113,8 +113,34 @@ void main() {
         displayName: 'd',
         segments: [_seg('u.mp4', null)],
       );
-      final r = handler.resolveRelativeSeek(item, segmentIndex: 0, localMs: 5000, deltaMs: 5000);
-      expect((r.segIdx, r.localMs, r.virtualMs), (0, 0, 0));
+      // NOT (0,0,0): the old degenerate target was persisted as position 0 and
+      // wiped the file's saved progress. Null forces the caller to hold.
+      expect(
+        handler.resolveRelativeSeek(
+            item, segmentIndex: 0, localMs: 5000, deltaMs: 5000),
+        isNull,
+      );
+      expect(handler.segmentDurationKnown(item, 0), isFalse);
+    });
+
+    test('an unknown-duration target segment cannot resolve either', () {
+      final item = VirtualMediaItem(
+        ruleId: 'r',
+        scopeKey: 'k',
+        rootPath: 'd',
+        displayIndex: 1,
+        displayName: 'd',
+        // Segment 1 was never probed: its prefix contributes 0, so everything
+        // at/after it on the virtual axis is unresolvable.
+        segments: [_seg('a.mp4', 100000), _seg('b.mp4', null)],
+      );
+      expect(handler.segmentDurationKnown(item, 0), isTrue);
+      expect(handler.segmentDurationKnown(item, 1), isFalse);
+      expect(
+        handler.resolveRelativeSeek(
+            item, segmentIndex: 1, localMs: 5000, deltaMs: 5000),
+        isNull,
+      );
     });
   });
 

@@ -85,7 +85,7 @@ void main() {
     final db = AppDatabase(NativeDatabase.memory());
     addTearDown(db.close);
 
-    expect(db.schemaVersion, 46);
+    expect(db.schemaVersion, greaterThanOrEqualTo(46));
     final tables = await names(db, 'table');
     for (final table in MigrationV45.droppedTables) {
       expect(tables, isNot(contains(table)), reason: '$table must not exist');
@@ -165,7 +165,7 @@ void main() {
     final row = await upgraded
         .customSelect('PRAGMA user_version')
         .getSingle();
-    expect(row.read<int>('user_version'), 46);
+    expect(row.read<int>('user_version'), greaterThanOrEqualTo(46));
 
     // The generation survived: the shared blob is still there and the reads
     // still resolve from it, with no rebuild.

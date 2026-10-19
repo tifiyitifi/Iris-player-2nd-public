@@ -14,8 +14,9 @@ import 'package:iris/utils/path_conv.dart';
 /// Abstraction over how a [ScenarioSource] resolves into playable media.
 ///
 /// The resolver must NOT hard-code around one SQL strategy, and must NOT
-/// understand every source type. Future providers (TagSourceProvider,
-/// AIRecommendationProvider, ...) implement this abstraction.
+/// understand every source type. Future providers implement this abstraction.
+/// (A tag membership is NOT a provider — it is a VIEW over a scenario, resolved
+/// by `TagViewResolver`.)
 abstract class ScenarioSourceProvider {
   ScenarioSourceKind get kind;
 

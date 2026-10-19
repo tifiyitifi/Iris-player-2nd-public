@@ -44,11 +44,11 @@ void main() {
     return node?.modifiedAt;
   }
 
-  test('a fresh install is at v46 and stores milliseconds', () async {
+  test('a fresh install is at v46 (>=) and stores milliseconds', () async {
     final db = AppDatabase(NativeDatabase.memory());
     addTearDown(db.close);
 
-    expect(db.schemaVersion, 46);
+    expect(db.schemaVersion, greaterThanOrEqualTo(46));
     await insert(db, 'A/new.mp4',
         modifiedAt: DateTime.fromMillisecondsSinceEpoch(1234));
     expect((await read(db, 'A/new.mp4'))!.millisecondsSinceEpoch, 1234);
@@ -78,7 +78,7 @@ void main() {
     addTearDown(upgraded.close);
 
     final row = await upgraded.customSelect('PRAGMA user_version').getSingle();
-    expect(row.read<int>('user_version'), 46);
+    expect(row.read<int>('user_version'), greaterThanOrEqualTo(46));
     expect(
       (await read(upgraded, 'A/old.mp4'))!.millisecondsSinceEpoch,
       millis,

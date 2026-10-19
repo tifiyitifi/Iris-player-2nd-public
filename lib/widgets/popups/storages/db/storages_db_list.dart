@@ -16,6 +16,7 @@ import 'package:iris/features/media_library/services/local_storage_discovery.dar
 import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_connect_coordinator.dart';
 import 'package:iris/features/webdav_discovery/view/gated_webdav_connect.dart';
@@ -191,7 +192,12 @@ class StoragesDbList extends HookWidget {
             ScenarioPlaybackActions.playSelectionInDefaultScenario(
           files: const [],
           directories: [
-            (storageId: storage.id, path: '', recursive: true),
+            (
+              storageId: storage.id,
+              path: '',
+              recursive: true,
+              kind: ScenarioSourceKind.folder,
+            ),
           ],
           sortField: ScenarioSortField.name,
           sortDirection: SortDirection.asc,
@@ -215,7 +221,12 @@ class StoragesDbList extends HookWidget {
         context,
         const [],
         directories: [
-          (storageId: storage.id, path: '', recursive: true),
+          (
+            storageId: storage.id,
+            path: '',
+            recursive: true,
+            kind: ScenarioSourceKind.folder,
+          ),
         ],
       );
     }

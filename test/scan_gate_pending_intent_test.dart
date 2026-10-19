@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/scenario_playback/actions/pending_play_intent.dart';
 import 'package:iris/features/scenario_playback/actions/scan_play_gate.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -68,7 +69,12 @@ void main() {
                 gate = ensureDirsScannedWithPendingPlay(
                   context,
                   const <ScenarioSourceSpec>[
-                    (storageId: storageId, path: 'unscanned', recursive: true),
+                    (
+                      storageId: storageId,
+                      path: 'unscanned',
+                      recursive: true,
+                      kind: ScenarioSourceKind.folder,
+                    ),
                   ],
                   playOnScanNow: () async {},
                 );

@@ -105,9 +105,33 @@ void main() {
       ),
       isNull,
     );
+    // A descendant carrying a LITERAL tail after the tree prefix (the shape
+    // the scanner/browser produce: `[treeUri, 'Movies', ...]`) is NOT the base
+    // itself — its tail must survive.
+    expect(safTreeRelativeTo('$base/Movies', base), 'Movies');
+    expect(safTreeRelativeTo('$base/Movies/a.mp4', base), 'Movies/a.mp4');
+    // The tail is literal: a `%20` in the actual name must survive intact.
+    expect(
+      safTreeRelativeTo('$base/My%20Movies/a.mp4', base),
+      'My%20Movies/a.mp4',
+    );
+    // A base deeper than the raw tree prefix still resolves the tail against
+    // the BASE's decoded path, not against the raw prefix.
+    const inner = '$base%2FMovies';
+    expect(safTreeRelativeTo('$base/Movies/Sub', inner), 'Sub');
     // Non-SAF inputs never match.
     expect(safTreeRelativeTo('/storage/emulated/0/Download', base), isNull);
     expect(safTreeRelativeTo(base, r'E:\Movies'), isNull);
+    // A URI authority is case-INsensitive (RFC 3986): the same provider spelled
+    // with a different authority case is still the same tree.
+    expect(
+      safTreeRelativeTo(
+        'content://COM.Android.ExternalStorage.Documents/tree/'
+        'primary%3ADownload/Movies',
+        base,
+      ),
+      'Movies',
+    );
   });
 
   test('safReadableRelative decodes any tree uri to a readable dir tail',
@@ -130,8 +154,54 @@ void main() {
           '/tree/ABCD-1234%3ADownload'),
       'Download',
     );
+    // A LITERAL tail after the tree prefix is part of the readable path, not
+    // something to drop: the prefix match stops at the encoded tree id.
+    expect(
+      safReadableRelative('content://com.android.externalstorage.documents'
+          '/tree/primary%3ADownload/Movies/a.mp4'),
+      'Download/Movies/a.mp4',
+    );
+    // The tail is LITERAL (what the scanner/browser store): `%20` in a real
+    // file name must not be decoded, and `%2F` must not add a path level.
+    expect(
+      safReadableRelative('content://com.android.externalstorage.documents'
+          '/tree/primary%3ADownload/My%20Movies/a.mp4'),
+      'Download/My%20Movies/a.mp4',
+    );
+    expect(
+      safReadableRelative('content://com.android.externalstorage.documents'
+          '/tree/primary%3ADownload/a%2Fb.mp4'),
+      'Download/a%2Fb.mp4',
+    );
+    expect(
+      safReadableRelative('content://com.android.externalstorage.documents'
+          '/tree/primary%3ADownload/100%/a.mp4'),
+      'Download/100%/a.mp4',
+    );
     // Non-SAF input → null (callers fall back to the raw trimmed value).
     expect(safReadableRelative('/storage/emulated/0/Download'), isNull);
     expect(safReadableRelative(r'E:\Download'), isNull);
+  });
+
+  test('a document uri without /tree/ is preserved verbatim (single pick)', () {
+    // ACTION_OPEN_DOCUMENT single picks are `.../document/...`, NOT tree-shaped.
+    // Splitting them collapsed `content://` to `content:/` (the v23 defect the
+    // writer used to reintroduce); they must round-trip unchanged.
+    const doc = 'content://com.android.providers.media.documents'
+        '/document/video%3A101';
+    expect(safSegmentsOf(doc), <String>[doc]);
+    expect(safJoin(safSegmentsOf(doc)), doc);
+    expect(canonicalPath(doc), doc);
+    expect(canonicalDbPath(doc), doc);
+    expect(canonicalOccurrencePath(doc), doc);
+    expect(canonicalProgressKey('st1', const [], uri: doc), 'st1:$doc');
+    // A tree uri is unaffected.
+    expect(canonicalDbPath('$tree/Movies/a.mp4'), '$tree/Movies/a.mp4');
+  });
+
+  test('collapsedSafSchemePath yields the legacy key for content:// only', () {
+    expect(collapsedSafSchemePath('content://a/b'), 'content:/a/b');
+    expect(collapsedSafSchemePath('content:/a/b'), isNull);
+    expect(collapsedSafSchemePath('/storage/emulated/0/a.mp4'), isNull);
   });
 }

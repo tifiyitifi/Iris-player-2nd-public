@@ -8,6 +8,7 @@ import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/osd/engine/osd_texts.dart';
 import 'package:iris/features/osd/engine/show_player_osd.dart';
 import 'package:iris/features/paginated_browser/widgets/list_keyboard_scope.dart';
+import 'package:iris/features/screen_lock/store/use_screen_lock_store.dart';
 import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keyboard_scheme.dart';
 import 'package:iris/features/windows/desktop_keyboard/executor/potplayer_key_executor.dart';
@@ -65,6 +66,14 @@ KeyboardEvent useKeyboard({
     // when another route (dialog / popup) is current — those handle their
     // own keys — and while the user is typing in any text field.
     if (!playerKeysAllowed(context)) return;
+
+    // The screen lock is a hard gate for EVERY shortcut, not just touch: the
+    // lock exists so nothing acts on the player while it is armed (see
+    // `player_back_disposition.dart`, which puts the lock above even the
+    // gesture guide's back handling). Only the lock chrome's own unlock
+    // buttons and the system back press may release it, so a stray keyboard
+    // event must be dropped here outright.
+    if (useScreenLockStore().state.locked) return;
 
     // A focused playlist list owns its PotPlayer PL keys (its own `↑/↓` cursor
     // navigation, `P`, `Del`, sort, type-ahead, ...). Skip them here so they do
@@ -234,6 +243,7 @@ KeyboardEvent useKeyboard({
             final app = useAppStore().state;
             final isDock = isDesktop &&
                 app.useMetadataSettings &&
+                !app.useLegacyStoragePersistence &&
                 app.playlistPanelMode == PlaylistPanelMode.dockedRight;
             if (isDock) {
               // Picture fullscreen uses the separate runtime overlay state;
@@ -243,6 +253,7 @@ KeyboardEvent useKeyboard({
                 useMetadataSettings: app.useMetadataSettings,
                 mode: app.playlistPanelMode,
                 isFullScreen: playerUiState.isFullScreen,
+                legacyStorage: app.useLegacyStoragePersistence,
               )) {
                 // Pin toggles on the pin state alone: hovering (peek) + P
                 // pins it open instead of dismissing it.
@@ -324,16 +335,6 @@ KeyboardEvent useKeyboard({
         default:
           break;
       }
-    }
-
-    // Releasing a held ←/→ must stop the step burst (see
-    // StepSeekChain.collapseOnRelease): without this a held arrow key keeps
-    // walking its auto-repeated backlog long after the key was let go.
-    if (event is KeyUpEvent &&
-        (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
-            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
-      await player.endStepBurst?.call();
-      return;
     }
 
     if (event.runtimeType == KeyDownEvent || event.runtimeType == KeyRepeatEvent) {

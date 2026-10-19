@@ -15,6 +15,8 @@ void main() {
           visible: true,
           isFullScreen: false,
           behavior: SideFullscreenBehavior.hidePanel,
+          useMetadataSettings: true,
+          legacyStorage: false,
         ),
         isTrue,
       );
@@ -27,6 +29,8 @@ void main() {
           mode: PlaylistPanelMode.dockedRight,
           visible: true,
           isFullScreen: false,
+          useMetadataSettings: true,
+          legacyStorage: false,
         ),
         isTrue,
       );
@@ -47,6 +51,8 @@ void main() {
             visible: visible,
             isFullScreen: full,
             behavior: SideFullscreenBehavior.hidePanel,
+            useMetadataSettings: true,
+            legacyStorage: false,
           );
       // Picture fullscreen never docks — floating only.
       expect(
@@ -91,6 +97,39 @@ void main() {
           desktop: false,
         ),
         isFalse,
+      );
+    });
+
+    test('legacy lifecycle removes the dock entirely', () {
+      bool dock({
+        required bool useMetadataSettings,
+        required bool legacyStorage,
+      }) =>
+          shouldShowPlaylistDock(
+            isDesktop: true,
+            maxWidth: 1600,
+            mode: PlaylistPanelMode.dockedRight,
+            visible: true,
+            isFullScreen: false,
+            behavior: SideFullscreenBehavior.hidePanel,
+            useMetadataSettings: useMetadataSettings,
+            legacyStorage: legacyStorage,
+          );
+
+      // Metadata gate OFF (the dock feature's own "legacy mode") → no side panel.
+      expect(
+        dock(useMetadataSettings: false, legacyStorage: false),
+        isFalse,
+      );
+      // Legacy-storage backend ON (even with metadata ON) → no side panel.
+      expect(
+        dock(useMetadataSettings: true, legacyStorage: true),
+        isFalse,
+      );
+      // The meta-era default still docks.
+      expect(
+        dock(useMetadataSettings: true, legacyStorage: false),
+        isTrue,
       );
     });
   });

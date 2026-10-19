@@ -15,6 +15,7 @@ import 'package:iris/features/scenario_playback/model/domain/scenario_exclude_ru
 import 'package:iris/features/scenario_playback/model/domain/scenario_explicit_item.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_sort_spec.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_source.dart';
+import 'package:iris/features/scenario_playback/model/domain/scenario_source_spec.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_state.dart';
 import 'package:iris/features/scenario_playback/model/enum/duplicate_policy.dart';
 import 'package:iris/features/scenario_playback/model/enum/playback_order.dart';
@@ -27,6 +28,8 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/store/playback_scenario_store_state.dart';
 import 'package:iris/features/scenario_playback/logging/scenario_log_keys.dart';
+import 'package:iris/features/tag_play/model/db/dao/video_tag_members_dao.dart';
+import 'package:iris/features/tag_play/model/db/repositories/tag_play_repository.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -62,12 +65,99 @@ class PlaybackScenarioStore
     // Tag membership as node ids, for the shared tag read (the resolver has no
     // tag repository). Without it a tag read declines and its callers keep their
     // own walk.
-    tagMemberNodeIds: (tagId, addedAfter) =>
-        DbModule.videoTagMembersDao.memberNodeIds(tagId,
-            addedAfter: addedAfter),
-    tagMembersByTag: (addedAfter) =>
-        DbModule.videoTagMembersDao.memberNodeIdsByTag(addedAfter: addedAfter),
+    tagMemberNodeIds: activeTagMemberNodeIds,
+    tagMembersByTag: (addedAfter) => activeTagMemberNodeIdsByTag(
+      addedAfter,
+      repo: DbModule.tagPlayRepo,
+      membersDao: DbModule.videoTagMembersDao,
+    ),
+    // 副音 workspaces never merge: their list is a plain real-single-file list
+    // (see `background_playback_no_virtual_merge_test`). The foreground
+    // scenarios keep merging — the gate is per-scenario because one resolver
+    // serves both.
+    vmEnabledFor: _vmEnabledForScenario,
   );
+
+  /// Whether VM merge applies when resolving [scenarioId]. 副音 workspaces
+  /// (default + per-entry) opt OUT: a VM rule must never fold their files into
+  /// a merged row, because the absorbed members would then vanish from the 副音
+  /// queue. The scenario kind is immutable per id, so the answer is cached.
+  final Map<String, bool> _vmDisabledScenarios = {};
+  Future<bool> _vmEnabledForScenario(String scenarioId) async {
+    final cached = _vmDisabledScenarios[scenarioId];
+    if (cached != null) return !cached;
+    final scenario = await _repo.getScenario(scenarioId);
+    final isBackground = scenario?.type == ScenarioKind.background ||
+        scenario?.type == ScenarioKind.entryBackground;
+    _vmDisabledScenarios[scenarioId] = isBackground;
+    return !isBackground;
+  }
+
+  /// Retention-aware tag membership node ids.
+  ///
+  /// The raw member DAO only knows an `addedAfter` cutoff; a tag's own expiry
+  /// window lives on the tag row. Applying it here keeps the indexed tag view
+  /// consistent with the tag repository's `activeMembersOf`: expired members
+  /// are hidden even before the background purge sweep physically deletes them.
+  ///
+  /// Static so the retention policy is unit-testable without a store instance.
+  static Future<List<int>> activeTagMemberNodeIds(
+    int tagId,
+    DateTime? addedAfter,
+  ) async {
+    final tag = await DbModule.tagPlayRepo.tagById(tagId);
+    final cutoff = tagMembershipCutoff(
+      addedAfter: addedAfter,
+      retention: tag?.retention,
+      now: DateTime.now(),
+    );
+    return DbModule.videoTagMembersDao.memberNodeIds(tagId, addedAfter: cutoff);
+  }
+
+  /// Retention-aware `(tagId, nodeId)` pairs for the shared intersection count
+  /// ([ScenarioResolver.tagIntersectionCountsFor]).
+  ///
+  /// A single [addedAfter] cannot express per-TAG expiry, so tags WITH a
+  /// retention window are read one at a time with their own cutoff and the
+  /// unbounded ones in one batch — the same rule [activeTagMemberNodeIds]
+  /// applies to the indexed tag view. Without it an expired-but-not-yet-purged
+  /// member still counted towards `scenarioCount` in the tag sheet.
+  static Future<List<({int tagId, int nodeId})>> activeTagMemberNodeIdsByTag(
+    DateTime? addedAfter, {
+    required TagPlayRepository repo,
+    required VideoTagMembersDao membersDao,
+  }) async {
+    final tags = await repo.tags();
+    final out = <({int tagId, int nodeId})>[];
+    final unbounded = <int>[];
+    final now = DateTime.now();
+    for (final tag in tags) {
+      final retention = tag.retention;
+      if (retention == null) {
+        unbounded.add(tag.id);
+        continue;
+      }
+      final ids = await membersDao.memberNodeIds(
+        tag.id,
+        addedAfter: tagMembershipCutoff(
+          addedAfter: addedAfter,
+          retention: retention,
+          now: now,
+        ),
+      );
+      for (final id in ids) {
+        out.add((tagId: tag.id, nodeId: id));
+      }
+    }
+    if (unbounded.isNotEmpty) {
+      final keep = unbounded.toSet();
+      final rows = await membersDao.memberNodeIdsByTag(addedAfter: addedAfter);
+      for (final r in rows) {
+        if (keep.contains(r.tagId)) out.add(r);
+      }
+    }
+    return out;
+  }
 
   ScenarioResolver get resolver => _resolver;
 
@@ -226,8 +316,9 @@ class PlaybackScenarioStore
       // Meta unavailable (test env without DbModule): the definition digest
       // alone still detects the common edits.
     }
+    final vmEnabled = await _vmEnabledForScenario(scenarioId);
     return '${definition.signature}|media:$mediaRev|scopes:${parts.join(',')}'
-        '|vmrev:${VirtualMediaService.instance.revision}';
+        '${vmEnabled ? '|vmrev:${VirtualMediaService.instance.revision}' : ''}';
   }
 
   /// Drops the session-relative tail of [_indexSignature] before it is stored,
@@ -377,6 +468,17 @@ class PlaybackScenarioStore
   Scenario? get systemPlayingScenario {
     for (final c in state.scenarios) {
       if (c.type == ScenarioKind.systemPlaying) return c;
+    }
+    return null;
+  }
+
+  /// The default 副音 workspace row ([ScenarioKind.background]), if loaded.
+  /// The per-entry background workspaces ([ScenarioKind.entryBackground]) are
+  /// intentionally not matched here — they are addressed by the owning entry's
+  /// stored id.
+  Scenario? get backgroundWorkspace {
+    for (final c in state.scenarios) {
+      if (c.type == ScenarioKind.background) return c;
     }
     return null;
   }
@@ -753,41 +855,57 @@ class PlaybackScenarioStore
   Future<void> setCurrentItem({
     required PlaybackOccurrenceId occurrence,
     int? virtualPos,
+  }) =>
+      setCurrentItemFor(_requireActiveId(),
+          occurrence: occurrence, virtualPos: virtualPos);
+
+  /// Id-explicit [setCurrentItem]: persists [scenarioId]'s OWN current
+  /// occurrence. The active-bound [setCurrentItem] cannot serve the 副音
+  /// workspaces (they are never the active fg scenario), so 副音 records its
+  /// position here to resume the same file after a restart — per entry, since
+  /// each entry owns its own background workspace.
+  Future<void> setCurrentItemFor(
+    String scenarioId, {
+    required PlaybackOccurrenceId occurrence,
+    int? virtualPos,
   }) async {
-    final id = _requireActiveId();
     // CLOSE_DEBUG_LOG
     areaKeyLog.d(
-        'setCurrentItem active=$id key=${occurrence.occurrenceKey} virtualPos=$virtualPos prevMirror=${state.currentOccurrenceKey}');
-    final s = await _repo.getState(id);
+        'setCurrentItemFor scenario=$scenarioId key=${occurrence.occurrenceKey} virtualPos=$virtualPos');
+    final s = await _repo.getState(scenarioId);
     await _repo.updateState(
-      (s ?? ScenarioState(scenarioId: id)).copyWith(
+      (s ?? ScenarioState(scenarioId: scenarioId)).copyWith(
         currentPlaybackOccurrence: occurrence,
         currentVirtualPos: virtualPos,
         lastActiveAt: DateTime.now(),
       ),
     );
-    // Mirror into the in-memory state so queue views can reactively highlight
-    // the playing occurrence on play/next/previous. The key is canonicalized
-    // so the highlight matches regardless of the producer's slash convention.
-    set(state.copyWith(
-      currentOccurrenceKey: canonicalOccurrenceKey(
-        occurrence.storageId,
-        occurrence.path,
-        occurrence.occurrenceIndex,
-      ),
-    ));
-    // CLOSE_DEBUG_LOG
-    areaKeyLog.d('setCurrentItem mirror=${state.currentOccurrenceKey}');
+    // Mirror into the in-memory state ONLY for the active scenario (a queue
+    // view highlights the active occurrence). 副音 writes are inert here.
+    if (scenarioId == state.activeScenarioId) {
+      set(state.copyWith(
+        currentOccurrenceKey: canonicalOccurrenceKey(
+          occurrence.storageId,
+          occurrence.path,
+          occurrence.occurrenceIndex,
+        ),
+      ));
+      // CLOSE_DEBUG_LOG
+      areaKeyLog.d('setCurrentItem mirror=${state.currentOccurrenceKey}');
+    }
   }
 
   Future<void> toggleShuffle() async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
+    // Gone workspace: no-op (see [shuffleRefresh] for why the old
+    // `Scenario(id: id, name: '')` fallback was an INSERT, not a patch).
+    if (scenario == null) return;
     final s = await _repo.getState(id);
 
-    if (scenario?.order == PlaybackOrder.shuffled) {
+    if (scenario.order == PlaybackOrder.shuffled) {
       await _repo
-          .updateScenario(scenario!.copyWith(order: PlaybackOrder.sequential));
+          .updateScenario(scenario.copyWith(order: PlaybackOrder.sequential));
       await _repo.updateState(
         (s ?? ScenarioState(scenarioId: id)).copyWith(shuffleSeed: null),
       );
@@ -798,8 +916,7 @@ class PlaybackScenarioStore
     final total = await _resolveTotal(id);
     final seed = Random().nextInt(1 << 30);
     await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: ''))
-          .copyWith(order: PlaybackOrder.shuffled, sortDirection: SortDirection.asc),
+      scenario.copyWith(order: PlaybackOrder.shuffled, sortDirection: SortDirection.asc),
     );
     await _repo.updateState(
       (s ?? ScenarioState(scenarioId: id)).copyWith(
@@ -832,11 +949,15 @@ class PlaybackScenarioStore
   Future<void> shuffleRefresh() async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
+    // A setter whose workspace row is gone writes NOTHING. Falling back to
+    // `Scenario(id: id, name: '')` used to INSERT a nameless `userSaved` row
+    // through `updateScenario`'s upsert, so a stale id produced a phantom
+    // scenario in the saved list instead of a no-op.
+    if (scenario == null) return;
     final s = await _repo.getState(id);
     final total = await _resolveTotal(id);
     await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: ''))
-          .copyWith(order: PlaybackOrder.shuffled),
+      scenario.copyWith(order: PlaybackOrder.shuffled),
     );
     await _repo.updateState(
       (s ?? ScenarioState(scenarioId: id)).copyWith(
@@ -851,9 +972,19 @@ class PlaybackScenarioStore
   Future<void> setRepeat(Repeat repeat) async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
-    await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: '')).copyWith(repeatMode: repeat),
-    );
+    // Gone workspace: no-op. See [shuffleRefresh] for why the old
+    // `Scenario(id: id, name: '')` fallback was an INSERT, not a patch.
+    if (scenario == null) return;
+    await _repo.updateScenario(scenario.copyWith(repeatMode: repeat));
+    await refreshScenarios();
+  }
+
+  /// Id-explicit [setRepeat] for [scenarioId]. 副音's background workspace is
+  /// never the active fg scenario, so it writes its repeat through here.
+  Future<void> setRepeatFor(String scenarioId, Repeat repeat) async {
+    final scenario = await _repo.getScenario(scenarioId);
+    if (scenario == null) return;
+    await _repo.updateScenario(scenario.copyWith(repeatMode: repeat));
     await refreshScenarios();
   }
 
@@ -863,9 +994,9 @@ class PlaybackScenarioStore
   ) async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
+    if (scenario == null) return;
     await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: ''))
-          .copyWith(sortField: field, sortDirection: direction),
+      scenario.copyWith(sortField: field, sortDirection: direction),
     );
     await refreshScenarios();
     // Order-affecting definition change: signal re-resolution (and derived
@@ -884,9 +1015,10 @@ class PlaybackScenarioStore
   }) async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
+    if (scenario == null) return;
     final s = await _repo.getState(id);
     await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: '')).copyWith(
+      scenario.copyWith(
         sortField: sortField,
         sortDirection: sortDirection,
         order: PlaybackOrder.sequential,
@@ -926,12 +1058,12 @@ class PlaybackScenarioStore
   Future<void> toggleDuplicatePolicy() async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
-    final next = scenario?.duplicatePolicy == DuplicatePolicy.deduplicate
+    // Gone workspace: no-op (see [shuffleRefresh]).
+    if (scenario == null) return;
+    final next = scenario.duplicatePolicy == DuplicatePolicy.deduplicate
         ? DuplicatePolicy.allowDuplicate
         : DuplicatePolicy.deduplicate;
-    await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: '')).copyWith(duplicatePolicy: next),
-    );
+    await _repo.updateScenario(scenario.copyWith(duplicatePolicy: next));
     await refreshScenarios();
     // Dedup changes the accepted stream → signal re-resolution + index rebuild.
     await bumpPlaybackVersion();
@@ -943,10 +1075,9 @@ class PlaybackScenarioStore
   Future<void> setSourceInternalFirst(bool value) async {
     final id = _requireActiveId();
     final scenario = await _repo.getScenario(id);
-    await _repo.updateScenario(
-      (scenario ?? Scenario(id: id, name: ''))
-          .copyWith(sourceInternalFirst: value),
-    );
+    // Gone workspace: no-op (see [shuffleRefresh]).
+    if (scenario == null) return;
+    await _repo.updateScenario(scenario.copyWith(sourceInternalFirst: value));
     await refreshScenarios();
     // Order-affecting definition change: signal re-resolution so playback
     // version subscribers (prev/next visibility, lists) refresh, matching the
@@ -1088,22 +1219,12 @@ class PlaybackScenarioStore
 
   /// Batch form of [addSource] for the drag-drop append/override paths: one
   /// transaction for the whole list instead of one per folder.
-  Future<void> addSources({
-    required List<({String storageId, String path, bool recursive})> specs,
-    ScenarioSourceKind kind = ScenarioSourceKind.folder,
-  }) {
-    return _repo.addSources(
-      scenarioId: _requireActiveId(),
-      specs: [
-        for (final s in specs)
-          (
-            storageId: s.storageId,
-            path: s.path,
-            recursive: s.recursive,
-            kind: kind,
-          ),
-      ],
-    );
+  ///
+  /// Each [ScenarioSourceSpec] carries its OWN [ScenarioSourceKind] ([folder] /
+  /// [file]), so a batch may mix whole directories with individually picked
+  /// files without either shape being silently coerced into the other.
+  Future<void> addSources({required List<ScenarioSourceSpec> specs}) {
+    return _repo.addSources(scenarioId: _requireActiveId(), specs: specs);
   }
 
   Future<void> addExplicitInclude({
@@ -1181,6 +1302,46 @@ class PlaybackScenarioStore
 
   Future<Scenario> ensureSystemPlayingScenario() =>
       _repo.ensureSystemPlayingScenario();
+
+  /// The single 副音 (background) workspace, if it already exists.
+  Future<Scenario?> getBackgroundWorkspace() => _repo.getBackgroundWorkspace();
+
+  /// Ensures the single 副音 (background) workspace exists. It is a second,
+  /// independent instance of the scenario mechanism: its definition (sources /
+  /// sort / shuffle / dedup / excludes) drives 副音's queue exactly like
+  /// SystemPlaying drives the foreground's, without touching the foreground
+  /// player.
+  Future<Scenario> ensureBackgroundWorkspace() async {
+    final existing = await _repo.getBackgroundWorkspace();
+    if (existing != null) {
+      return existing;
+    }
+    final created = await _repo.ensureBackgroundWorkspace();
+    await refreshScenarios();
+    return created;
+  }
+
+  /// Resolves an independent entry's 副音 workspace: reuses [existingId] when
+  /// it still points at a live [ScenarioKind.entryBackground] row, otherwise
+  /// lazily creates a fresh one. Mirrors [ensureEntryWorkspace], so every
+  /// entry has its own fg/bg PAIR.
+  Future<Scenario> ensureEntryBackgroundWorkspace(String? existingId) async {
+    if (existingId != null) {
+      final existing = await _repo.getScenario(existingId);
+      if (existing != null &&
+          existing.type == ScenarioKind.entryBackground) {
+        return existing;
+      }
+    }
+    final created = await _repo.createEntryBackgroundWorkspace();
+    await refreshScenarios();
+    return created;
+  }
+
+  Future<void> deleteEntryBackgroundWorkspace(String id) async {
+    await _repo.deleteEntryBackgroundWorkspace(id);
+    await refreshScenarios();
+  }
 
   /// Resolves the entry workspace for a custom desktop entry: reuses
   /// [existingId] when it still points at a live [ScenarioKind.entryWorkspace]
@@ -1390,3 +1551,24 @@ class PlaybackScenarioStore
 
 PlaybackScenarioStore usePlaybackScenarioStore() =>
     create(() => PlaybackScenarioStore());
+
+/// The membership cutoff for a tag: the STRICTER of the caller's [addedAfter]
+/// window and the tag's own [retention].
+///
+/// A tag with a retention window used to REPLACE the caller's window with
+/// `now - retention`, silently widening an incremental read back to the whole
+/// retention span (the caller's constraint was the more recent one). Taking the
+/// later of the two keeps both constraints: nothing older than `now - retention`
+/// is active, and nothing older than the caller asked for is returned either.
+///
+/// Pure so the policy is unit-testable without a database.
+DateTime? tagMembershipCutoff({
+  required DateTime? addedAfter,
+  required Duration? retention,
+  required DateTime now,
+}) {
+  if (retention == null) return addedAfter;
+  final retentionCutoff = now.subtract(retention);
+  if (addedAfter == null) return retentionCutoff;
+  return addedAfter.isAfter(retentionCutoff) ? addedAfter : retentionCutoff;
+}
