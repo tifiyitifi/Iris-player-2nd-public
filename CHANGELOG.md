@@ -1,3 +1,13 @@
+## v2.0.10
+
+### Changelog
+
+1. Fixed a bug where dropping a folder that was not fully scanned triggered a scan but did not update the play queue; playback now starts as soon as the scan finishes
+
+### 更新日志
+
+1. 修复了拖放未完整文件夹触发扫描却不更新播放列表的 bug，现在扫描完直接开始播放
+
 ## v2.0.9
 
 ### Changelog

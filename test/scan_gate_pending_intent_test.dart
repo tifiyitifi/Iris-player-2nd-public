@@ -2,7 +2,6 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:iris/features/scenario_playback/actions/pending_play_intent.dart';
 import 'package:iris/features/scenario_playback/actions/scan_play_gate.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
@@ -14,10 +13,13 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 
-/// Regression: the scan gate must only arm a pending play intent when a scan
-/// ACTUALLY started. Cancelling the scan-options dialog used to record the
-/// intent anyway — the tap was silently dropped, and a later unrelated scan
-/// completion popped a spurious "continue playing?" dialog.
+/// Regression: the scan gate must only arm a resume when a scan ACTUALLY
+/// started. Cancelling the scan-options dialog used to record the intent anyway
+/// — the tap was silently dropped, and a later unrelated scan completion popped
+/// a spurious "continue playing?" dialog.
+///
+/// The intent now lives in this call's own closure (no global holder), so the
+/// observable contract is: nothing resumes.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -53,6 +55,7 @@ void main() {
     late String scanNowLabel;
     late String scanCancelLabel;
     Future<bool>? gate;
+    var resumeCalls = 0;
 
     await tester.pumpWidget(MaterialApp(
       locale: const Locale('en'),
@@ -76,7 +79,7 @@ void main() {
                       kind: ScenarioSourceKind.folder,
                     ),
                   ],
-                  playOnScanNow: () async {},
+                  playOnScanNow: () async => resumeCalls++,
                 );
               },
               child: const Text('go'),
@@ -98,7 +101,9 @@ void main() {
 
     final proceed = await gate!;
     expect(proceed, isFalse);
-    expect(usePendingPlayIntentHolder().pending, isNull,
-        reason: 'no scan started → no pending play intent may be armed');
+    // Give any wrongly-armed resume a chance to fire before asserting.
+    await tester.pump(const Duration(seconds: 1));
+    expect(resumeCalls, 0,
+        reason: 'no scan started → the play must never resume later');
   });
 }

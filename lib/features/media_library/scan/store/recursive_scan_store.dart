@@ -55,6 +55,10 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
 
   final ScanEtaEstimator _eta = ScanEtaEstimator();
 
+  /// Completer behind [scanSettled] for the run currently in flight. Null while
+  /// no one waits; cleared (and completed) on every settle.
+  Completer<void>? _settledCompleter;
+
   int _probeDone = 0;
   int _probeTotal = 0;
 
@@ -75,6 +79,9 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
     required Map<int, List<String>> depthPaths,
     int carryElapsedMs = 0,
   }) async {
+    // A new run supersedes whatever was in flight: release its waiters first so
+    // they can re-evaluate (they would otherwise wait on a run that is gone).
+    _settleScan();
     final previousDelay = state.autoCloseDelay;
     set(const RecursiveScanState(
       phase: ScanPhase.scanning,
@@ -178,6 +185,7 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
       elapsedMs: _elapsedMs,
       paused: false,
     ));
+    _settleScan();
     await save(state);
   }
 
@@ -191,6 +199,7 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
       elapsedMs: _elapsedMs,
       paused: false,
     ));
+    _settleScan();
     await save(state);
   }
 
@@ -205,6 +214,7 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
       elapsedMs: _elapsedMs,
       paused: false,
     ));
+    _settleScan();
     await save(state);
   }
 
@@ -267,6 +277,7 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
     _probeTotal = 0;
     timing.value = const ScanTiming.idle();
     set(const RecursiveScanState());
+    _settleScan();
     await save(state);
   }
 
@@ -279,6 +290,27 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
       state.phase == ScanPhase.error;
   bool get hasIncompleteScan =>
       state.phase == ScanPhase.error;
+
+  /// A future that completes when the scan run currently in flight settles
+  /// (`done` / `stopped` / `error`, or an explicit [resetScan]).
+  ///
+  /// A caller that was told "a scan is already refreshing your root" awaits THIS
+  /// instead of starting a duplicate run — the scan gate's action-resume anchor.
+  /// With no run in flight it returns an already-completed future, so a caller
+  /// can await unconditionally.
+  Future<void> get scanSettled {
+    if (!isScanning) return Future<void>.value();
+    return (_settledCompleter ??= Completer<void>()).future;
+  }
+
+  /// Releases every [scanSettled] waiter. Called on each terminal phase and
+  /// when a NEW run supersedes the current one — a superseded run must never
+  /// leave a waiter hanging forever.
+  void _settleScan() {
+    final completer = _settledCompleter;
+    _settledCompleter = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
+  }
 
   List<String> get currentDepthPaths =>
       state.depthPaths[state.currentDepth] ?? [];

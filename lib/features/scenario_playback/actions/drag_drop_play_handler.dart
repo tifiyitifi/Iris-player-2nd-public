@@ -491,7 +491,10 @@ abstract final class DragDropPlayHandler {
       hasRecursiveDirs: specs.isNotEmpty,
     )) {
       if (!context.mounted) return;
-      final proceed = await ensureDirsScannedWithPendingPlay(
+      // The drop IS the user's play request, so a scan-started gate resumes
+      // straight into playback once THAT scan settles — no confirmation step
+      // that could swallow it (the reported "drop scans, then never plays").
+      final proceed = await ensureDirsScannedWithAutoPlay(
         context,
         specs,
         playOnScanNow: () => _proceedAfterResolve(
