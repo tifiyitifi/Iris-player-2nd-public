@@ -45,6 +45,9 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/adaptive/keyboard_form_shell.dart';
 import 'package:iris/widgets/dialogs/show_append_queue_dialog.dart';
@@ -1128,6 +1131,19 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
           return false;
         },
       ),
+      if (NewWindowLauncher.isSupported && _useScenarioMode)
+        // Multi-window: the same selection override, replayed in a fresh
+        // process with its own playing workspace.
+        CustomSelectionAction<LibContentItem>(
+          icon: const Icon(Icons.open_in_new_rounded),
+          label: getLocalizations(context).lib_play_selection_in_new_window,
+          enabledFor: (selected) => !_selectionHasOfflineStorage(selected),
+          onPressed: (ctx, selected) async {
+            final request = _newWindowRequestForItems(selected);
+            if (request == null) return false;
+            return launchNewWindow(ctx, request);
+          },
+        ),
       CustomSelectionAction<LibContentItem>(
         icon: const Icon(Icons.playlist_play),
         label: getLocalizations(context).lib_override_queue,
@@ -1474,6 +1490,89 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
   /// F-004 (D25): scenario-branch Override for a single trailing item —
   /// file-kind sources/files reuse the click semantics; dirs and non-file
   /// sources override as recursive sources. Returns the helper result.
+  /// Multi-window: translate ONE content-browser row into the payload a spawned
+  /// window replays. A file row keeps the click semantics (its folder scope,
+  /// positioned on the file); dirs / source rows become recursive directory
+  /// sources.
+  NewWindowRequest? _newWindowRequestForItem(LibContentItem item) {
+    if (item is NodeLibContentItem && !item.node.isDir) {
+      final FileItem file = _mediaFileToFileItem(item.node as MediaFile);
+      final List<String> segments =
+          file.path.where((s) => s.isNotEmpty).toList();
+      final String folder = segments.length > 1
+          ? segments.sublist(0, segments.length - 1).join('/')
+          : '';
+      return newWindowRequestForFile(
+        item: file,
+        folderPath: canonicalDbPath(folder),
+        itemPath: canonicalOccurrencePath(segments.join('/')),
+        sortField: ScenarioPlaybackActions.scenarioSortFieldFromMedia(
+            _store.state.sortField),
+        sortDirection: _store.state.sortDirection,
+      );
+    }
+    return _newWindowRequestForItems([item]);
+  }
+
+  /// Multi-window: a mixed selection — directory sources first, then explicit
+  /// files (each folder keeps its own storage; a library may span storages).
+  ///
+  /// A `file`-kind source row is rebuilt through [newWindowFileItemForSourceFile]
+  /// (real storage-derived uri, storage type, label) and is SKIPPED when it has
+  /// no addressable path — replaying it could only fail the playability check.
+  NewWindowRequest? _newWindowRequestForItems(Iterable<LibContentItem> items) {
+    final folders = <NewWindowFolder>[];
+    final files = <FileItem>[];
+
+    void addFolder(String storageId, String path) {
+      final String canonical = canonicalDbPath(path);
+      if (folders.any(
+          (f) => f.storageId == storageId && f.path == canonical)) {
+        return;
+      }
+      folders.add(NewWindowFolder(
+        storageId: storageId,
+        path: canonical,
+        recursive: true,
+      ));
+    }
+
+    for (final item in items) {
+      if (item is SourceLibContentItem) {
+        final source = item.source;
+        final segments =
+            (source.path ?? const <String>[]).where((s) => s.isNotEmpty).toList();
+        if (source.kind == MediaSourceKind.file) {
+          final fileItem = newWindowFileItemForSourceFile(
+            storageId: source.storageId,
+            path: source.path,
+            storage: _lookupStorage(source.storageId),
+            name: source.name,
+            fallbackName: item.title,
+          );
+          if (fileItem != null) files.add(fileItem);
+        } else {
+          addFolder(source.storageId, segments.join('/'));
+        }
+      } else if (item is NodeLibContentItem) {
+        final node = item.node;
+        if (node.isDir) {
+          addFolder(node.storageId, node.path.join('/'));
+        } else {
+          files.add(_mediaFileToFileItem(node as MediaFile));
+        }
+      }
+    }
+    if (folders.isEmpty && files.isEmpty) return null;
+    return newWindowRequestForSelection(
+      folders: folders,
+      files: files,
+      sortField: ScenarioPlaybackActions.scenarioSortFieldFromMedia(
+          _store.state.sortField),
+      sortDirection: _store.state.sortDirection,
+    );
+  }
+
   Future<NoMediaActionResult> _trailingOverrideScenario(
       BuildContext ctx, LibContentItem item) async {
     final sortField =
@@ -1663,6 +1762,19 @@ class LibContentDataSource extends PaginatedBrowserDataSource<LibContentItem> {
     // connectivity via isItemUnavailable, so this re-reads fresh on rebuild.
     final rowOnline = _isStorageOnlineSync(_storageIdOf(item));
     return [
+      // Multi-window: replay this row's play intent in a fresh process (own
+      // playing workspace, own queue).
+      if (NewWindowLauncher.isSupported && _useScenarioMode)
+        GenericItemAction(
+          label: getLocalizations(context).lib_play_in_new_window,
+          icon: const Icon(Icons.open_in_new_rounded, size: 16),
+          enabled: rowOnline,
+          onPressed: (ctx, i) {
+            final request = _newWindowRequestForItem(i as LibContentItem);
+            if (request == null) return;
+            launchNewWindow(ctx, request);
+          },
+        ),
       GenericItemAction(
         label: getLocalizations(context).lib_override_queue,
         icon: const Icon(Icons.playlist_play, size: 16),

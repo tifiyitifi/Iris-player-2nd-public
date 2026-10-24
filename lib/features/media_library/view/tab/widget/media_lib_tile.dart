@@ -3,6 +3,9 @@ import 'package:iris/widgets/a11y_tooltip.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/db/adapters/media_library.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart'
     show SortDirection;
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart'
@@ -129,6 +132,11 @@ class MediaLibTile extends HookWidget {
                       }
                     } else if (action == 'add_as_source') {
                       await _handleAddAsSource(context);
+                    } else if (action == 'newWindow') {
+                      await launchNewWindow(
+                        context,
+                        newWindowRequestForLibrary(library.id),
+                      );
                     }
                   },
                   itemBuilder: (context) => [
@@ -136,6 +144,11 @@ class MediaLibTile extends HookWidget {
                         value: 'playAppend',
                         enabled: !libOffline,
                         child: Text(t.lib_play_append)),
+                    if (NewWindowLauncher.isSupported)
+                      PopupMenuItem(
+                        value: 'newWindow',
+                        child: Text(t.lib_open_in_new_window),
+                      ),
                     if (!isSystem) ...[
                       PopupMenuItem(
                           value: 'rename', child: Text(t.lib_rename)),

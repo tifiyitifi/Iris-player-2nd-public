@@ -54,6 +54,7 @@ import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_player_ui_store.dart';
 import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:iris/utils/app_exit.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/check_content_type.dart';
 import 'package:iris/utils/drag_window_lock.dart';
 import 'package:iris/utils/get_localizations.dart';
@@ -422,7 +423,13 @@ class Player extends HookWidget {
 
     useEffect(() {
       if (isDesktop) {
-        windowManager.setTitle(title);
+        // Multi-window: keep the OS title distinguishable between instances
+        // (the in-app title bar stays the clean file name).
+        windowManager.setTitle(
+          AppInstance.isPrimary
+              ? title
+              : '$title — ${INFO.title} #${AppInstance.slot}',
+        );
       }
       return;
     }, [title]);

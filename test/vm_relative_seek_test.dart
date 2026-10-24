@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/virtual_media/interaction/controller/virtual_seek_handler.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 VirtualSegment _seg(String name, int? durMs) => VirtualSegment(
       mediaKey: 's:$name',
@@ -84,7 +85,9 @@ void main() {
     test('clamps past tail and head', () {
       final item = _threeBy100();
       final tail = handler.resolveRelativeSeek(item, segmentIndex: 2, localMs: 99000, deltaMs: 60000)!;
-      expect(tail.virtualMs, 299999);
+      // The tail lands at the shared guard, not at segDur - 1: a 1 ms margin is
+      // not a guard (the segment's final GOP starts before its duration).
+      expect(tail.virtualMs, 300000 - kSeekTailGuardMs);
       expect(tail.segIdx, 2);
       final head = handler.resolveRelativeSeek(item, segmentIndex: 0, localMs: 1000, deltaMs: -60000)!;
       expect(head.virtualMs, 0);

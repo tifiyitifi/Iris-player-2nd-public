@@ -1,7 +1,7 @@
 name: iris
 description: A lightweight video player
 publish_to: none
-version: 2.0.10+2774
+version: 2.0.11+2804
 
 environment:
   sdk: ^3.5.4

@@ -15,6 +15,12 @@ List<ContextMenuEntry> buildPotPlayerContextMenu({
   required bool isAlwaysOnTop,
   required String seekStepLabel,
   required String seekStepHint,
+  // Reveal-the-playing-file entry: hidden unless the caller resolved a
+  // Windows-revealable current media (local/USB/network with an on-disk path).
+  // The label is injected for localization; the default keeps pure builder
+  // calls (tests, callers without l10n) usable.
+  bool canRevealInExplorer = false,
+  String revealInExplorerLabel = 'Open in Explorer',
 }) {
   // ── Capability-gated submenus ──
   final bool showSyncSubmenus = supportsSync;
@@ -118,6 +124,15 @@ List<ContextMenuEntry> buildPotPlayerContextMenu({
         ),
       ],
     ),
+    // ── Reveal the playing file (Windows-only; gated by the caller) ──
+    // Top-level placement: this is a direct "where is this file?" action, not
+    // an open-a-new-media intent, so it sits next to Open rather than inside it.
+    if (canRevealInExplorer)
+      ContextMenuItem(
+        label: revealInExplorerLabel,
+        icon: Icons.desktop_windows_rounded,
+        action: PotPlayerAction.revealCurrentFileInExplorer,
+      ),
     const ContextMenuDivider(),
 
     // ── Playback ──

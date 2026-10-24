@@ -24,6 +24,8 @@ Future<void> showScenarioSourceRefreshSummaryDialog(
           tt.scn_scan_summary_deduped(state.dedupedSources),
         if (state.missingExplicitFiles > 0)
           tt.scn_scan_summary_missing(state.missingExplicitFiles),
+        if (state.probedExplicitFiles > 0)
+          tt.scn_scan_summary_explicit_refreshed(state.probedExplicitFiles),
       ];
       return AlertDialog(
         title: Text(stopped ? tt.scn_scan_summary_title_stopped : tt.scn_scan_summary_title),

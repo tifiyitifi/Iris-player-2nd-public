@@ -170,6 +170,8 @@ abstract final class OsdTexts {
       line1: t.osd_shot_failed, icon: Icons.error_outline_rounded);
   static OsdEntry deleted(AppLocalizations t) =>
       OsdEntry(line1: t.osd_moved_recycle, icon: Icons.delete_rounded);
+  static OsdEntry deleteUnavailable(AppLocalizations t) => OsdEntry(
+      line1: t.osd_delete_unavailable, icon: Icons.error_outline_rounded);
 
   // ── Playlist dock / playback / auto-fit ──────────────────────────────
   static OsdEntry dockVisibility(bool visible, AppLocalizations t) => OsdEntry(

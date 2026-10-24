@@ -7,6 +7,9 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart'
     show SortDirection;
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/media_library/scan/probe/media_probe.dart';
 import 'package:iris/features/media_library/scan/service/recursive_scan_service.dart';
 import 'package:iris/features/media_library/scan/service/scan_preflight.dart';
@@ -37,7 +40,14 @@ import 'package:iris/widgets/dialogs/show_webdav_dialog.dart';
 import 'package:iris/widgets/popups/storages/db/storages_utils/storage_utils.dart';
 import 'package:path/path.dart' as p;
 
-enum StorageTileAction { play, playAppend, scan, edit, remove }
+enum StorageTileAction {
+  play,
+  playAppend,
+  playInNewWindow,
+  scan,
+  edit,
+  remove,
+}
 
 /// Menu actions for a storage-tile trailing button, in display order.
 ///
@@ -56,6 +66,7 @@ List<({StorageTileAction action, bool enabled})> storageTileMenuActions({
   required bool canScan,
   required bool online,
   required bool isScanned,
+  bool canNewWindow = false,
 }) {
   if (!scenarioMode) {
     if (isScanned) return const [];
@@ -68,6 +79,9 @@ List<({StorageTileAction action, bool enabled})> storageTileMenuActions({
   return [
     (action: StorageTileAction.play, enabled: true),
     (action: StorageTileAction.playAppend, enabled: true),
+    // Multi-window: whole-storage scope in a fresh process (hidden on builds
+    // that cannot multi-instance, e.g. the Microsoft Store package).
+    if (canNewWindow) (action: StorageTileAction.playInNewWindow, enabled: true),
     if (!isScanned) ...[
       (action: StorageTileAction.edit, enabled: true),
       (action: StorageTileAction.remove, enabled: true),
@@ -82,6 +96,7 @@ List<PopupMenuEntry<StorageTileAction>> _buildMenuItems(
   String label(StorageTileAction action) => switch (action) {
         StorageTileAction.play => t.storages_play_override,
         StorageTileAction.playAppend => t.storages_play_append,
+        StorageTileAction.playInNewWindow => t.lib_play_in_new_window,
         StorageTileAction.scan => t.files_scan_recursive,
         StorageTileAction.edit => t.edit,
         StorageTileAction.remove => t.remove,
@@ -231,6 +246,18 @@ class StoragesDbList extends HookWidget {
       );
     }
 
+    Future<void> playStorageInNewWindow(
+        BuildContext context, Storage storage) async {
+      await launchNewWindow(
+        context,
+        newWindowRequestForFolder(
+          storageId: storage.id,
+          path: '',
+          recursive: true,
+        ),
+      );
+    }
+
     Future<void> editStorage(BuildContext context, Storage storage) async {
       switch (storage.type) {
         case StorageType.internal:
@@ -372,6 +399,9 @@ class StoragesDbList extends HookWidget {
         case StorageTileAction.playAppend:
           await playAppendWholeStorage(context, storage);
           break;
+        case StorageTileAction.playInNewWindow:
+          await playStorageInNewWindow(context, storage);
+          break;
         case StorageTileAction.scan:
           await startStorageScan(context, storage);
           break;
@@ -413,6 +443,7 @@ class StoragesDbList extends HookWidget {
         canScan: canScan,
         online: online,
         isScanned: isScanned,
+        canNewWindow: NewWindowLauncher.isSupported,
       );
       // Primary trailing is the whole-storage recursive scan; the whole-storage
       // Play moved into the more menu above. Offline-grey mirrors the menu

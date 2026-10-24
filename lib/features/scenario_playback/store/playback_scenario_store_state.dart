@@ -94,6 +94,13 @@ abstract class PlaybackScenarioStoreState with _$PlaybackScenarioStoreState {
     /// D1/D2). Incremented ONLY after a successful save-new; override/append/
     /// sync-back never touch it.
     @Default(0) int saveCounter,
+
+    /// The private playing workspace THIS window owns, when it is not the
+    /// primary instance (slot > 1). Persisted in the session-scoped blob, so
+    /// each window remembers its own row across restarts while the primary
+    /// keeps the historical shared SystemPlaying row. Null on the primary and
+    /// before an extra window's row is created.
+    String? instanceWorkspaceId,
   }) = _PlaybackScenarioStoreState;
 
   factory PlaybackScenarioStoreState.fromJson(Map<String, dynamic> json) =>

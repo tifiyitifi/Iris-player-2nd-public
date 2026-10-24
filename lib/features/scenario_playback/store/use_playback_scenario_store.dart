@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+import 'package:iris/app_shutdown.dart';
+import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
@@ -17,6 +20,7 @@ import 'package:iris/features/scenario_playback/model/domain/scenario_sort_spec.
 import 'package:iris/features/scenario_playback/model/domain/scenario_source.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_source_spec.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_state.dart';
+import 'package:iris/features/scenario_playback/model/domain/scenario_workspace_order.dart';
 import 'package:iris/features/scenario_playback/model/enum/duplicate_policy.dart';
 import 'package:iris/features/scenario_playback/model/enum/playback_order.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_kind.dart';
@@ -35,6 +39,7 @@ import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/persistent_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
 
@@ -47,9 +52,26 @@ final areaKeyLog = AreaKeyLog(ScenarioLogKeys.store);
 /// repeat, sort) lives in the media database, not in this in-memory state.
 class PlaybackScenarioStore
     extends PersistentStore<PlaybackScenarioStoreState> {
-  static const _activeScenarioKey = 'playback_scenario_active_id';
+  static const _activeScenarioKey = KvKeys.playbackScenarioActiveId;
+
+  /// Session KV key for this window's entry-workspace claims.
+  static const _claimsKey = KvKeys.workspaceClaims;
 
   PlaybackScenarioStore() : super(PlaybackScenarioStoreState());
+
+  /// Per-window claims: `entry:<entryId>:fg|bg` → workspace scenario id.
+  ///
+  /// The ENTRY row keeps the canonical (primary) workspace; an extra window
+  /// remembers its own row here so both windows can play the same entry without
+  /// sharing one queue. Loaded in [load] (before the state blob, so a claim is
+  /// never missed) and mirrored in memory for the synchronous resolvers.
+  Map<String, String> _entryClaims = const {};
+
+  /// Rows minted by an EPHEMERAL window. Its session KV is process-local, so
+  /// nothing could ever claim them again; they are deleted on window close
+  /// (see [_purgeEphemeralWorkspaces]) instead of waiting for the age sweep.
+  static final List<String> _ephemeralCreated = [];
+  static bool _ephemeralCleanupRegistered = false;
 
   ScenarioRepository get _repo => DbModule.scenarioRepo;
 
@@ -186,33 +208,27 @@ class PlaybackScenarioStore
   static String _indexUsedKey(String scenarioId) =>
       ScenarioQueueIndexDao.usedKey(scenarioId);
 
-  /// In-memory cache of the media revisions the index signature keys on, so a
-  /// page fetch does not read `app_meta` once per storage. Kept in sync by
-  /// [bumpSourceScanRevision]; a fresh process fills it lazily.
-  final Map<String, int> _mediaScopeRev = {};
-  int _mediaGlobalRev = 0;
-  bool _mediaRevLoaded = false;
-
+  /// The media revisions the index signature keys on.
+  ///
+  /// Read from `app_meta` on EVERY signature computation — never cached in
+  /// memory. Another window shares this database (each window is its own
+  /// process: see `AppInstance`) and bumps these rows when it scans, so a
+  /// process-local cache would keep computing a stale signature: this window
+  /// would then consider its cached generation current and never notice the
+  /// scan. The reads are single-row probes and the signature is only computed
+  /// on a page read / build, not per frame.
   Future<int> _mediaGlobalRevision() async {
-    if (!_mediaRevLoaded) {
-      _mediaGlobalRev = int.tryParse(
-              await DbModule.appMetaDao.read(_kMediaContentRevision) ?? '') ??
-          0;
-      _mediaRevLoaded = true;
-    }
-    return _mediaGlobalRev;
+    return int.tryParse(
+            await DbModule.appMetaDao.read(_kMediaContentRevision) ?? '') ??
+        0;
   }
 
   Future<int> _mediaScopeRevision(String storageId) async {
-    final cached = _mediaScopeRev[storageId];
-    if (cached != null) return cached;
-    final rev = int.tryParse(
+    return int.tryParse(
             await DbModule.appMetaDao
                     .read('$_kMediaScopeRevisionPrefix$storageId') ??
                 '') ??
         0;
-    _mediaScopeRev[storageId] = rev;
-    return rev;
   }
 
   /// How many materialized generations are kept on disk at once.
@@ -364,7 +380,24 @@ class PlaybackScenarioStore
     if (existing != null &&
         existing.buildId > 0 &&
         existing.signature == signature) {
-      return existing.buildId;
+      // The database is SHARED with the other windows, so the generation this
+      // window cached may have moved on since: another window rebuilds the same
+      // scenario (a newer build id) or its retention pass evicts it. Every
+      // content read resolves `currentBuildId` itself, so hand out THAT id —
+      // returning the cached one hands a dead/duplicate id to the count paths
+      // (`indexedTotalCount`, `_resolveTotal`) and, after an eviction, would
+      // keep this window on the legacy walk for the rest of the session because
+      // the cached signature still matched.
+      final live =
+          await DbModule.scenarioQueueIndexDao.currentBuildId(scenarioId);
+      if (live > 0) {
+        if (live != existing.buildId) {
+          _queueIndexBuilds[scenarioId] =
+              (buildId: live, signature: existing.signature);
+        }
+        return live;
+      }
+      _queueIndexBuilds.remove(scenarioId);
     }
     // Cold start: the in-memory map is empty, but the persisted generation may
     // still be current — reuse it instead of re-walking the library.
@@ -464,9 +497,28 @@ class PlaybackScenarioStore
     return null;
   }
 
-  /// The single SystemPlaying workspace row, if loaded.
-  Scenario? get systemPlayingScenario {
-    for (final c in state.scenarios) {
+  /// The playing workspace row THIS window owns, if loaded.
+  ///
+  /// Primary (slot 1) keeps the historical single `ScenarioKind.systemPlaying`
+  /// row. An extra window (slot > 1) owns a private row of the same kind whose
+  /// id is remembered in [PlaybackScenarioStoreState.instanceWorkspaceId];
+  /// foreign playing workspaces are filtered out of
+  /// [PlaybackScenarioStoreState.scenarios] by [refreshScenarios], so this never
+  /// resolves to another window's queue.
+  Scenario? get systemPlayingScenario => systemPlayingScenarioOf(state);
+
+  /// Pure form of [systemPlayingScenario] for `store.select(...)` callers
+  /// (a widget that subscribes to the state must not read the live getter).
+  Scenario? systemPlayingScenarioOf(PlaybackScenarioStoreState s) {
+    if (!AppInstance.isPrimary) {
+      final id = s.instanceWorkspaceId;
+      if (id == null) return null;
+      for (final c in s.scenarios) {
+        if (c.id == id && c.type == ScenarioKind.systemPlaying) return c;
+      }
+      return null;
+    }
+    for (final c in s.scenarios) {
       if (c.type == ScenarioKind.systemPlaying) return c;
     }
     return null;
@@ -491,16 +543,31 @@ class PlaybackScenarioStore
 
   @override
   void onReady() {
-    _scenariosReady = refreshScenarios();
+    _scenariosReady = _bootstrapScenarios();
+  }
+
+  /// Ensures this window's playing workspace exists (extra windows only), then
+  /// loads the list. The row is created eagerly so the scenario tab, the resume
+  /// path and the play gate all see a workspace from the first frame — a
+  /// missing one would make a second window look like a fresh install.
+  Future<void> _bootstrapScenarios() async {
+    if (!AppInstance.isPrimary) {
+      try {
+        await ensureSystemPlayingScenario();
+      } catch (e) {
+        areaKeyLog.e('instance playing workspace bootstrap failed: $e');
+      }
+    }
+    await refreshScenarios();
   }
 
   /// Completes when the scenario list AND the active selection are resolved.
   ///
   /// [initialized] does NOT cover [onReady]'s refresh: the base class
   /// completes the completer BEFORE calling onReady, so awaiting only
-  /// `initialized` races the activeScenarioId restore and cold-start resume
-  /// dies with "No active PlaybackScenario selected" on slow IO. Every
-  /// startup consumer of the active selection must await this instead.
+  /// `initialized` races the activeScenarioId restore and the cold-start
+  /// resume finds no active scenario on slow IO. Every startup consumer of
+  /// the active selection must await this instead.
   Future<void> ensureReady() async {
     await initialized;
     await _scenariosReady;
@@ -509,7 +576,15 @@ class PlaybackScenarioStore
   /// Loads all scenarios and restores the active selection.
   Future<void> refreshScenarios() async {
     final raw = await _repo.getAllScenarios();
-    final scenarios = _sortScenarios(raw);
+    // Multi-instance: another window's playing workspace is a FOREIGN context.
+    // Keeping it in the mirror would let this window's scenario tab and active
+    // selection borrow a queue it does not own (and `systemPlayingScenario`
+    // could pick it up). Every window therefore sees exactly ONE playing
+    // workspace: the primary the historical shared row, an extra window its own.
+    final mineId = _ownPlayingWorkspaceId(raw);
+    final scenarios = _sortScenarios(raw
+        .where((c) => c.type != ScenarioKind.systemPlaying || c.id == mineId)
+        .toList());
 
     String? active = state.activeScenarioId;
     if (active == null || !scenarios.any((c) => c.id == active)) {
@@ -519,6 +594,21 @@ class PlaybackScenarioStore
     set(state.copyWith(
         scenarios: scenarios, activeScenarioId: active, isLoading: false));
     await _syncActiveScenarioShuffled();
+  }
+
+  /// Which playing-workspace row this process treats as its own.
+  ///
+  /// - primary (slot 1): the OLDEST `systemPlaying` row — the historical shared
+  ///   one. Private rows minted by extra windows are always newer, so the first
+  ///   window keeps its row (and its queue) no matter how many windows ran.
+  /// - extra window: the row id remembered in the session blob.
+  ///
+  /// The oldest-row rule lives in `oldestOfType` so this pick and the
+  /// repository's `getByType` (used by `ensureSystemPlayingScenario`) can never
+  /// disagree about which row is "the" primary workspace.
+  String? _ownPlayingWorkspaceId(List<Scenario> raw) {
+    if (!AppInstance.isPrimary) return state.instanceWorkspaceId;
+    return oldestOfType(raw, ScenarioKind.systemPlaying)?.id;
   }
 
   /// Sorts the scenario list for the Playback Scenario tab.
@@ -625,18 +715,45 @@ class PlaybackScenarioStore
     final scenarios = await _repo.getAllScenarios();
     if (scenarios.isEmpty) return null;
 
-    // Prefer the SystemPlaying scenario.
-    final system = scenarios.where((c) => c.type == ScenarioKind.systemPlaying);
-    if (system.isNotEmpty) return system.first.id;
+    // Prefer THIS window's playing workspace. The primary keeps the shared
+    // SystemPlaying row; an extra window only accepts its own private row —
+    // never another window's workspace, which would make it resume someone
+    // else's queue on launch.
+    if (AppInstance.isPrimary) {
+      final shared = _ownPlayingWorkspaceId(scenarios);
+      if (shared != null) return shared;
+    } else {
+      final mineId = state.instanceWorkspaceId;
+      if (mineId != null && scenarios.any((c) => c.id == mineId)) {
+        return mineId;
+      }
+      // No own workspace (bootstrap failure, or the row was purged while the
+      // session still named it). A SHARED saved scenario is NOT a fallback
+      // here: its state row (current occurrence / virtual position) belongs to
+      // the primary, so adopting it would let two windows overwrite one queue.
+      // "Nothing selected" is a valid state — the first play mints this
+      // window's own workspace (see [ensureSystemPlayingScenario]).
+      areaKeyLog.w(
+        'extra window has no playing workspace; leaving no scenario selected',
+      );
+      return null;
+    }
 
     // Otherwise fall back to the most recently active SAVED scenario — the
     // unified workspace is an internal context and is never auto-selected.
+    // Primary only: an extra window reached this point without a workspace of
+    // its own and must not adopt a shared queue (see above).
     final withTimes = <(String, DateTime?)>[];
     for (final c in scenarios) {
       if (c.type != ScenarioKind.userSaved) continue;
       final s = await _repo.getState(c.id);
       withTimes.add((c.id, s?.lastActiveAt));
     }
+    // No saved scenario is a VALID state (fresh install, or a window whose
+    // playing workspace vanished while the mirror still holds other kinds):
+    // report "nothing selected" instead of throwing, or the whole
+    // `ensureReady()` chain (startup resume included) aborts.
+    if (withTimes.isEmpty) return null;
     withTimes.sort((a, b) {
       final at = a.$2 ?? DateTime.fromMillisecondsSinceEpoch(0);
       final bt = b.$2 ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -697,8 +814,9 @@ class PlaybackScenarioStore
     _queueIndexBuildsInFlight.remove(id);
     _recentIndexUse.remove(id);
     if (state.activeScenarioId == id) {
-      final system = await _repo.getSystemPlayingScenario();
-      set(state.copyWith(activeScenarioId: system?.id));
+      // Fall back to THIS window's playing workspace (never another window's).
+      final system = await ensureSystemPlayingScenario();
+      set(state.copyWith(activeScenarioId: system.id));
     }
     await refreshScenarios();
   }
@@ -743,25 +861,19 @@ class PlaybackScenarioStore
   Future<void> bumpSourceScanRevision({Iterable<String>? storages}) async {
     set(state.copyWith(sourceScanRevision: state.sourceScanRevision + 1));
     // Persist a monotonic content revision so the derived-index signature stays
-    // comparable across restarts (the in-memory counter resets to 0), and keep
-    // the read-path cache in sync in the same step.
+    // comparable across restarts (the in-memory counter resets to 0).
     try {
       final ids = storages?.where((e) => e.isNotEmpty).toSet();
       if (ids == null || ids.isEmpty) {
-        _mediaGlobalRev =
-            await DbModule.appMetaDao.increment(_kMediaContentRevision);
-        _mediaRevLoaded = true;
+        await DbModule.appMetaDao.increment(_kMediaContentRevision);
       } else {
         for (final id in ids) {
-          _mediaScopeRev[id] = await DbModule.appMetaDao
+          await DbModule.appMetaDao
               .increment('$_kMediaScopeRevisionPrefix$id');
         }
       }
     } catch (_) {
       // Best-effort: a failure only costs one rebuild on the next cold start.
-      // Drop the cache so the next read re-loads from disk.
-      _mediaRevLoaded = false;
-      _mediaScopeRev.clear();
     }
   }
 
@@ -805,13 +917,17 @@ class PlaybackScenarioStore
   // ── Active scenario playback state (DB-backed) ──
 
   Future<ScenarioState?> activeState() async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('activeState');
+    if (id == null) return null;
     return _repo.getState(id);
   }
 
   /// Recovers the current playing item by its [PlaybackOccurrenceId] (C7/D4).
-  Future<EffectivePlaybackItem?> getCurrentItem() =>
-      currentItemFor(_requireActiveId());
+  Future<EffectivePlaybackItem?> getCurrentItem() async {
+    final id = _activeIdOrNull('getCurrentItem');
+    if (id == null) return null;
+    return currentItemFor(id);
+  }
 
   /// Recovers [scenarioId]'s OWN current playing item by its persisted
   /// occurrence. Unlike [getCurrentItem] this is not tied to the active
@@ -855,9 +971,11 @@ class PlaybackScenarioStore
   Future<void> setCurrentItem({
     required PlaybackOccurrenceId occurrence,
     int? virtualPos,
-  }) =>
-      setCurrentItemFor(_requireActiveId(),
-          occurrence: occurrence, virtualPos: virtualPos);
+  }) async {
+    final id = _activeIdOrNull('setCurrentItem');
+    if (id == null) return;
+    await setCurrentItemFor(id, occurrence: occurrence, virtualPos: virtualPos);
+  }
 
   /// Id-explicit [setCurrentItem]: persists [scenarioId]'s OWN current
   /// occurrence. The active-bound [setCurrentItem] cannot serve the 副音
@@ -896,7 +1014,8 @@ class PlaybackScenarioStore
   }
 
   Future<void> toggleShuffle() async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('toggleShuffle');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     // Gone workspace: no-op (see [shuffleRefresh] for why the old
     // `Scenario(id: id, name: '')` fallback was an INSERT, not a patch).
@@ -931,7 +1050,8 @@ class PlaybackScenarioStore
   /// Flips the shuffle direction while shuffled (asc = forward permutation,
   /// desc = reversed permutation). No-op when shuffle is off.
   Future<void> toggleShuffleDirection() async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('toggleShuffleDirection');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     if (scenario?.order != PlaybackOrder.shuffled) return;
     await _repo.updateScenario(
@@ -947,7 +1067,8 @@ class PlaybackScenarioStore
   /// Refreshes the shuffled order: if shuffle is off, enables it first; then
   /// regenerates with a fresh seed. Used by the queue's "shuffle refresh".
   Future<void> shuffleRefresh() async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('shuffleRefresh');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     // A setter whose workspace row is gone writes NOTHING. Falling back to
     // `Scenario(id: id, name: '')` used to INSERT a nameless `userSaved` row
@@ -970,7 +1091,8 @@ class PlaybackScenarioStore
   }
 
   Future<void> setRepeat(Repeat repeat) async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('setRepeat');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     // Gone workspace: no-op. See [shuffleRefresh] for why the old
     // `Scenario(id: id, name: '')` fallback was an INSERT, not a patch.
@@ -992,7 +1114,8 @@ class PlaybackScenarioStore
     ScenarioSortField field,
     SortDirection direction,
   ) async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('setSort');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     if (scenario == null) return;
     await _repo.updateScenario(
@@ -1013,7 +1136,8 @@ class PlaybackScenarioStore
     required ScenarioSortField sortField,
     required SortDirection sortDirection,
   }) async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('applyQueueGenerationRule');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     if (scenario == null) return;
     final s = await _repo.getState(id);
@@ -1056,7 +1180,8 @@ class PlaybackScenarioStore
 
   /// Toggles the active scenario's duplicate policy (E3: only DuplicatePolicy).
   Future<void> toggleDuplicatePolicy() async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('toggleDuplicatePolicy');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     // Gone workspace: no-op (see [shuffleRefresh]).
     if (scenario == null) return;
@@ -1073,7 +1198,8 @@ class PlaybackScenarioStore
   /// is ordered by (parentPath, sortField, name) so same-directory files stay
   /// contiguous; when false each source is sorted by sortField only.
   Future<void> setSourceInternalFirst(bool value) async {
-    final id = _requireActiveId();
+    final id = _activeIdOrNull('setSourceInternalFirst');
+    if (id == null) return;
     final scenario = await _repo.getScenario(id);
     // Gone workspace: no-op (see [shuffleRefresh]).
     if (scenario == null) return;
@@ -1090,8 +1216,19 @@ class PlaybackScenarioStore
   Future<ScenarioResolvePage> resolvePage({
     required int page,
     required int pageSize,
-  }) {
-    return resolvePageIndexed(_requireActiveId(), page: page, pageSize: pageSize);
+  }) async {
+    final id = _activeIdOrNull('resolvePage');
+    if (id == null) {
+      // No selection: an empty page, not an exception — the queue views read
+      // this before the first playback has picked a workspace.
+      return ScenarioResolvePage(
+        items: const [],
+        totalItems: 0,
+        currentPage: page,
+        pageSize: pageSize,
+      );
+    }
+    return resolvePageIndexed(id, page: page, pageSize: pageSize);
   }
 
   /// Index-preferred page read for [scenarioId], which need not be the active
@@ -1111,6 +1248,13 @@ class PlaybackScenarioStore
         scenarioId: scenarioId,
         page: page,
         pageSize: pageSize,
+        // Both are cache keys ONLY (see `ScenarioResolver._cacheKey`); the
+        // indexed read itself re-reads `media_nodes`. They still matter here
+        // because the indexed read falls back to the legacy walk whenever the
+        // shared index is unavailable — and that walk serves a cached
+        // resolved stream that HOLDS MediaNode snapshots.
+        playbackVersion: state.playbackVersion,
+        mediaRevision: state.sourceScanRevision,
       );
     }
     areaKeyLog.w('scenario $scenarioId has no usable index (buildId=$buildId): '
@@ -1122,6 +1266,10 @@ class PlaybackScenarioStore
       // The persisted-config stream cache keys on playbackVersion, which lives
       // only in this store's memory (definition edits / overrides / append).
       playbackVersion: state.playbackVersion,
+      // A rescan/probe rewrites media_nodes without touching any definition
+      // row: keying on the media generation is what makes those writes visible
+      // to an open queue.
+      mediaRevision: state.sourceScanRevision,
     );
   }
 
@@ -1158,6 +1306,7 @@ class PlaybackScenarioStore
       shuffleSeed: shuffleSeed,
       duplicatePolicy: duplicatePolicy,
       playbackVersion: state.playbackVersion,
+      mediaRevision: state.sourceScanRevision,
     );
   }
 
@@ -1173,7 +1322,8 @@ class PlaybackScenarioStore
         scenarioId: scenarioId,
         page: 0,
         pageSize: 1,
-        playbackVersion: state.playbackVersion);
+        playbackVersion: state.playbackVersion,
+        mediaRevision: state.sourceScanRevision);
     return result.totalItems;
   }
 
@@ -1184,9 +1334,11 @@ class PlaybackScenarioStore
     required String path,
     bool recursive = false,
     ScenarioSourceKind kind = ScenarioSourceKind.folder,
-  }) {
-    return _repo.addSource(
-      scenarioId: _requireActiveId(),
+  }) async {
+    final id = _activeIdOrNull('addSource');
+    if (id == null) return;
+    await _repo.addSource(
+      scenarioId: id,
       storageId: storageId,
       path: path,
       recursive: recursive,
@@ -1223,16 +1375,20 @@ class PlaybackScenarioStore
   /// Each [ScenarioSourceSpec] carries its OWN [ScenarioSourceKind] ([folder] /
   /// [file]), so a batch may mix whole directories with individually picked
   /// files without either shape being silently coerced into the other.
-  Future<void> addSources({required List<ScenarioSourceSpec> specs}) {
-    return _repo.addSources(scenarioId: _requireActiveId(), specs: specs);
+  Future<void> addSources({required List<ScenarioSourceSpec> specs}) async {
+    final id = _activeIdOrNull('addSources');
+    if (id == null) return;
+    await _repo.addSources(scenarioId: id, specs: specs);
   }
 
   Future<void> addExplicitInclude({
     required String storageId,
     required String path,
-  }) {
-    return _repo.addExplicitItem(
-      scenarioId: _requireActiveId(),
+  }) async {
+    final id = _activeIdOrNull('addExplicitInclude');
+    if (id == null) return;
+    await _repo.addExplicitItem(
+      scenarioId: id,
       storageId: storageId,
       path: path,
     );
@@ -1278,8 +1434,10 @@ class PlaybackScenarioStore
     );
   }
 
-  Future<void> addExcludeRule(ScenarioExcludeRule rule) {
-    return _repo.addExcludeRule(scenarioId: _requireActiveId(), rule: rule);
+  Future<void> addExcludeRule(ScenarioExcludeRule rule) async {
+    final id = _activeIdOrNull('addExcludeRule');
+    if (id == null) return;
+    await _repo.addExcludeRule(scenarioId: id, rule: rule);
   }
 
   Future<void> removeExcludeRule(int ruleId) => _repo.removeExcludeRule(ruleId);
@@ -1300,8 +1458,34 @@ class PlaybackScenarioStore
 
   Future<void> updateState(ScenarioState state) => _repo.updateState(state);
 
-  Future<Scenario> ensureSystemPlayingScenario() =>
-      _repo.ensureSystemPlayingScenario();
+  /// Ensures THIS window's playing workspace row exists.
+  ///
+  /// Primary (slot 1) → the historical single shared SystemPlaying row.
+  /// Extra windows → their own private row (id in the session blob), created
+  /// lazily on first use and reused afterwards. See [systemPlayingScenario].
+  Future<Scenario> ensureSystemPlayingScenario() async {
+    if (AppInstance.isPrimary) return _repo.ensureSystemPlayingScenario();
+
+    final existingId = state.instanceWorkspaceId;
+    if (existingId != null) {
+      final existing = await _repo.getScenario(existingId);
+      if (existing != null && existing.type == ScenarioKind.systemPlaying) {
+        if (!state.scenarios.any((c) => c.id == existing.id)) {
+          await refreshScenarios();
+        }
+        return existing;
+      }
+    }
+
+    final created = await _repo.createSystemPlayingWorkspace(
+      name: '${ScenarioRepository.systemPlayingScenarioName} #${AppInstance.slotLabel}',
+    );
+    _trackEphemeralWorkspace(created.id);
+    set(state.copyWith(instanceWorkspaceId: created.id));
+    await save(state);
+    await refreshScenarios();
+    return created;
+  }
 
   /// The single 副音 (background) workspace, if it already exists.
   Future<Scenario?> getBackgroundWorkspace() => _repo.getBackgroundWorkspace();
@@ -1334,6 +1518,10 @@ class PlaybackScenarioStore
       }
     }
     final created = await _repo.createEntryBackgroundWorkspace();
+    // NOT tracked as ephemeral: this is the entry's CANONICAL row (shared by
+    // every window and the desktop shortcut), not a row this window owns.
+    // Purging it on a throwaway window's exit would leave the entry pointing
+    // at a deleted id and lose the definition.
     await refreshScenarios();
     return created;
   }
@@ -1343,9 +1531,148 @@ class PlaybackScenarioStore
     await refreshScenarios();
   }
 
+  /// The id THIS window claims for [entryId]'s workspace, or null.
+  ///
+  /// Synchronous on purpose: the context resolvers ([currentPlaybackWorkspace]
+  /// and friends) are pure reads over the already-loaded mirror.
+  String? claimedEntryWorkspaceId(String entryId, {bool background = false}) =>
+      _entryClaims[_entryClaimKey(entryId, background: background)];
+
+  static String _entryClaimKey(String entryId, {required bool background}) =>
+      'entry:$entryId:${background ? 'bg' : 'fg'}';
+
+  /// Resolves the workspace THIS WINDOW plays an independent entry in.
+  ///
+  /// Primary (slot 1) → the entry's canonical row ([sharedId]), i.e. the
+  /// historical behavior. Extra window → its own claimed row, minted on first
+  /// use and seeded with the canonical row's DEFINITION (sources / sort /
+  /// excludes) but NOT its playback state: sources are shared intent, while the
+  /// queue and current item belong to the window that is playing.
+  ///
+  /// Editing an entry's sources from an extra window therefore only changes that
+  /// window's copy — the accepted trade-off of never letting two windows write
+  /// one queue.
+  Future<Scenario> ensureWindowEntryWorkspace({
+    required String entryId,
+    String? sharedId,
+    bool background = false,
+  }) async {
+    if (AppInstance.isPrimary) {
+      return background
+          ? ensureEntryBackgroundWorkspace(sharedId)
+          : ensureEntryWorkspace(sharedId);
+    }
+
+    final ScenarioKind kind = background
+        ? ScenarioKind.entryBackground
+        : ScenarioKind.entryWorkspace;
+
+    final String? claimed =
+        claimedEntryWorkspaceId(entryId, background: background);
+    if (claimed != null) {
+      final existing = await _repo.getScenario(claimed);
+      if (existing != null && existing.type == kind) {
+        if (!state.scenarios.any((c) => c.id == existing.id)) {
+          await refreshScenarios();
+        }
+        return existing;
+      }
+    }
+
+    final created = background
+        ? await _repo.createEntryBackgroundWorkspace()
+        : await _repo.createEntryWorkspace();
+    await _rememberEntryClaim(entryId, created.id, background: background);
+    _trackEphemeralWorkspace(created.id);
+
+    // Seed the definition from the canonical row when one exists. Re-read it:
+    // the caller may have just applied a first-launch seed through `override`.
+    final source = sharedId == null ? null : await _repo.getScenario(sharedId);
+    if (source != null && source.type == kind) {
+      await ScenarioCommands.override(
+        workspace: created,
+        source: source,
+        copyState: false,
+        repo: _repo,
+      );
+    }
+    await refreshScenarios();
+    return created;
+  }
+
+  Future<void> _rememberEntryClaim(
+    String entryId,
+    String scenarioId, {
+    required bool background,
+  }) async {
+    _entryClaims = {
+      ..._entryClaims,
+      _entryClaimKey(entryId, background: background): scenarioId,
+    };
+    try {
+      await getSessionKvStore().write(
+        key: _claimsKey,
+        value: json.encode(_entryClaims),
+      );
+    } catch (e) {
+      // Best-effort: a lost claim only mints a fresh private row next launch.
+      areaKeyLog.w('entry workspace claim write failed: $e');
+    }
+  }
+
+  Future<void> _loadEntryClaims() async {
+    try {
+      final raw = await getSessionKvStore().read(key: _claimsKey);
+      if (raw == null) return;
+      final decoded = json.decode(raw) as Map<String, dynamic>;
+      _entryClaims = {for (final e in decoded.entries) e.key: '${e.value}'};
+    } catch (e) {
+      areaKeyLog.w('entry workspace claim read failed: $e');
+    }
+  }
+
+  /// Registers a row an EPHEMERAL window minted for deletion on window close.
+  ///
+  /// An ephemeral window has no persistent slot, so nothing could ever claim its
+  /// rows again; leaving them for the 30-day sweep would be pure litter.
+  ///
+  /// ONLY per-window rows belong here (the private SystemPlaying instance and
+  /// the entry claim rows). Canonical entry rows are shared state owned by the
+  /// entry — see [ensureEntryWorkspace].
+  void _trackEphemeralWorkspace(String id) {
+    if (!AppInstance.isEphemeral) return;
+    if (!_ephemeralCreated.contains(id)) _ephemeralCreated.add(id);
+    if (_ephemeralCleanupRegistered) return;
+    _ephemeralCleanupRegistered = true;
+    AppShutdown.registerSave(_purgeEphemeralWorkspaces);
+  }
+
+  static Future<void> _purgeEphemeralWorkspaces() async {
+    if (_ephemeralCreated.isEmpty) return;
+    final ids = List<String>.from(_ephemeralCreated);
+    _ephemeralCreated.clear();
+    if (!DbModule.isReady) return;
+    for (final id in ids) {
+      try {
+        await DbModule.scenarioRepo.purgeInternalWorkspace(id);
+      } catch (e) {
+        areaKeyLog.w('ephemeral workspace purge failed for $id: $e');
+      }
+    }
+  }
+
+  /// Test seam for the window-exit purge (normally registered on shutdown).
+  @visibleForTesting
+  static Future<void> debugPurgeEphemeralWorkspaces() =>
+      _purgeEphemeralWorkspaces();
+
   /// Resolves the entry workspace for a custom desktop entry: reuses
   /// [existingId] when it still points at a live [ScenarioKind.entryWorkspace]
   /// row, otherwise lazily creates a fresh one (and refreshes the mirror).
+  ///
+  /// This is the entry's CANONICAL row (the one its desktop shortcut and the
+  /// primary window play). An extra window must call
+  /// [ensureWindowEntryWorkspace] to get its own private queue.
   Future<Scenario> ensureEntryWorkspace(String? existingId) async {
     if (existingId != null) {
       final existing = await _repo.getScenario(existingId);
@@ -1355,6 +1682,7 @@ class PlaybackScenarioStore
       }
     }
     final created = await _repo.createEntryWorkspace();
+    // Canonical row, NOT ephemeral-owned: see ensureEntryBackgroundWorkspace.
     await refreshScenarios();
     return created;
   }
@@ -1502,10 +1830,21 @@ class PlaybackScenarioStore
   /// `state.scenarios` stays the source of truth for `select`-driven UI.
   Future<void> refreshScenarioMirror() => refreshScenarios();
 
-  String _requireActiveId() {
+  /// The active scenario id, or null when this window has NO selection.
+  ///
+  /// "Nothing selected" is a legal state: a fresh install, and an extra
+  /// window whose own playing workspace could not be created (or whose row
+  /// was reclaimed). The active-bound operations below degrade to a no-op in
+  /// that state instead of throwing: most of them are reached from unawaited
+  /// UI / keyboard callbacks, where a StateError becomes an unhandled zone
+  /// error, and in the resume chain it would abort the whole startup routing
+  /// and leave an empty window.
+  ///
+  /// [op] names the caller for the log line.
+  String? _activeIdOrNull(String op) {
     final id = state.activeScenarioId;
     if (id == null) {
-      throw StateError('No active PlaybackScenario selected.');
+      areaKeyLog.d('$op: no active scenario; no-op');
     }
     return id;
   }
@@ -1514,8 +1853,11 @@ class PlaybackScenarioStore
 
   @override
   Future<PlaybackScenarioStoreState?> load() async {
+    // Claims come from their own session key and are read BEFORE the state blob
+    // (which may be absent): a missing blob must not lose this window's claim.
+    await _loadEntryClaims();
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
       final raw = await storage.read(key: _activeScenarioKey);
       if (raw == null) return null;
       // Clamp the per-surface page sizes ON READ: a size persisted by an older
@@ -1538,7 +1880,7 @@ class PlaybackScenarioStore
   @override
   Future<void> save(PlaybackScenarioStoreState s) async {
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
       await storage.write(
         key: _activeScenarioKey,
         value: json.encode(s.toJson()),

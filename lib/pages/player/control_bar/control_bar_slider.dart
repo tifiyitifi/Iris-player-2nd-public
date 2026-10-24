@@ -18,6 +18,7 @@ import 'package:iris/store/use_player_ui_store.dart';
 import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:iris/utils/format_duration_to_minutes.dart';
 import 'package:iris/utils/live_seek_throttle.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 import 'package:provider/provider.dart';
 
 class ControlBarSlider extends HookWidget {
@@ -93,9 +94,14 @@ class ControlBarSlider extends HookWidget {
       ),
     );
 
-    final play = context.read<MediaPlayer>().play;
-    final pause = context.read<MediaPlayer>().pause;
-    final seek = context.read<MediaPlayer>().seek;
+    final player = context.read<MediaPlayer>();
+    final play = player.play;
+    final pause = player.pause;
+    final seek = player.seek;
+    // Release-at-the-end commits through the explicit "finish this item" seek so
+    // it may land ON `duration` and advance; every live tick stays inside the
+    // tail guard.
+    final finishSeek = player.finishSeek ?? player.seek;
 
     // Live drag seeks are throttled (same 120ms contract as the circle slider /
     // ring dial) and the FINAL position is committed explicitly on release:
@@ -251,9 +257,22 @@ class ControlBarSlider extends HookWidget {
                             // per-tick showControl timer reset here.
                             dragTickMs.value = value;
                             final int ms = value.toInt();
+                            // RAW value: only the release may finish the item.
                             lastDragTargetMs.value = ms;
                             if (!seekThrottle.allow(DateTime.now())) return;
-                            seek(Duration(milliseconds: ms));
+                            // 仅拖时驻留: the live tick stops at the shared tail
+                            // guard, so the engine never reaches EOF mid-drag.
+                            // Seeking the exact end here used to rely on the
+                            // suppressed-completed latch to undo it — any surface
+                            // that failed to raise the scrub flag would advance
+                            // the queue instead. Same contract as the circle
+                            // slider's edge lock.
+                            seek(Duration(
+                              milliseconds: clampSeekTargetMs(
+                                ms,
+                                progress.duration.inMilliseconds,
+                              ),
+                            ));
                           },
                     onChangeStart: disabled
                         ? null
@@ -271,13 +290,37 @@ class ControlBarSlider extends HookWidget {
                         : (value) async {
                             // The live ticks are throttled, so the final drag
                             // position must be committed here or the last frame
-                            // can be dropped. VM cross-segment targets keep the
-                            // hooks' stashed release-commit path instead.
+                            // can be dropped. VM releases commit through the
+                            // hooks' central stash path instead, which also
+                            // carries the release-finish intent (a same-segment
+                            // tick would otherwise stay `stopAtTail` and never
+                            // reach `completed`).
                             final int? ms = lastDragTargetMs.value;
                             lastDragTargetMs.value = null;
-                            if (ms != null &&
-                                !VirtualMediaController.instance.isActive) {
-                              seek(Duration(milliseconds: ms));
+                            if (ms != null) {
+                              final vm = VirtualMediaController.instance;
+                              // 副音 owns the controls → the slider drives the bg
+                              // player, so a foreground VM session must not take
+                              // the release through its stash path.
+                              if (vm.isActive && !bgIsControl) {
+                                vm.stashDragTarget(ms);
+                              } else {
+                                // The RELEASE decides: at the very end it is the
+                                // explicit "finish this item" (the finish intent
+                                // lets the landing sit ON the end → completed →
+                                // next entry); anywhere else it stays inside the
+                                // tail guard, exactly like the circle slider's
+                                // release threshold. The intent only widens the
+                                // upper clamp: a release between the 99%
+                                // threshold and the exact end still lands on the
+                                // release point and plays the tail out.
+                                final int durationMs =
+                                    progress.duration.inMilliseconds;
+                                final commit = isSeekReleaseFinish(ms, durationMs)
+                                    ? finishSeek
+                                    : seek;
+                                commit(Duration(milliseconds: ms));
+                              }
                             }
                             dragStartMs.value = null;
                             dragTickMs.value = null;

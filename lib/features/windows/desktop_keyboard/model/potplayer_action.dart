@@ -101,6 +101,10 @@ enum PotPlayerAction {
   /// other player shortcuts; the keyboard path uses [seekStepIncrease] /
   /// [seekStepDecrease] with direct OSD instead.
   seekStepPopover,
+  // Menu-only (Windows video-area right-click): reveals the currently played
+  // file in Explorer with the file selected. Appended so name-persisted keybind
+  // overrides stay valid; never bound to a key.
+  revealCurrentFileInExplorer,
   // Direct base-step adjust (±1s / Shift ±10s) with OSD, no window.
   seekStepIncrease,
   seekStepDecrease,

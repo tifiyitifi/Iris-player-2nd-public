@@ -138,7 +138,7 @@ class HistoryStore extends PersistentStore<HistoryState> {
   Future<HistoryState?> load() async {
     areaKeyLog.i('Loading HistoryState');
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
 
       String? historyState = await storage.read(key: 'history_state');
       if (historyState != null) {
@@ -170,7 +170,7 @@ class HistoryStore extends PersistentStore<HistoryState> {
       return;
     }
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
 
       await storage.write(
           key: 'history_state', value: json.encode(state.toJson()));

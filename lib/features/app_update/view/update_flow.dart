@@ -9,6 +9,7 @@ import 'package:iris/features/app_update/services/update_check_service.dart';
 import 'package:iris/features/app_update/services/update_downloader.dart';
 import 'package:iris/features/app_update/services/update_handoff.dart';
 import 'package:iris/features/app_update/services/update_installer.dart';
+import 'package:iris/features/app_update/services/update_lease.dart';
 import 'package:iris/features/app_update/services/windows_update_plan.dart';
 import 'package:iris/features/app_update/view/gated_update_check.dart';
 import 'package:iris/features/app_update/view/gated_update_download.dart';
@@ -178,17 +179,29 @@ Future<void> runUpdateInstallFlow(
       false;
   if (!confirmed || !context.mounted) return;
 
-  final package = await _downloadWithProgress(context, result, asset);
-  if (package == null || !context.mounted) return;
+  // Multi-window: both windows would write the same package file and could
+  // start the same installer. One updater at a time; the other explains.
+  if (!await UpdateLease.instance.acquire()) {
+    if (context.mounted) await _showUpdateBusyDialog(context);
+    return;
+  }
+  try {
+    // The lease acquire awaited: the hosting route may be gone already.
+    if (!context.mounted) return;
+    final package = await _downloadWithProgress(context, result, asset);
+    if (package == null || !context.mounted) return;
 
-  await handOffUpdatePackage(
-    context,
-    result,
-    package.package,
-    expectedSize: package.expectedSize,
-    expectedSha256: package.expectedSha256,
-    windows: windows,
-  );
+    await handOffUpdatePackage(
+      context,
+      result,
+      package.package,
+      expectedSize: package.expectedSize,
+      expectedSha256: package.expectedSha256,
+      windows: windows,
+    );
+  } finally {
+    await UpdateLease.instance.release();
+  }
 }
 
 /// Hands a verified package to whatever applies it.
@@ -507,6 +520,24 @@ Future<void> _showInstallFailed(BuildContext context) async {
         TextButton(
           onPressed: () => Navigator.pop(ctx),
           child: Text(t.cancel),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Reports that another IRIS window owns the update lease.
+Future<void> _showUpdateBusyDialog(BuildContext context) async {
+  final t = getLocalizations(context);
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(t.update_busy_other_window_title),
+      content: Text(t.update_busy_other_window_body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: Text(t.ok),
         ),
       ],
     ),

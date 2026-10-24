@@ -25,7 +25,6 @@ void main() {
 
     test('registry exposes every suppressible warning', () {
       expect(kSuppressibleWarningIds, [
-        kWarningPhysicalDeleteRecycle,
         kWarningForceAppendNoMedia,
         kWarningGestureEditCancel,
         kWarningGestureEditReset,
@@ -47,6 +46,15 @@ void main() {
         kWarningVmMergeConcept,
         kWarningAppOverview,
       ]);
+    });
+
+    test('the physical delete confirmation is never suppressible', () {
+      // Destructive: silencing it once would turn Shift+Delete into a silent
+      // permanent delete for the rest of the session.
+      expect(
+        kSuppressibleWarningIds,
+        isNot(contains(kWarningPhysicalDeleteRecycle)),
+      );
     });
   });
 

@@ -17,6 +17,7 @@ import 'package:iris/store/persistent_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:uuid/uuid.dart';
+
 final areaKeyLog = AreaKeyLog(LogKeys.legacyStore);
 
 class MediaLibsPageStore extends PersistentStore<MediaLibsPageState> {
@@ -26,11 +27,14 @@ class MediaLibsPageStore extends PersistentStore<MediaLibsPageState> {
     required this.facade,
   }) : super(const MediaLibsPageState());
 
+  /// Window-scoped view state: the KV key is session-scoped, so two windows
+  /// keep independent page/sort positions.
+
   // STORAGE
 
   static const _storageKey = 'media_libs_page_state';
 
-  final KvStore _storage = getKvStore();
+  final KvStore _storage = getSessionKvStore();
 
   // RUNTIME STATE
 

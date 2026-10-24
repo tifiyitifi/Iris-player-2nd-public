@@ -56,6 +56,12 @@ class VirtualSeekHandler {
   /// file's saved progress. Exact segment boundaries resolve to the LATER
   /// segment (same rule as [VirtualMediaItem.locate]); head/tail clamp instead
   /// of wrapping.
+  ///
+  /// The clamp is `segDur - kSeekTailGuardMs` for EVERY segment, including the
+  /// last one. A press that reaches the merged item's end must therefore be
+  /// decided by the CALLER before this call (`decideStepTail` → the mpv-parity
+  /// tail finish while playing, a swallowed press while paused): the clamped
+  /// landing can never raise the `completed` that advances the session.
   ({int segIdx, int localMs, int virtualMs})? resolveRelativeSeek(
     VirtualMediaItem item, {
     required int segmentIndex,

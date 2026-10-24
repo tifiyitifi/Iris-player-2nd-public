@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:collection/collection.dart';
+import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart' as zustand;
 import 'package:iris/models/db/db_module.dart';
@@ -9,6 +10,7 @@ import 'package:iris/models/storages/storage_scope_key.dart';
 import 'package:iris/models/store/storage_state.dart';
 import 'package:iris/store/db/storage_persistence.dart';
 import 'package:iris/store/persistent_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
 final areaKeyLog = AreaKeyLog(LogKeys.legacyStore);
@@ -34,6 +36,11 @@ List<String> _mergeResolvedHosts(List<String> incoming, List<String> current) {
   // not use now.
 class StorageStore extends PersistentStore<StorageState> {
   StorageStore() : super(StorageState());
+
+  /// Shared-config store: an extra window's shutdown snapshot may predate a
+  /// change another window made (see [PersistentStore.persistOnDispose]).
+  @override
+  bool get persistOnDispose => AppInstance.isPrimary;
 
   Storage? findById(String id) => state.storages.firstWhereOrNull((storage) => storage.id == id);
 
@@ -176,6 +183,11 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
 
   StoragePersistence get activePersistence => _activePersistence;
 
+  /// Shared-config store: an extra window's shutdown snapshot may predate a
+  /// storage/favorite/navigation change another window made.
+  @override
+  bool get persistOnDispose => AppInstance.isPrimary;
+
   @override
   Future<StorageState?> load() async {
     // Determine active persistence at first load
@@ -197,7 +209,8 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
       // user-initiated "removed my last storage" persist. (The base store's
       // `loadOk` turns writes on under the same condition.)
       if (rawState == null) return null;
-      return rawState.copyWith(storageConnectionStatus: const {});
+      final normalized = rawState.copyWith(storageConnectionStatus: const {});
+      return _applySessionNavigation(normalized);
     } finally {
       _loaded = true;
     }
@@ -244,7 +257,13 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
     _activePersistence = newPersistence;
     _backendSelected = true;
     if (loaded != null) {
-      set(loaded.copyWith(storageConnectionStatus: const {}));
+      final normalized = loaded.copyWith(storageConnectionStatus: const {});
+      // Overlay THIS window's browse location exactly like [load] does: the
+      // freshly loaded snapshot carries the SHARED nav row, so without this a
+      // backend switch (startup `applyConfiguredBackends`, the legacy toggle, an
+      // import) would drop an extra window's session navigation back onto the
+      // primary's location.
+      set(await _applySessionNavigation(normalized));
     }
   }
 
@@ -289,7 +308,7 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
 
   Future<void> addStorage(Storage storage) async {
     set(state.copyWith(storages: [...state.storages, storage]));
-    await save(state);
+    await _persistStorageAdd(storage);
   }
 
   Future<void> updateStorage(int index, Storage storage) async {
@@ -315,7 +334,12 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
         newList.any((s) => (s.dataScopeId ?? s.id) == oldScope);
 
     set(state.copyWith(storages: newList, currentStorage: nextCurrent));
-    await save(state);
+    await _persistStorageUpsert([storage]);
+    // Defensive: an edit that also changed the id must not leave the old row
+    // behind (the snapshot used to replace the whole table and hide this).
+    if (previous.id != storage.id) {
+      await _persistStorageDelete(previous.id);
+    }
 
     if (!oldScopeStillUsed) {
       await _purgeScope(oldScope);
@@ -358,6 +382,7 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
 
     final scopeId = current.dataScopeId ?? current.id;
     final newList = [...state.storages];
+    final changedEntries = <Storage>[];
     var changed = false;
     for (var i = 0; i < newList.length; i++) {
       final member = newList[i];
@@ -369,12 +394,13 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
         continue;
       }
       newList[i] = member.copyWith(resolvedHosts: merged);
+      changedEntries.add(newList[i]);
       changed = true;
     }
     if (!changed) return;
 
     set(state.copyWith(storages: newList));
-    await save(state);
+    await _persistStorageUpsert(changedEntries);
   }
 
   Future<void> removeStorage(Storage storage) async {
@@ -386,7 +412,7 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
     );
 
     set(state.copyWith(storages: [...state.storages]..remove(storage)));
-    await save(state);
+    await _persistStorageDelete(storage.id);
 
     if (survivor != null) {
       try {
@@ -410,12 +436,12 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
 
   Future<void> addFavorite(Favorite favorite) async {
     set(state.copyWith(favorites: [...state.favorites, favorite]));
-    await save(state);
+    await _persistFavoriteChanges(upserts: [favorite]);
   }
 
   Future<void> removeFavorite(Favorite favorite) async {
     set(state.copyWith(favorites: [...state.favorites]..remove(favorite)));
-    await save(state);
+    await _persistFavoriteChanges(deletes: [favorite]);
   }
 
   /// Moves every favorite whose path sits under a storage's [oldBase] to
@@ -431,6 +457,10 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
     if (oldSegs.isEmpty) return;
     var changed = false;
     final next = <Favorite>[];
+    // A remapped favorite changes KEY (path), so the write is an upsert at the
+    // new key plus a delete of the old one — never a list replace.
+    final movedFrom = <Favorite>[];
+    final movedTo = <Favorite>[];
     for (final f in state.favorites) {
       if (f.storageId != storageId) {
         next.add(f);
@@ -442,11 +472,14 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
         continue;
       }
       changed = true;
-      next.add(f.copyWith(path: remapped));
+      final moved = f.copyWith(path: remapped);
+      movedFrom.add(f);
+      movedTo.add(moved);
+      next.add(moved);
     }
     if (!changed) return;
     set(state.copyWith(favorites: next));
-    await save(state);
+    await _persistFavoriteChanges(upserts: movedTo, deletes: movedFrom);
   }
 
   /// Moves the persisted browse location to a storage's new base path when that
@@ -464,20 +497,162 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
     final remapped = remapLeadingSegments(state.currentPath, oldSegs, newSegs);
     if (remapped == null) return;
     set(state.copyWith(currentPath: remapped));
-    await save(state);
+    await _persistNavigation();
   }
 
   Future<void> updateCurrentStorage(Storage? storage) async {
     set(state.copyWith(currentStorage: storage));
-    await save(state);
+    await _persistNavigation();
   }
 
   Future<void> updateCurrentPath(List<String> path) async {
     set(state.copyWith(currentPath: path));
-    await save(state);
+    await _persistNavigation();
   }
 
-  /// Import JSON, merge or override
+  /// Browse-location writes must NOT go through [save] on the DB backend: that
+  /// backend writes a FULL replace (storages + favorites + navigation), so
+  /// opening a folder in a second window would restore its stale
+  /// storage/favorite list over changes made in the first one. Only the nav row
+  /// belongs to this mutation; blob backends keep the full save.
+  ///
+  /// Multi-window: the browse LOCATION is per-window state ("where am I
+  /// browsing"), like the play queue. The shared nav row therefore belongs to
+  /// the primary window; an extra window keeps its own in session-scoped KV and
+  /// restores it on the next launch.
+  Future<void> _persistNavigation() async {
+    if (!loadOk) {
+      areaKeyLog.w('skip nav save: storage store never loaded successfully');
+      return;
+    }
+    if (!AppInstance.isPrimary) {
+      await _persistSessionNavigation();
+      return;
+    }
+    final snapshot = state.copyWith(storageConnectionStatus: const {});
+    final persistence = _activePersistence;
+    if (persistence is StorageNavigationPersistence) {
+      await persistence.saveNavigation(snapshot);
+    } else {
+      await save(snapshot);
+    }
+  }
+
+  /// Extra window's own browse location (see [_persistNavigation]).
+  Future<void> _persistSessionNavigation() async {
+    try {
+      await getSessionKvStore().write(
+        key: KvKeys.navigationState,
+        value: json.encode({
+          'storageId': state.currentStorage?.id,
+          'path': state.currentPath,
+        }),
+      );
+    } catch (e) {
+      // Best-effort: a failed session write must never break browsing.
+      areaKeyLog.w('session nav write failed: $e');
+    }
+  }
+
+  /// Overlays this window's own browse location over the shared snapshot.
+  ///
+  /// Before the window has browsed anything, the shared row seeds it (a new
+  /// window opens where the user already was); after its first navigation the
+  /// session value wins and the two windows diverge.
+  Future<StorageState> _applySessionNavigation(StorageState loaded) async {
+    if (AppInstance.isPrimary) return loaded;
+    try {
+      final raw = await getSessionKvStore().read(key: KvKeys.navigationState);
+      if (raw == null) return loaded;
+      final map = json.decode(raw) as Map<String, dynamic>;
+      final id = map['storageId'] as String?;
+      final path = (map['path'] as List?)?.map((e) => '$e').toList();
+      Storage? storage;
+      if (id != null) {
+        storage = loaded.storages.firstWhereOrNull((s) => s.id == id);
+        // The entry was removed (or edited away by another window): keep the
+        // shared snapshot rather than landing on a dangling pointer.
+        if (storage == null) return loaded;
+      }
+      return loaded.copyWith(
+        currentStorage: storage,
+        currentPath: path ?? const [],
+      );
+    } catch (e) {
+      areaKeyLog.w('session nav read failed: $e');
+      return loaded;
+    }
+  }
+
+  // ── Narrow entry writes ──
+  //
+  // Same reasoning as [_persistNavigation], one level down: on the DB backend
+  // [save] replaces EVERY storage and favorite row with this window's snapshot.
+  // A single add / edit / removal / favorite toggle therefore writes only the
+  // row(s) it owns, so a second window cannot resurrect lists it never re-read.
+  //
+  // Blob backends keep the full save (their whole state is one value there) —
+  // i.e. they stay LAST-WRITE-WINS: a concurrent edit in another window is
+  // dropped when this snapshot lands. That is a known limitation of the legacy
+  // backend (see `StorageEntryPersistence`), not something a lock can fix, and
+  // it is why the DB backend is the default.
+
+  Future<void> _persistStorageAdd(Storage storage) =>
+      _persistStorageRows((p) => p.saveStorage(storage));
+
+  Future<void> _persistStorageUpsert(Iterable<Storage> storages) async {
+    final list = storages.toList(growable: false);
+    if (list.isEmpty) return;
+    await _persistStorageRows((p) async {
+      for (final storage in list) {
+        await p.saveStorage(storage);
+      }
+    });
+  }
+
+  Future<void> _persistStorageDelete(String id) =>
+      _persistStorageRows((p) => p.deleteStorage(id));
+
+  Future<void> _persistFavoriteChanges({
+    List<Favorite> upserts = const [],
+    List<Favorite> deletes = const [],
+  }) {
+    if (upserts.isEmpty && deletes.isEmpty) return Future<void>.value();
+    return _persistStorageRows(
+      (p) => p.saveFavoriteChanges(upserts: upserts, deletes: deletes),
+    );
+  }
+
+  /// Runs [write] on the narrow backend, or falls back to a full [save] for blob
+  /// backends. Gated on [loadOk] exactly like [save].
+  Future<void> _persistStorageRows(
+    Future<void> Function(StorageEntryPersistence p) write,
+  ) async {
+    if (!loadOk) {
+      areaKeyLog.w('skip narrow storage save: store never loaded successfully');
+      return;
+    }
+    final persistence = _activePersistence;
+    if (persistence is StorageEntryPersistence) {
+      await write(persistence);
+    } else {
+      await save(state);
+    }
+  }
+
+  /// Import JSON, merge or override.
+  ///
+  /// APPEND is persisted as a NARROW upsert of the imported rows only. A whole
+  /// [save] would replace every row with THIS window's snapshot, so an edit
+  /// another window made after this snapshot was loaded would be dropped — the
+  /// same reason a single add / edit / removal writes only its own row (see
+  /// [_persistStorageRows]). It also keeps this window's browse location out of
+  /// the shared navigation row.
+  ///
+  /// OVERRIDE is an explicit "make the file's storages/favorites my whole set",
+  /// so it stays a full replace: rows absent from the import are deleted on
+  /// purpose, and it is last-write-wins against a concurrent edit by design (a
+  /// deliberate user action, like the settings-blob import).
   Future<void> importFromJson(
     Map<String, dynamic> json, {
     required bool override,
@@ -505,6 +680,16 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
     );
 
     set(merged);
+    if (!override) {
+      // Only the entries that came from the file, with their repaired scope
+      // links ([repairedStorages] leaves local entries untouched).
+      final importedIds = {for (final s in imported.storages) s.id};
+      await _persistStorageUpsert(
+        repairedStorages.where((s) => importedIds.contains(s.id)),
+      );
+      await _persistFavoriteChanges(upserts: imported.favorites);
+      return;
+    }
     await save(merged);
   }
 

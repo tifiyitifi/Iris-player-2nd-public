@@ -33,7 +33,7 @@ class InMemoryPlayQueueBackend implements PlayQueueBackend {
   final KvStore _storage;
 
   InMemoryPlayQueueBackend({KvStore? storage})
-      : _storage = storage ?? getKvStore();
+      : _storage = storage ?? getSessionKvStore();
 
   @override
   bool get isQueryMode => false;

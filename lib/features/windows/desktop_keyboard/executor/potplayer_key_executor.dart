@@ -29,6 +29,7 @@ import 'package:iris/features/tag_play/commands/tag_play_actions.dart';
 import 'package:iris/features/windows/desktop_keyboard/model/potplayer_action.dart';
 import 'package:iris/features/windows/desktop_keyboard/store/key_sequence_buffer_store.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/show_jump_to_time_dialog.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/seek_step_popover.dart';
 import 'package:iris/features/meta_settings/engine/osd_resolver.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
@@ -44,6 +45,8 @@ import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
+import 'package:iris/models/db/storage_scope.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_message_dialog.dart';
@@ -55,11 +58,9 @@ import 'package:iris/models/store/video_display_mode.dart';
 import 'package:iris/models/store/window_fit_mode.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_player_ui_store.dart';
-import 'package:iris/store/warning_dialogs.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/bottom_sheets/show_open_link_bottom_sheet.dart';
-import 'package:iris/widgets/dialogs/show_confirm_suppressible_dialog.dart';
 import 'package:iris/widgets/dialogs/show_open_link_dialog.dart';
 import 'package:iris/widgets/popup.dart';
 import 'package:iris/widgets/popups/history.dart';
@@ -347,11 +348,12 @@ class PotPlayerKeyExecutor {
       if (uri.isEmpty || uri.startsWith('http')) return null;
       final relPath = item.file.path.join('/');
       try {
-        final path = uri.startsWith('file:')
-            ? Uri.parse(uri)
-                .toFilePath()
-                .replaceFirst(RegExp(r'^/([A-Za-z]:)'), r'$1')
-            : uri;
+        // `file:` URIs and the legacy '/E:/…' shape both normalize here; the
+        // old code's raw string reached `existsSync` unnormalized and silently
+        // aborted the whole delete.
+        final rawPath =
+            uri.startsWith('file:') ? Uri.parse(uri).toFilePath() : uri;
+        final path = normalizePathText(rawPath);
         if (!File(path).existsSync()) return null;
         return (
           item: item,
@@ -364,6 +366,55 @@ class PotPlayerKeyExecutor {
       }
     }
     return null;
+  }
+
+  /// Confirms moving the current file to the Recycle Bin.
+  ///
+  /// Deliberately a plain, ALWAYS-ON dialog: a physical delete is destructive,
+  /// so it must never be suppressible through the warning-prefs memory (that
+  /// would turn Shift+Delete into a silent permanent delete).
+  Future<bool> _confirmPhysicalDelete(String path) async {
+    final name = path.split('/').last;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) {
+        final t = getLocalizations(dialogCtx);
+        final colorScheme = Theme.of(dialogCtx).colorScheme;
+        return AlertDialog(
+          icon: Icon(Icons.delete_forever_rounded, color: colorScheme.error),
+          title: Text(t.recycle_title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(t.recycle_body(name)),
+                const SizedBox(height: 8),
+                SelectableText(
+                  path,
+                  style: Theme.of(dialogCtx).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx, false),
+              child: Text(t.recycle_cancel),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: colorScheme.error,
+                foregroundColor: colorScheme.onError,
+              ),
+              onPressed: () => Navigator.pop(dialogCtx, true),
+              child: Text(t.recycle_delete),
+            ),
+          ],
+        );
+      },
+    );
+    return ok == true;
   }
 
   /// Confirms the irreversible permanent-delete fallback (class B1: always
@@ -432,9 +483,10 @@ class PotPlayerKeyExecutor {
   }
 
   /// Applies the delete across every layer so nothing can re-feed the dead
-  /// source: drops the DB row, removes it from the legacy queue, ends a VM
-  /// session that fed it, bumps the revisions (PRESERVING the VM boundary
-  /// freeze), then advances to the next playable item.
+  /// source: removes the `media_nodes` row in the storage's whole scope family,
+  /// drops it from the queue (and from a scenario's explicit includes), ends a
+  /// VM session that fed it, bumps the revisions (PRESERVING the VM boundary
+  /// freeze), then advances to the next PLAYABLE item.
   ///
   /// [wasPlaying] drives the non-scenario continuation: the queue's `[file]`
   /// effect opens the next entry with `play: autoPlay`, so autoplay is re-armed
@@ -444,6 +496,7 @@ class PotPlayerKeyExecutor {
     required bool wasPlaying,
   }) async {
     final scenarioMode = PlaybackProviderRegistry.scenarioModeActive;
+    final tagView = PlaybackProviderRegistry.tagViewDriving;
     final scenarioProvider = PlaybackProviderRegistry.scenario;
     final vmWasActive = VirtualMediaController.instance.isActive;
     // Snapshot the surviving VM group BEFORE the DB row disappears, so a
@@ -453,14 +506,52 @@ class PotPlayerKeyExecutor {
         ? await _safeScenarioCurrent(scenarioProvider)
         : null;
 
+    // Scope family FIRST: a node row can live under a sibling entry's scope
+    // (same physical tree, independent `data_scope_id`), so a scope-only WHERE
+    // silently deleted 0 rows while the file was already gone from disk.
+    final scopes = <String>{...StorageScope.familyOf(media.storageId)};
     if (media.storageId.isNotEmpty && media.relPath != null) {
       try {
-        await DbModule.mediaNodesDao
-            .deleteNode(media.storageId, media.relPath!);
+        scopes.addAll(await DbModule.mediaNodesDao.scopesContainingPath(
+          storageId: media.storageId,
+          candidateScopes: scopes,
+          rawPath: media.relPath!,
+        ));
+      } catch (e) {
+        _log.w('scope probe failed: $e');
+      }
+    }
+
+    var removedRows = 0;
+    if (media.storageId.isNotEmpty && media.relPath != null) {
+      try {
+        removedRows = await DbModule.mediaNodesDao.deleteNodeAcrossScopes(
+          storageId: media.storageId,
+          scopeIds: scopes,
+          rawPath: media.relPath!,
+        );
+        if (removedRows == 0) {
+          // The file IS gone: still hide any stale row across the family rather
+          // than leaving a ghost the queue can resolve and play again.
+          await DbModule.mediaNodesDao.markNodeAbsentAcrossScopes(
+            storageId: media.storageId,
+            scopeIds: scopes,
+            rawPath: media.relPath!,
+          );
+        }
       } catch (e) {
         _log.w('media node delete failed: $e');
       }
     }
+    if (media.storageId.isNotEmpty && media.relPath != null && removedRows == 0) {
+      _log.w('physical delete: no media_nodes row matched '
+          'storage=${media.storageId} path=${media.relPath} '
+          'scopes=${scopes.join(",")}');
+    }
+
+    // A scenario EXPLICIT include is path-keyed and would otherwise stay in the
+    // queue forever (a folder-source item disappears with its row).
+    await _removeDeletedExplicitInclude(media);
 
     if (shouldContinueQueuePlaybackAfterDelete(
       scenarioMode: scenarioMode,
@@ -484,27 +575,68 @@ class PotPlayerKeyExecutor {
       } catch (_) {}
     }
 
-    if (media.storageId.isNotEmpty) {
+    if (scopes.isNotEmpty) {
+      // Bump every family scope: an index over the OTHER entry would otherwise
+      // keep serving the deleted row.
       await MediaRevisionActions.mediaNodesChanged(
-        [media.storageId],
+        scopes,
         preserveVirtualMediaBoundaries: true,
       );
     }
 
-    if (scenarioMode) {
-      try {
+    try {
+      if (tagView) {
+        // The tag controller owns its own cursor/feed; its next() skips the
+        // dead member (the row is gone, so the member resolves unavailable).
+        await PlaybackProviderRegistry.step(forward: true);
+      } else if (scenarioMode) {
+        final skipKey = media.relPath == null
+            ? const <String>{}
+            : {canonicalKey(media.storageId, media.relPath!)};
         // Removing the current occurrence advances to the next entry
-        // (队尾 -> stop).
-        await scenarioProvider.revalidateCurrent();
+        // (队尾 -> stop). A STALE index can still hand back the deleted
+        // occurrence; the skip set makes the advance walk past it instead of
+        // re-persisting and re-feeding the dead file (which kept playing from
+        // the backend's still-open handle).
+        final advanced =
+            await scenarioProvider.revalidateCurrent(skipMediaKeys: skipKey);
         // A merged group that survived keeps its representative: the revalidate
         // above did NOT re-feed it, so restart the session on the frozen
         // (shrunk) segment list.
         if (vmCurrent != null) {
           await PlaybackProviderRegistry.resumeActive();
+        } else if (!advanced) {
+          // Nothing survived: unload the feed so the deleted file's handle is
+          // released instead of sitting paused behind an empty queue.
+          await PlaybackProviderRegistry.stop();
         }
-      } catch (e) {
-        _log.w('advance after delete failed: $e');
       }
+    } catch (e) {
+      _log.w('advance after delete failed: $e');
+    }
+  }
+
+  /// Drops a scenario EXPLICIT include of the deleted path.
+  ///
+  /// Matched by the storage-relative key, not by storage id: the include may
+  /// have been written through a sibling entry for the same tree.
+  Future<void> _removeDeletedExplicitInclude(_LocalMedia media) async {
+    if (!PlaybackProviderRegistry.scenarioModeActive) return;
+    if (media.storageId.isEmpty || media.relPath == null) return;
+    final store = usePlaybackScenarioStore();
+    final scenarioId = store.state.activeScenarioId;
+    if (scenarioId == null) return;
+    try {
+      final key = StoragePathCodec.relativeKey(media.storageId, media.relPath!);
+      final items = await store.getExplicitItems(scenarioId);
+      final ids = <int>[
+        for (final item in items)
+          if (StoragePathCodec.relativeKey(item.storageId, item.path) == key)
+            item.id,
+      ];
+      if (ids.isNotEmpty) await store.removeExplicitIncludes(ids);
+    } catch (e) {
+      _log.w('remove explicit include failed: $e');
     }
   }
 
@@ -520,18 +652,15 @@ class PotPlayerKeyExecutor {
   Future<void> _deleteCurrentFileToRecycleBin() async {
     if (!isDesktop || !Platform.isWindows) return; // policy: Windows only
     final media = _resolveCurrentLocalMedia();
-    if (media == null) return;
+    if (media == null) {
+      if (context.mounted) {
+        _showOsd(OsdTexts.deleteUnavailable(getLocalizations(context)));
+      }
+      return;
+    }
     if (!context.mounted) return;
-    final t = getLocalizations(context);
 
-    final confirmed = await showConfirmSuppressibleDialog(
-      context,
-      warningId: kWarningPhysicalDeleteRecycle,
-      title: t.recycle_title,
-      message: t.recycle_body(media.path.split(Platform.pathSeparator).last),
-      confirmLabel: t.recycle_delete,
-      destructive: true,
-    );
+    final confirmed = await _confirmPhysicalDelete(media.path);
     if (!confirmed) return;
     if (!context.mounted) return;
 
@@ -539,9 +668,9 @@ class PotPlayerKeyExecutor {
     // file belongs to, while the file is still present.
     final vmChunks = await _captureVmChunks(media.storageId, media.relPath);
 
-    // Release the backend's handle BEFORE the shell delete: otherwise a
-    // sharing violation can turn a recycle-bin move into the permanent
-    // fallback (and then fail there too).
+    // Pause first so the shell move does not fight a live decode; the backend
+    // keeps the (renamed) file open, which is why the feed is unloaded AFTER
+    // the DB row is gone (see _removeDeletedMediaAndAdvance).
     final wasPlaying = player.isPlaying;
     await player.pause();
 
@@ -558,11 +687,23 @@ class PotPlayerKeyExecutor {
         await File(media.path).delete();
         deleted = true;
       } catch (e) {
-        _log.e('permanent delete failed: $e');
+        _log.e('permanent delete failed: $e '
+            '(recycle code=$deleteFileToRecycleBinLastFailure)');
       }
     }
     if (!deleted) {
       if (wasPlaying) await player.play();
+      if (context.mounted) {
+        final t = getLocalizations(context);
+        await showMessageDialog(
+          Navigator.of(context, rootNavigator: true),
+          type: MessageDialogType.error,
+          title: t.physical_delete_failed_title,
+          message: t.physical_delete_failed_body(
+            deleteFileToRecycleBinLastFailure,
+          ),
+        );
+      }
       return;
     }
 
@@ -582,6 +723,24 @@ class PotPlayerKeyExecutor {
     if (context.mounted) {
       _showOsd(OsdTexts.deleted(getLocalizations(context)));
     }
+  }
+
+  // ── Reveal the playing file in Explorer (Windows right-click menu) ──
+
+  /// Opens Explorer at the currently fed file's folder, selecting the file.
+  ///
+  /// The play queue always carries the item the player is fed — legacy,
+  /// scenario, tag-view and virtual-media segment feeds all go through
+  /// `update(playQueue: …)` — so this is the same identity the queue/history
+  /// popups reveal. A missing file degrades to its folder through the shared
+  /// service; a hard failure surfaces its dialog. The menu entry is already
+  /// gated on revealability, so an inapplicable race stays a silent no-op.
+  Future<void> _revealCurrentFileInExplorer() async {
+    if (!isDesktop || !Platform.isWindows) return;
+    final file = await usePlayQueueStore().getCurrentFile();
+    if (file.uri.isEmpty && file.name.isEmpty) return;
+    if (!context.mounted) return;
+    await revealFileInExplorer(context, file);
   }
 
   // ── Frame capture (mediaKit-only, F1) — shared playback_tools service ──
@@ -947,6 +1106,9 @@ class PotPlayerKeyExecutor {
         isDesktop
             ? await showOpenLinkDialog(context)
             : await showOpenLinkBottomSheet(context);
+        break;
+      case PotPlayerAction.revealCurrentFileInExplorer:
+        await _revealCurrentFileInExplorer();
         break;
       case PotPlayerAction.closePlayback:
         player.pause();

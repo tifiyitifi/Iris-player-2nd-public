@@ -29,6 +29,13 @@ class ExplicitFileProbeTarget {
 /// Storage-type probe seam; defaults to the storage store lookup.
 typedef ExplicitProbeIsNetwork = bool Function(String storageId);
 
+/// Outcome of a targeted explicit-file probe pass.
+///
+/// [touchedStorages] is the change-announcement set (feeds
+/// [MediaRevisionActions]); [written] counts the files whose `media_nodes` row
+/// was actually updated, so a summary can report real work instead of attempts.
+typedef ExplicitProbeOutcome = ({Set<String> touchedStorages, int written});
+
 /// Silently probes [targets] and writes usable duration/dimensions back to
 /// `media_nodes` so dropped/added explicit files show their metadata without
 /// waiting for the lazy per-play backfill.
@@ -38,26 +45,48 @@ typedef ExplicitProbeIsNetwork = bool Function(String storageId);
 /// dimensions sanitized. Honors the persisted scan probe preference (unset →
 /// default ON). Never throws: a failed batch degrades to unprobed files.
 ///
-/// Returns the set of storage ids that actually received a write, so the
-/// caller can announce the change through [MediaRevisionActions] exactly once.
+/// Returns the storages that actually received a write, so the caller can
+/// announce the change through [MediaRevisionActions] exactly once.
 Future<Set<String>> probeExplicitFiles(
   List<ExplicitFileProbeTarget> targets, {
   MediaProbeService? probeService,
   ExplicitProbeIsNetwork? isNetwork,
   int batchSize = 32,
+}) async =>
+    (await probeExplicitFilesDetailed(
+      targets,
+      probeService: probeService,
+      isNetwork: isNetwork,
+      batchSize: batchSize,
+    ))
+        .touchedStorages;
+
+/// [probeExplicitFiles] with the number of rows actually written.
+///
+/// The scenario-wide refresh reports "N explicit items refreshed", which must
+/// count real writes: a container the probe cannot read, or a file whose
+/// `media_nodes` row is gone, is an attempt, not a refresh.
+Future<ExplicitProbeOutcome> probeExplicitFilesDetailed(
+  List<ExplicitFileProbeTarget> targets, {
+  MediaProbeService? probeService,
+  ExplicitProbeIsNetwork? isNetwork,
+  int batchSize = 32,
 }) async {
-  if (targets.isEmpty) return const {};
+  if (targets.isEmpty) return (touchedStorages: const <String>{}, written: 0);
   // Honor the user's scan-probe choice; never chosen → probe by default
   // (same "默认勾选扫描时间" rule as the scan options dialog).
   final preference = await ScanProbePreference.load();
-  if (preference == false) return const {};
+  if (preference == false) {
+    return (touchedStorages: const <String>{}, written: 0);
+  }
 
   final probe = probeService ?? createMediaProbeService();
   final net = isNetwork ?? _defaultIsNetwork;
   final local = [for (final t in targets) if (!net(t.storageId)) t];
-  if (local.isEmpty) return const {};
+  if (local.isEmpty) return (touchedStorages: const <String>{}, written: 0);
 
   final touched = <String>{};
+  var written = 0;
   final size = batchSize <= 0 ? 32 : batchSize;
   for (var start = 0; start < local.length; start += size) {
     final end = (start + size).clamp(0, local.length);
@@ -84,7 +113,10 @@ Future<Set<String>> probeExplicitFiles(
           width: sane.width,
           height: sane.height,
         );
-        if (rows > 0) touched.add(batch[i].storageId);
+        if (rows > 0) {
+          touched.add(batch[i].storageId);
+          written++;
+        }
       } catch (e) {
         _log.w('[explicit-probe] write-back failed: $e');
       }
@@ -92,7 +124,11 @@ Future<Set<String>> probeExplicitFiles(
     // Keep the UI responsive on a large drop; the probe is background work.
     await Future<void>.delayed(Duration.zero);
   }
-  return touched;
+  if (written > 0) {
+    _log.i('[explicit-probe] refreshed $written file(s) '
+        'across ${touched.length} storage(s)');
+  }
+  return (touchedStorages: touched, written: written);
 }
 
 bool _defaultIsNetwork(String storageId) {

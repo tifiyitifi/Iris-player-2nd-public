@@ -94,8 +94,11 @@ const String kWarningVmMergeConcept = 'vmMergeConcept';
 const String kWarningAppOverview = 'appOverview';
 
 /// Every id the settings panel offers a toggle for, in display order.
+///
+/// `kWarningPhysicalDeleteRecycle` is deliberately ABSENT: moving a file to the
+/// Recycle Bin is destructive, so its confirmation is class ALWAYS-ON and must
+/// never be silenced by the "don't ask again" memory.
 const List<String> kSuppressibleWarningIds = <String>[
-  kWarningPhysicalDeleteRecycle,
   kWarningForceAppendNoMedia,
   kWarningGestureEditCancel,
   kWarningGestureEditReset,

@@ -25,6 +25,7 @@ import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:iris/utils/center_zone_x.dart';
 import 'package:iris/utils/format_duration_to_minutes.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 import 'package:provider/provider.dart';
 
 /// Scrub-surface diagnostics (`log.dial`): drag hit-test + commit decisions.
@@ -175,6 +176,11 @@ class ControlBarCircleSlider extends HookWidget {
     final play = context.read<MediaPlayer>().play;
     final pause = context.read<MediaPlayer>().pause;
     final seek = context.read<MediaPlayer>().seek;
+    // Release-at-the-end commits through the explicit "finish this item" seek so
+    // it may land ON `duration` and advance; every live tick and tap stays inside
+    // the tail guard.
+    final circlePlayer = context.read<MediaPlayer>();
+    final finishSeek = circlePlayer.finishSeek ?? circlePlayer.seek;
     // Live drag seeks are throttled to one per 120ms, the same contract as the
     // ring dial (an unthrottled per-pointer-event seek floods the backend).
     final seekThrottle =
@@ -417,10 +423,12 @@ class ControlBarCircleSlider extends HookWidget {
                           // 放行 onPanEnd：快速拉到 100% 后抬手可进下一首（仅拖时驻留可回拖）
                           // 阈值 99% 即视为有意到头，避免需像素级精确到 max
                           final double raw = lastRawRef.value;
-                          if (raw >= max * 0.99) {
+                          final int durationMs = progress.duration.inMilliseconds;
+                          if (isSeekReleaseFinish(raw.toInt(), durationMs)) {
                             // Clamped into the 仅当前 window: reaching the fg
-                            // 100% must never roll the next episode.
-                            await seek(
+                            // 100% must never roll the next episode. Through
+                            // finishSeek: this release MAY land ON the end.
+                            await finishSeek(
                                 Duration(milliseconds: clampToWindow(raw).toInt()));
                           } else {
                             // Always commit the final value: a throttled tail

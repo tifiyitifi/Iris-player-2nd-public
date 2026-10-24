@@ -38,13 +38,64 @@ abstract final class StoragePathCodec {
   static String relativize(String storageId, String domainCanonical) {
     final base = _baseSegments(storageId);
     if (base == null) return domainCanonical;
-    final segments = pathConv(domainCanonical);
-    if (segments.length < base.length) return domainCanonical;
-    for (var i = 0; i < base.length; i++) {
-      if (segments[i] != base[i]) return domainCanonical;
-    }
-    return segments.sublist(base.length).join('/');
+    return relativizeForBase(base, domainCanonical);
   }
+
+  /// [relativize] over a RAW caller path. Repairs the historical shapes first
+  /// (`E:\a`, the legacy `/E:/a`, duplicated slashes) so identity comparisons
+  /// never depend on how the caller spelled the path.
+  ///
+  /// This is the ONLY entry point path-keyed operations (delete / merge /
+  /// occurrence keys) should use: hand-built joins are what produced the
+  /// "row never deleted" and "same file under two keys" classes of bug.
+  static String relativizeRaw(String storageId, String raw) {
+    final base = _baseSegments(storageId);
+    if (base == null) return canonicalDbPath(normalizePathText(raw));
+    return relativizeForBase(base, raw);
+  }
+
+  /// [relativize] against an EXPLICIT base. Used where the storage store is not
+  /// the authority (the duplicate-entry merge, pure tests).
+  static String relativizeForBase(List<String>? base, String raw) {
+    final canonical = canonicalDbPath(normalizePathText(raw));
+    if (base == null || base.isEmpty) return canonical;
+    // SAF identity is path-embedded and never re-rooted.
+    if (isSafPath(canonical)) return canonical;
+    final baseSegments = pathConv(canonicalDbPath(base.join('/')));
+    if (baseSegments.isEmpty) return canonical;
+    final segments = pathConv(canonical);
+    if (segments.length < baseSegments.length) return canonical;
+    // Compare the base the way the filesystem does: NTFS/UNC fold case, POSIX
+    // and SAF stay exact. The stored relative path keeps the caller's case.
+    final fold = baseRidesCaseInsensitiveFs(base);
+    for (var i = 0; i < baseSegments.length; i++) {
+      final a = fold ? segments[i].toLowerCase() : segments[i];
+      final b = fold ? baseSegments[i].toLowerCase() : baseSegments[i];
+      if (a != b) return canonical;
+    }
+    return segments.sublist(baseSegments.length).join('/');
+  }
+
+  /// Whether a base rides a case-insensitive filesystem (NTFS drive or UNC
+  /// share). POSIX / SAF bases stay case-sensitive.
+  static bool baseRidesCaseInsensitiveFs(List<String>? base) =>
+      base != null && base.isNotEmpty && pathRidesCaseInsensitiveFs(base.join('/'));
+
+  /// Case-folded comparison key for [raw] under [storageId].
+  ///
+  /// Two spellings of the same NTFS file (`E:/YB/a.mp4`, `E:\yb\a.mp4`,
+  /// `yb/a.mp4`) collapse to one key; POSIX and SAF stay case-sensitive.
+  static String relativeKey(String storageId, String raw) =>
+      relativeKeyForBase(_baseSegments(storageId), raw);
+
+  /// [relativeKey] against an EXPLICIT base (merge service / tests).
+  static String relativeKeyForBase(List<String>? base, String raw) {
+    final relative = relativizeForBase(base, raw);
+    return baseRidesCaseInsensitiveFs(base)
+        ? relative.toLowerCase()
+        : relative;
+  }
+
 
   /// DB (relative) → DOMAIN (absolute) canonical string.
   static String absolutize(String storageId, String storedCanonical) {
@@ -62,6 +113,26 @@ abstract final class StoragePathCodec {
       if (alreadyAbsolute) return storedCanonical;
     }
     return [...base, ...segments].join('/');
+  }
+
+  /// Whether two storage base paths name the SAME path ROOT.
+  ///
+  /// The duplicate-entry repair, its merge guard and the path-keyed scope family
+  /// must all answer this ONE question the same way: an NTFS drive or UNC share
+  /// folds case (`E:/Movies` and `e:/movies` are one root, however the entry was
+  /// spelled), while POSIX and SAF bases stay exact. A genuinely different base
+  /// is a different root — folding those would re-interpret every stored
+  /// relative path.
+  ///
+  /// Compares the base ONLY; callers that also need the same volume (the
+  /// duplicate planner, the scope family) check that separately.
+  static bool sameBasePath(List<String>? a, List<String>? b) {
+    if (a == null || b == null) return false;
+    final ca = canonicalDbPath(normalizePathText(a.join('/')));
+    final cb = canonicalDbPath(normalizePathText(b.join('/')));
+    if (ca == cb) return true;
+    final fold = baseRidesCaseInsensitiveFs(a) || baseRidesCaseInsensitiveFs(b);
+    return fold && ca.toLowerCase() == cb.toLowerCase();
   }
 
   /// True when [storedCanonical] names a directory ABOVE the storage base

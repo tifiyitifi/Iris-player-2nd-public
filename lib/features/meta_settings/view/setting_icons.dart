@@ -14,6 +14,7 @@ abstract final class SettingIcons {
     'resume_on_startup': Icons.play_circle_outline,
     'drop_append_zone_percent': Icons.vertical_split_rounded,
     'playback_cache_preset': Icons.sd_storage_rounded,
+    'playback_step_tail_finish': Icons.skip_next_rounded,
     'reuse_last_orientation': Icons.screen_lock_rotation,
     'show_controls_on_play_to_pause': Icons.pause_circle,
     'language': Icons.translate_rounded,

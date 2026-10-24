@@ -1,5 +1,6 @@
 import 'package:iris/features/media_library/model/db/repositories/sub/progress_write_guard.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
+import 'package:iris/features/media_library/services/media_progress_claim.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/logger.dart';
@@ -307,6 +308,25 @@ Future<bool> persistPlaybackProgress({
 }) async {
   final dbPath = file.path.join('/');
   if (dbPath.isEmpty) return false;
+  // Multi-instance ownership: the first window to open the file persists its
+  // progress; a later opener keeps it in memory only (see MediaProgressClaim).
+  final claim = await MediaProgressClaim.instance.claim(
+    storageId: file.storageId,
+    path: dbPath,
+  );
+  if (claim == ProgressClaimResult.denied) {
+    MediaProgressClaim.instance.remember(
+      storageId: file.storageId,
+      path: dbPath,
+      // A finished file restarts from the head, never from the tail.
+      positionMs: completed == true ? 0 : position.inMilliseconds,
+      completed: completed,
+    );
+    areaKeyLog.i('Progress kept in memory (owned by another window): '
+        '${file.name} ${position.inMilliseconds}ms');
+    return true;
+  }
+  final bool takeover = claim == ProgressClaimResult.takeover;
   final explicitUserSeek = userSeek || userSeekToHead;
   try {
     final node = await DbModule.mediaNodeRepo.getNodeByPath(
@@ -335,7 +355,8 @@ Future<bool> persistPlaybackProgress({
     final positionMs = position.inMilliseconds;
     final hasPositiveProgress = existingPos != null && existingPos > 0;
     final forceClear = completed == true;
-    if (durationMs != null &&
+    if (!takeover &&
+        durationMs != null &&
         shouldGuardHeadWrite(
           existingPosMs: existingPos,
           incomingPosMs: positionMs,
@@ -376,16 +397,23 @@ Future<bool> persistPlaybackProgress({
       lastPlayedAt: DateTime.now(),
       playCount: playCount,
       historyRestoreBudgetMs: budget,
+      // Explicit decisions outrank the handover: a user seek back to the head
+      // (or an explicit finish) must land verbatim even right after a takeover;
+      // only a LIVE takeover sample is clamped forward.
       intent: forceClear
           ? ProgressWriteIntent.explicitClear
           : (explicitUserSeek
               ? ProgressWriteIntent.userSeek
-              : ProgressWriteIntent.live),
+              : (takeover
+                  ? ProgressWriteIntent.takeover
+                  : ProgressWriteIntent.live)),
       writeTag: writeTag ?? 'persist',
     );
     return true;
   } catch (e) {
-    areaKeyLog.e('Error persisting playback progress: $e');
+    areaKeyLog.e('Error persisting playback progress '
+        '${file.storageId}:$dbPath pos=${position.inMilliseconds} '
+        'tag=${writeTag ?? 'persist'}: $e');
     return false;
   }
 }
@@ -393,9 +421,23 @@ Future<bool> persistPlaybackProgress({
 /// Reads the last resume position (ms) of [file] from its media node.
 ///
 /// Returns null when there is no media node or no saved position.
+///
+/// Claiming ownership here (rather than only on the first write) makes
+/// "first window to open the file wins" literal: whichever instance reaches
+/// this open-time read first owns the row. A denied instance gets its
+/// memory-only position back, so its own reopens resume where it left off.
 Future<int?> readPlaybackProgress(FileItem file) async {
   final dbPath = file.path.join('/');
   if (dbPath.isEmpty) return null;
+  await MediaProgressClaim.instance.claim(
+    storageId: file.storageId,
+    path: dbPath,
+  );
+  final int? memory = MediaProgressClaim.instance.memoryPosition(
+    storageId: file.storageId,
+    path: dbPath,
+  );
+  if (memory != null) return memory;
   try {
     final node = await DbModule.mediaNodeRepo.getNodeByPath(
       storageId: file.storageId,

@@ -17,6 +17,9 @@ import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
 import 'package:iris/features/media_library/services/add_sources_to_library.dart';
 import 'package:iris/features/media_library/services/media_node_sync_service.dart';
 import 'package:iris/features/media_library/services/show_add_to_library_dialog.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/webdav_discovery/services/webdav_connect_coordinator.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseMediaScope;
@@ -785,6 +788,26 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
                 }
               : null,
         ),
+      if (_useScenarioMode && NewWindowLauncher.isSupported)
+        // Multi-window: the SAME folder scope, but in a fresh process with its
+        // own playing workspace (never touches this window's queue).
+        PageAction(
+          icon: const Icon(Icons.open_in_new_rounded),
+          label: t.lib_play_in_new_window,
+          onPressed: online
+              ? () => launchNewWindow(
+                    context,
+                    newWindowRequestForFolder(
+                      storageId: storage.id,
+                      path: canonicalDbPath(_currentPath.join('/')),
+                      sortField:
+                          ScenarioPlaybackActions.scenarioSortFieldFrom(_sortBy),
+                      sortDirection: ScenarioPlaybackActions
+                          .scenarioSortDirectionFrom(_sortOrder),
+                    ),
+                  )
+              : null,
+        ),
     ];
   }
 
@@ -975,6 +998,32 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
           },
         ),
       ],
+      // Multi-window: replay this row's play intent in a fresh process (file →
+      // folder scope starting at it; folder → recursive directory source).
+      if (_useScenarioMode &&
+          NewWindowLauncher.isSupported &&
+          (item.isPlayable || item.isDir))
+        GenericItemAction(
+          label: t.lib_play_in_new_window,
+          icon: const Icon(Icons.open_in_new_rounded, size: 16),
+          onPressed: (ctx, i) async {
+            final request = item.isDir
+                ? newWindowRequestForFolder(
+                    storageId: storage.id,
+                    path: canonicalDbPath(item.path.join('/')),
+                    sortField: sortField,
+                    sortDirection: sortDirection,
+                  )
+                : newWindowRequestForFile(
+                    item: item,
+                    folderPath: _storageRelativePaths(item).$1,
+                    itemPath: _storageRelativePaths(item).$2,
+                    sortField: sortField,
+                    sortDirection: sortDirection,
+                  );
+            await launchNewWindow(ctx, request);
+          },
+        ),
       // Folders gain a per-directory recursive scan: same flow as the
       // page-level Refresh/Scan entry, but rooted at this folder instead of
       // the current browse path.
@@ -1191,6 +1240,32 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
           return true;
         },
       ),
+      if (_useScenarioMode && NewWindowLauncher.isSupported)
+        // Multi-window: the same selection override, replayed in a fresh
+        // process with its own playing workspace.
+        CustomSelectionAction<FileItem>(
+          icon: const Icon(Icons.open_in_new_rounded),
+          label: t.lib_play_selection_in_new_window,
+          enabledFor: (selected) => selected.any((i) => i.isDir || i.isPlayable),
+          onPressed: (ctx, selected) async {
+            final request = newWindowRequestForSelection(
+              folders: [
+                for (final d in selected.where((i) => i.isDir))
+                  NewWindowFolder(
+                    storageId: storage.id,
+                    path: canonicalDbPath(d.path.join('/')),
+                    recursive: true,
+                  ),
+              ],
+              files: selected.where((i) => i.isPlayable).toList(),
+              sortField:
+                  ScenarioPlaybackActions.scenarioSortFieldFrom(_sortBy),
+              sortDirection:
+                  ScenarioPlaybackActions.scenarioSortDirectionFrom(_sortOrder),
+            );
+            return launchNewWindow(ctx, request);
+          },
+        ),
       CustomSelectionAction<FileItem>(
         icon: const Icon(Icons.library_add),
         label: t.lib_add_to_library,

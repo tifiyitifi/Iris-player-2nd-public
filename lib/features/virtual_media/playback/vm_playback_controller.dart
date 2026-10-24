@@ -40,6 +40,7 @@ import 'package:iris/features/scenario_playback/store/use_playback_scenario_stor
 import 'package:iris/features/tag_play/store/use_tag_play_store.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/utils/path_conv.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 final _log = AreaKeyLog(LogKeys.mediaProbe);
 
@@ -322,6 +323,25 @@ class VirtualMediaController {
   /// Null = no pre-write for the current feed.
   int? _feedPreWriteMs;
 
+  /// True when the NEXT feed must land ON its segment end (finish the merged
+  /// item). Set by [_jumpToSegment] with `finishAtEnd` and consumed by
+  /// [_feedCurrent] — one-shot carrier, never inherited by an ordinary feed.
+  bool _pendingFeedFinishAtEnd = false;
+
+  /// Feed generation whose open must land ON the segment end. The player hooks
+  /// read [feedFinishesItem] after the duration arrives, then seek to the
+  /// duration so the engine raises `completed` and the provider advances past
+  /// the merged item (a cross-segment finish would otherwise open the last
+  /// segment mid-file and depend on playing the tail out).
+  int _finishOnFeedSeq = 0;
+
+  /// Whether the feed that produced [generation] was opened to finish the item
+  /// (see [_pendingFeedFinishAtEnd]). False for any superseded generation.
+  bool feedFinishesItem(int generation) =>
+      generation > 0 &&
+      generation == _feedSeq &&
+      _finishOnFeedSeq == generation;
+
   // ── Reactivity helpers used by UI/hooks ──
 
   /// Memoized [isActive] inputs: hooks read liveness N times per build/tick
@@ -525,7 +545,16 @@ class VirtualMediaController {
     }
     final segIdx = segmentIndex.clamp(0, candidate.segments.length - 1);
     final segDur = candidate.segments[segIdx].durationMs ?? 0;
-    final pending = initialLocalMs?.clamp(0, segDur > 0 ? segDur - 1 : 0);
+    // The same segment-tail contract as every other VM seek (clampVmLocalMs):
+    // an anchor lands on `segDur - kSeekTailGuardMs` at most, never on the old
+    // `segDur - 1` rounding error that sits inside the final GOP.
+    //
+    // A null [initialLocalMs] keeps the legacy DB-resume behavior (the
+    // segment's own saved position decides), so it must NOT become a 0: a 0
+    // anchor is an explicit from-the-beginning pre-write and would kill that
+    // resume.
+    final pending =
+        initialLocalMs == null ? null : clampVmLocalMs(segDur, initialLocalMs);
     store.replace(state.copyWith(
       item: queue[queueIndex],
       segmentIndex: segIdx,
@@ -794,8 +823,16 @@ class VirtualMediaController {
   ///
   /// [localMs] carries a slider-computed intra-segment offset so a
   /// cross-segment scrub lands mid-segment; null/omitted lands on start.
-  Future<void> jumpToSegment(int index, {int? localMs}) =>
-      _jumpToSegment(index, localMs: localMs);
+  /// [finishAtEnd] marks an explicit "finish this item" (tail step / release at
+  /// 100%): the feed then lands ON the segment end and the hooks finish it,
+  /// instead of the usual `segDur - kSeekTailGuardMs` clamp that can never
+  /// raise `completed`.
+  Future<void> jumpToSegment(
+    int index, {
+    int? localMs,
+    bool finishAtEnd = false,
+  }) =>
+      _jumpToSegment(index, localMs: localMs, finishAtEnd: finishAtEnd);
 
   /// Stash a cross-segment drag target (preview strategy, or a
   /// throttled-away direct tick) for the release commit.
@@ -982,7 +1019,11 @@ class VirtualMediaController {
     }
   }
 
-  Future<void> _jumpToSegment(int index, {int? localMs}) async {
+  Future<void> _jumpToSegment(
+    int index, {
+    int? localMs,
+    bool finishAtEnd = false,
+  }) async {
     final item = state.item;
     if (item == null ||
         item.segments.isEmpty ||
@@ -996,8 +1037,22 @@ class VirtualMediaController {
       // a raw-seek channel the only precise path is a targeted re-feed.
       // Identical targets are no-ops.
       final segDur = item.segments[index].durationMs ?? 0;
-      final target =
-          (localMs ?? _localMs).clamp(0, segDur > 0 ? segDur - 1 : 0);
+      // The same segment-tail contract as every other VM seek: an ordinary
+      // corrective jump stops `kSeekTailGuardMs` short of the segment end
+      // (never the old `segDur - 1`, which sits inside the final GOP); only an
+      // explicit finish that really targets the end may land ON it.
+      //
+      // The check below compares against the target this jump would ACTUALLY
+      // seek to, so it uses the SAME rule as the cross-segment path further
+      // down: `finishAtEnd` relaxes the guard only for a target at/after
+      // `segDur`. Comparing an intent-clamped value here would make a 99% /
+      // in-guard target look different from the position we are already on and
+      // trigger a pointless re-feed of the same spot.
+      final int raw = localMs ?? _localMs;
+      final bool finishes = finishAtEnd && segDur > 0 && raw >= segDur;
+      final target = finishes
+          ? clampVmLocalMs(segDur, raw, intent: SeekIntent.finishAtEnd)
+          : clampVmLocalMs(segDur, raw);
       if (target == _localMs && state.pendingSeekMs == null) return;
     }
     // A feed is mid-flight (async node lookup / queue push). Jumping now
@@ -1024,7 +1079,19 @@ class VirtualMediaController {
     final cur = state.item;
     if (cur == null || cur.segments.isEmpty) return;
     final segDur = cur.segments[index].durationMs ?? 0;
-    final target = (localMs ?? 0).clamp(0, segDur > 0 ? segDur - 1 : 0);
+    // finishAtEnd is the one caller allowed ON the segment end (the shared
+    // clamp contract); every ordinary jump keeps the SAME shared tail guard as
+    // the rest of the app (`segDur - kSeekTailGuardMs`, via clampVmLocalMs) —
+    // neither it nor the old `segDur - 1` rounding error can raise an instant
+    // `completed`, but the 1 ms landing sits inside the final GOP, which is
+    // exactly the rollback the guard exists for. Only a target that really IS
+    // the end converts into a feed-finish: a 99%-release still lands
+    // mid-segment and plays the tail out, exactly like the single-file path.
+    final int raw = localMs ?? 0;
+    final bool finishes = finishAtEnd && segDur > 0 && raw >= segDur;
+    final target = finishes
+        ? clampVmLocalMs(segDur, raw, intent: SeekIntent.finishAtEnd)
+        : clampVmLocalMs(segDur, raw);
     // CLOSE_DEBUG_LOG: vm double-open / back-to-0% investigation.
     _log.d('[vm-jump] to seg=$index target=$target '
         'from=${state.segmentIndex} feedInFlight=$_feedInFlight');
@@ -1044,6 +1111,7 @@ class VirtualMediaController {
     // also clears a stale completed flag, which would otherwise suppress
     // the resume entirely.
     _feedPreWriteMs = target;
+    _pendingFeedFinishAtEnd = finishes;
     // A live jump supersedes any stashed drag tail from earlier ticks.
     _dragStashVirtualMs = null;
     await _feedCurrent();
@@ -1157,6 +1225,9 @@ class VirtualMediaController {
 
   Future<void> _feedCurrent({bool autoplay = true}) async {
     final seq = ++_feedSeq;
+    // One-shot finish handoff: this feed (and only this one) opens at its end.
+    _finishOnFeedSeq = _pendingFeedFinishAtEnd ? seq : 0;
+    _pendingFeedFinishAtEnd = false;
     final item = state.item;
     if (item == null) return;
     final seg = currentSegment;

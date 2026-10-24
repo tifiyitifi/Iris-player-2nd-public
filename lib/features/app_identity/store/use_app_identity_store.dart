@@ -31,6 +31,17 @@ class AppIdentityStore extends Store<AppIdentityState> {
       : _persistence = persistence ?? const MetaIdentityPersistence(),
         super(const AppIdentityState());
 
+  /// True once [load] completed successfully.
+  ///
+  /// Empty [state.entries] is a legitimate state (no desktop entries), but a
+  /// FAILED load leaves the list equally empty. Startup maintenance that
+  /// deletes things based on "which entry points at this row" must be able to
+  /// tell the two apart ([WorkspaceGc.sweepAtStartup] skips on a failed load,
+  /// because its purge is irreversible). Monotonic: a later failure keeps a
+  /// previously loaded list in place, so it stays safe to sweep.
+  bool _loaded = false;
+  bool get loaded => _loaded;
+
   /// Restores persisted entries + active-entry flag. Safe to call
   /// repeatedly; failures degrade to an empty feature.
   Future<void> load() async {
@@ -58,6 +69,7 @@ class AppIdentityStore extends Store<AppIdentityState> {
           (activeRaw == null || activeRaw.isEmpty) ? null : activeRaw;
 
       set(state.copyWith(entries: entries, activeEntryId: active));
+      _loaded = true;
     } catch (e) {
       _log.e('AppIdentityStore.load failed: $e');
     }

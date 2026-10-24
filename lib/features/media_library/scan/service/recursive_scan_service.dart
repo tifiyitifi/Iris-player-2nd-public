@@ -6,6 +6,7 @@ import 'package:iris/features/media_library/model/enum/media_node.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/media_library/scan/model/recursive_scan_state.dart';
 import 'package:iris/features/media_library/scan/probe/media_probe.dart';
+import 'package:iris/features/media_library/scan/service/scan_lease.dart';
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -30,6 +31,29 @@ MediaNode applyProbeResult(MediaNode node, ProbeResult result) {
     height: result.height ?? node.height,
   );
 }
+
+/// Whether the probe triple stored on a `media_nodes` row agrees with the one a
+/// rescan just read.
+///
+/// This is the ONLY thing standing between "the user asked for a rescan with
+/// the probe on" and a corrected row, so the direction matters:
+/// - a NON-NULL fresh value that differs from the stored one forces the upsert
+///   (`false`): that is how a rescan repairs a duration/resolution poisoned by
+///   an older cross-file write-back, and how a re-encoded file converges;
+/// - a NULL fresh value means "this run could not read it" (probe disabled, or
+///   the Shell property handler has no value for that key) and never downgrades
+///   the stored value — a player-derived duration must survive a plain rescan.
+bool probeTripleUnchanged({
+  required int? rowDurationMs,
+  required int? freshDurationMs,
+  required int? rowWidth,
+  required int? freshWidth,
+  required int? rowHeight,
+  required int? freshHeight,
+}) =>
+    (freshDurationMs == null || rowDurationMs == freshDurationMs) &&
+    (freshWidth == null || rowWidth == freshWidth) &&
+    (freshHeight == null || rowHeight == freshHeight);
 
 class RecursiveScanService {
   final Storage storage;
@@ -107,31 +131,42 @@ class RecursiveScanService {
     ];
     // Roots stamped `scanning` by this run — settled in the `finally` below.
     List<String>? stampedRoots;
-    // Observability: whether this run even attempts duration probing is
-    // the first branch of every "scanned but no durations" diagnosis.
-    // WARNING level: the legacyDb channel silences INFO in all builds.
-    areaKeyLog.w('RecursiveScan start storage=$storageId '
-        'roots=${rootPaths.length} probe=${probeService == null ? 'off(plain)' : 'on'}');
     try {
+      // The interrupted-scan prompt is arbitrary user think-time. Decide BEFORE
+      // taking the cross-window lease: holding it while the prompt is open made
+      // every other window answer "another window is scanning" until the user
+      // clicked, even though nothing was scanning yet.
       final phase = scanStore.state.phase;
-
+      _IncompleteScanAction? action;
       if (phase == ScanPhase.error) {
         // Scan was interrupted accidentally. Ask user whether to resume.
-        final action = await _showIncompleteScanDialog(context);
+        if (!context.mounted) return;
+        action = await _showIncompleteScanDialog(context);
         if (action == null) return; // dismissed
-        if (action == _IncompleteScanAction.resume) {
-          await _resumeScan(storageId, rootPaths);
-          if (scanStore.state.phase != ScanPhase.scanning) return;
-        } else {
-          // Start new scan — reset state and proceed.
-          final depthPaths = <int, List<String>>{0: rootPaths};
-          await scanStore.startScan(
-            storageId: storageId,
-            depthPaths: depthPaths,
-          );
+      }
+
+      // Cross-window lease: only one window scans at a time (duplicate directory
+      // IO and scan_queue row fights otherwise). Denied = another live window is
+      // scanning; explain instead of silently doing nothing.
+      if (!await ScanLease.instance.acquire()) {
+        areaKeyLog.w('RecursiveScan skipped: another window holds the scan lease');
+        if (context.mounted) {
+          await _showScanBusyDialog(context);
         }
+        return;
+      }
+      // Observability: whether this run even attempts duration probing is
+      // the first branch of every "scanned but no durations" diagnosis.
+      // WARNING level: the legacyDb channel silences INFO in all builds.
+      areaKeyLog.w('RecursiveScan start storage=$storageId '
+          'roots=${rootPaths.length} probe=${probeService == null ? 'off(plain)' : 'on'}');
+
+      if (action == _IncompleteScanAction.resume) {
+        await _resumeScan(storageId, rootPaths);
+        if (scanStore.state.phase != ScanPhase.scanning) return;
       } else {
-        // done / stopped / idle — start fresh with new rootPaths.
+        // done / stopped / idle — or an explicit "start new" after an
+        // interrupted run — start fresh with the new rootPaths.
         final depthPaths = <int, List<String>>{0: rootPaths};
         await scanStore.startScan(
           storageId: storageId,
@@ -193,6 +228,8 @@ class RecursiveScanService {
       if (stampedRoots != null) {
         await _settleScanStates(storageId, stampedRoots);
       }
+      // Hand the scan lease to whichever window scans next.
+      await ScanLease.instance.release();
     }
   }
 
@@ -645,9 +682,28 @@ class RecursiveScanService {
         final sameSize = row.sizeInBytes == node.sizeInBytes;
         final sameModified = row.modifiedAt == node.modifiedAt;
         final sameType = row.mediaType == node.mediaType;
-        final probeSame = (node.durationMs == null || row.durationMs == node.durationMs) &&
-            (node.width == null || row.width == node.width) &&
-            (node.height == null || row.height == node.height);
+        final probeSame = probeTripleUnchanged(
+          rowDurationMs: row.durationMs,
+          freshDurationMs: node.durationMs,
+          rowWidth: row.width,
+          freshWidth: node.width,
+          rowHeight: row.height,
+          freshHeight: node.height,
+        );
+        // Observable repair: a rescan with the probe enabled is the documented
+        // way to fix metadata poisoned by an older cross-file write-back, so an
+        // actual value change is named here instead of hiding inside the diff.
+        // A null fresh value never logs (it downgrades nothing).
+        final bool durationCorrected =
+            node.durationMs != null && node.durationMs != row.durationMs;
+        final bool dimsCorrected =
+            (node.width != null && node.width != row.width) ||
+                (node.height != null && node.height != row.height);
+        if (durationCorrected || dimsCorrected) {
+          areaKeyLog.i('[scan] probe corrects ${node.name}: '
+              'dur=${row.durationMs}->${node.durationMs} '
+              'res=${row.width}x${row.height}->${node.width}x${node.height}');
+        }
         // The association set is part of "unchanged": adding or deleting a
         // subtitle in the same directory does NOT touch the video's size or
         // mtime, so a size/mtime-only predicate would serve the stale set
@@ -1005,6 +1061,26 @@ class RecursiveScanService {
     if (item.type == ContentType.video) return MediaType.video;
     if (item.type == ContentType.audio) return MediaType.audio;
     return MediaType.unknown;
+  }
+
+  /// Explains that another IRIS window owns the scan lease.
+  Future<void> _showScanBusyDialog(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogCtx) {
+        final t = getLocalizations(dialogCtx);
+        return AlertDialog(
+          title: Text(t.scan_busy_other_window_title),
+          content: Text(t.scan_busy_other_window_body),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: Text(t.ok),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   /// Shows a dialog asking whether to resume an interrupted scan or start fresh.

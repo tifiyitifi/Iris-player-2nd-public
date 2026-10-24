@@ -465,12 +465,57 @@ List<String>? remapLeadingSegments(
 
 /// Hook-level fallback for already-built URIs of local-family files only
 /// ([DataSourceType.file]): repairs the single known-broken shape '/E:/...'
-/// produced before the producer fix. Every other form passes through
-/// untouched, so WebDAV/FTP URLs and content:// URIs are never mangled.
-String sanitizePlayableUri(String uri) =>
-    uri.startsWith('/') && RegExp(r'^\/[A-Za-z]:').hasMatch(uri)
-        ? uri.substring(1)
-        : uri;
+/// produced before the producer fix, and folds Windows backslashes into the
+/// canonical forward-slash form (equivalent on Windows, and the form every
+/// identity key uses). URI schemes (http/https/ftp/file/content) and UNC heads
+/// pass through untouched, so remote addresses are never mangled.
+String sanitizePlayableUri(String uri) => normalizePathText(uri);
+
+/// Text-level normalization for LOCAL path identity.
+///
+/// Every path-keyed operation (delete, merge, progress key) must run the caller
+/// string through this before comparing, because the same file has historically
+/// arrived in several shapes:
+/// - Windows backslashes (`E:\yb\a.mp4`);
+/// - the legacy `/E:/…` drive form (a producer bug that reached the DB);
+/// - duplicated / trailing slashes (`E://yb//a.mp4/`);
+/// - UNC heads (`\\server\share\…`), whose literal `//` is identity.
+///
+/// SAF (`content://…`) input is returned UNTOUCHED: the scheme and the encoded
+/// tree id are identity, not formatting. A POSIX root (`/storage/emulated/0`)
+/// keeps its leading `/`; the legacy repair only fires for a real `X:` segment.
+String normalizePathText(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || isSafPath(trimmed)) return trimmed;
+  // Any other scheme (http/https/ftp/file/…) is a URI, not a path: collapsing
+  // its '//' would silently rewrite a remote address. Two or more scheme chars
+  // on purpose — `E://…` is the doubled legacy drive form, not a scheme.
+  if (RegExp(r'^[A-Za-z][A-Za-z0-9+.\-]+://').hasMatch(trimmed)) {
+    return trimmed;
+  }
+
+  var s = trimmed.replaceAll(r'\', '/');
+  // `//E:/…` is the doubled legacy drive form, not a UNC share (a share head
+  // is `//server/share`); treating it as UNC left the extra slash in place.
+  final isUnc = s.startsWith('//') && !RegExp(r'^//[A-Za-z]:').hasMatch(s);
+  if (isUnc) {
+    // Keep the literal UNC head: a filesystem `\\server\share` path is not a
+    // rooted POSIX path, and collapsing the head loses the server segment.
+    s = '//${s.substring(2).replaceAll(RegExp(r'/+'), '/')}';
+  } else {
+    s = s.replaceAll(RegExp(r'/+'), '/');
+    // '/E:/…' → 'E:/…'. Only a drive letter is repaired; '/storage/…' keeps its
+    // POSIX root because it has no `X:` segment.
+    if (RegExp(r'^/+[A-Za-z]:(/|$)').hasMatch(s)) {
+      s = s.replaceFirst(RegExp(r'^/+'), '');
+    }
+  }
+  var end = s.length;
+  while (end > 1 && s.codeUnitAt(end - 1) == 0x2F) {
+    end--;
+  }
+  return end == s.length ? s : s.substring(0, end);
+}
 
 /// Percent-encodes an FTP proxy `path=` value, keeping `/` separators literal.
 ///

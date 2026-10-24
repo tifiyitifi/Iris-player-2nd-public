@@ -18,6 +18,9 @@ class PlaybackScenariosSelectionStore
     _initController();
   }
 
+  /// Window-scoped view state: the KV key is session-scoped, so two windows
+  /// keep independent selections.
+
   static const _storageKey = 'playback_scenarios_selection';
 
   late SelectionController<String> controller;
@@ -42,7 +45,7 @@ class PlaybackScenariosSelectionStore
 
   @override
   Future<SelectionState<String>?> load() async {
-    final storage = getKvStore();
+    final storage = getSessionKvStore();
     final raw = await storage.read(key: _storageKey);
 
     if (raw == null) return null;
@@ -54,7 +57,7 @@ class PlaybackScenariosSelectionStore
 
   @override
   Future<void> save(SelectionState<String> state) async {
-    final storage = getKvStore();
+    final storage = getSessionKvStore();
     await storage.write(
       key: _storageKey,
       value: json.encode(

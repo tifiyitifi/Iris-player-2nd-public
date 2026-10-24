@@ -55,12 +55,17 @@ void main() {
     });
 
     test('leaves every other local or remote form untouched', () {
-      expect(sanitizePlayableUri(r'E:\yb\x.mp4'), r'E:\yb\x.mp4');
+      // Windows separators fold into the canonical forward-slash form (the
+      // shape every identity key uses); the file name is unchanged.
+      expect(sanitizePlayableUri(r'E:\yb\x.mp4'), 'E:/yb/x.mp4');
       expect(sanitizePlayableUri('E:/yb/x.mp4'), 'E:/yb/x.mp4');
       expect(sanitizePlayableUri('/storage/emulated/0/Movies/a.mp4'),
           '/storage/emulated/0/Movies/a.mp4');
       expect(sanitizePlayableUri('https://host/dav/a.mp4'),
           'https://host/dav/a.mp4');
+      expect(sanitizePlayableUri('ftp://host/a.mp4'), 'ftp://host/a.mp4');
+      expect(sanitizePlayableUri('file:///E:/yb/a.mp4'),
+          'file:///E:/yb/a.mp4');
       expect(sanitizePlayableUri('content://downloads/document/9'),
           'content://downloads/document/9');
       expect(sanitizePlayableUri('//server/share/a.mp4'),

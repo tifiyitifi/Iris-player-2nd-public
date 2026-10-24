@@ -458,6 +458,10 @@
   "scan_incomplete_body": "A previous scan was interrupted. Do you want to resume from where it left off, or start a new scan?",
   "scan_incomplete_new": "Start new scan",
   "scan_incomplete_resume": "Resume",
+  "scan_busy_other_window_title": "Another IRIS window is scanning",
+  "scan_busy_other_window_body": "The media library is being scanned by another window. Wait for it to finish, or close that window and try again.",
+  "update_busy_other_window_title": "Another IRIS window is updating",
+  "update_busy_other_window_body": "Another window is downloading or installing an update. Wait for it to finish, or close that window and try again.",
   "search_scope_tip": "Scope",
   "search_scope_all": "All sources",
   "search_scope_recursive": "Current dir · recursive",
@@ -1440,6 +1444,7 @@
   "scn_rescan_file": "Rescan this file",
   "scn_rescan_dir": "Rescan containing folder",
   "scn_rescan_source": "Rescan origin source",
+  "scn_explicit_item_label": "explicit item",
   "scn_rescan_file_missing_title": "File not found",
   "scn_rescan_file_missing_body": "The file is no longer on disk, so it was removed from the library.",
   "scn_rescan_offline_title": "Storage unreachable",
@@ -1530,6 +1535,12 @@
   },
   "scn_scan_summary_missing": "Missing explicit files removed: {count}",
   "@scn_scan_summary_missing": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "scn_scan_summary_explicit_refreshed": "Explicit items refreshed: {count}",
+  "@scn_scan_summary_explicit_refreshed": {
     "placeholders": {
       "count": {"type": "int"}
     }
@@ -1665,6 +1676,15 @@
   "lib_recursive": "Recursive",
   "lib_direct_only": "Direct only",
   "lib_play_folder": "Play current folder",
+  "lib_play_in_new_window": "Play in new window",
+  "lib_play_selection_in_new_window": "Play selection in new window",
+  "lib_open_in_new_window": "Open in new window",
+  "new_window_play_failed_title": "The new window could not start playback",
+  "new_window_play_failed_body": "Its queue resolved to no playable media. Scan the storage, then try again from the original window.",
+  "new_window_unavailable_title": "Cannot open a new window",
+  "new_window_unavailable_body": "This build runs a single window (the Microsoft Store package is single-instance), or the new process failed to start.",
+  "new_window_too_many_files_title": "Too many items for a new window",
+  "new_window_too_many_files_body": "The selection is too large to hand to a new window. Play it in this window, or select fewer items.",
   "lib_mode_path_tree": "Path Tree",
   "lib_mode_all_media": "All Media",
   "lib_mode_all_dirs": "All Directories",
@@ -1727,6 +1747,43 @@
   },
   "recycle_permanent": "Delete permanently",
   "recycle_cancel": "Cancel",
+  "physical_delete_failed_title": "File not deleted",
+  "physical_delete_failed_body": "The recycle bin refused the file and the permanent delete also failed (shell code {code}). The file is still in place; playback was resumed.",
+  "@physical_delete_failed_body": {
+    "placeholders": {
+      "code": {"type": "int"}
+    }
+  },
+  "osd_delete_unavailable": "Nothing to delete (not a local file)",
+  "storage_duplicate_title": "Duplicate drive entries",
+  "storage_duplicate_intro": "The same drive is registered more than once. Merging keeps one entry, combines their media rows (playback progress is kept) and repoints every scenario, tag, favorite and sub-audio mapping. Files that no longer exist are marked missing; nothing is deleted from disk.",
+  "storage_duplicate_group": "{name} ({base}) — {entries} entries, {rows} rows",
+  "@storage_duplicate_group": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "base": {"type": "String"},
+      "entries": {"type": "int"},
+      "rows": {"type": "int"}
+    }
+  },
+  "storage_duplicate_merge": "Merge",
+  "storage_duplicate_cancel": "Not now",
+  "storage_duplicate_done_title": "Storage entries merged",
+  "storage_duplicate_done_body": "Collapsed {merged} duplicate rows, moved {moved} rows, and marked {ghosts} missing files. The queue was refreshed.",
+  "@storage_duplicate_done_body": {
+    "placeholders": {
+      "merged": {"type": "int"},
+      "moved": {"type": "int"},
+      "ghosts": {"type": "int"}
+    }
+  },
+  "storage_duplicate_failed_title": "Merge failed",
+  "storage_duplicate_failed_body": "Nothing was changed that could not be re-run safely. Details:\n{error}",
+  "@storage_duplicate_failed_body": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
   "dlg_force_append": "Force append",
   "dlg_play_failed_prefix": "Playback failed: {error}",
   "@dlg_play_failed_prefix": {
@@ -2864,7 +2921,7 @@
   "dlg_known_issues_scenario_sort_header": "Scenario play queue: sorting by modified date groups by folder first",
   "dlg_known_issues_scenario_sort_body": "When the scenario play queue has 同目录连续 (same-directory-contiguous) enabled, it sorts by DIRECTORY first and by the selected field second, so a modified-time sort is not one global time order: only files inside the same folder are ordered by time, whereas PotPlayer's playlist sorts the whole list by date. This is why the queue can look differently ordered from PotPlayer. Untick same-directory-contiguous in the sort menu for a flat, whole-list sort. The timestamp is the file's modification time captured at scan time (millisecond precision); entries that were never scanned carry no timestamp and always sort last.",
   "dlg_known_issues_seek_step_header": "Step seek is keyframe-quantised (media_kit / mpv)",
-  "dlg_known_issues_seek_step_body": "Fast step seek (left/right, double-tap) uses mpv's native relative keyframe seek, the same one mpv's own arrow keys use. It lands on the nearest keyframe, so the setting's seconds are a minimum rather than an exact distance: on a file whose keyframe interval is larger than the step, one press jumps a whole keyframe interval (e.g. a 3 s step lands ≈ 4 s on a 4 s-GOP file). mpv behaves identically. Seeking to exactly N seconds would require a precise seek, which decodes frame-by-frame from the previous keyframe and visibly freezes the picture; IRIS deliberately prioritises smooth playback over seek precision.",
+  "dlg_known_issues_seek_step_body": "Fast step seek (left/right, double-tap) uses mpv's native relative keyframe seek, the same one mpv's own arrow keys use. It lands on the nearest keyframe, so the setting's seconds are a minimum rather than an exact distance: on a file whose keyframe interval is larger than the step, one press jumps a whole keyframe interval (e.g. a 3 s step lands ≈ 4 s on a 4 s-GOP file). mpv behaves identically. Seeking to exactly N seconds would require a precise seek, which decodes frame-by-frame from the previous keyframe and visibly freezes the picture; IRIS deliberately prioritises smooth playback over seek precision.\n\nThe very end is the one exception: a forward step whose target reaches the tail cannot land at all (the last key frame sits earlier), so IRIS decides it — while playing it finishes the item and playback advances to the next entry, while paused the press is kept. The「Step at the end」row picks how close to the end counts as finished.",
   "dlg_known_issues_bg_anchor_header": "Automatic anchoring for Sub Audio alignment",
   "dlg_known_issues_bg_anchor_body": "When Sub Audio starts, or when you switch to another Sub Audio file (from the list, or with the previous/next buttons), the anchor is decided automatically from the two real durations: Sub Audio LONGER than the video → same clock (video 10:00 ↔ Sub Audio 10:00, and the Sub Audio keeps playing past the video's end); Sub Audio SHORTER and the video's remaining time fits inside it → the Sub Audio's END is aligned with the video's END (the Sub Audio can no longer run out early, but its opening is skipped by that difference, so it may start mid-file); otherwise → Sub Audio 00:00 at the video's current position. Default anchoring is no longer a selectable option — the alignment dialog only explains this rule, and its manual modes are live updates: a manual \"update alignment\" lasts for the current session only, and the automatic rule returns after a restart. A tail-anchored pair also skips the \"Sub Audio is about to run out\" prompt, because it runs out exactly when the video does.",
   "dlg_known_issues_bg_anchor_vm_header": "Tail-anchored Sub Audio and Virtual Media segment switches",
@@ -3585,6 +3642,10 @@
   "set_cache_preset_low": "Low",
   "set_cache_preset_balanced": "Balanced",
   "set_cache_preset_high": "High",
+  "set_step_tail_finish": "Step at the end",
+  "set_step_tail_finish_desc": "What a forward step does when it reaches the end of the media. While playing, the item is finished and playback moves to the next entry; while paused, the press is kept (nothing advances). A step cannot land in the final seconds anyway: the last key frame sits earlier and the engine would only roll the picture back there.",
+  "set_step_tail_finish_strict": "At or past the end",
+  "set_step_tail_finish_window": "Within one step of the end",
   "startup_failed_title": "Startup failed",
   "startup_failed_body": "IRIS could not finish starting up. Your data has not been modified.\n\n$error",
   "@startup_failed_body": {

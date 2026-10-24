@@ -14,6 +14,7 @@ import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart'
     show kVmTickExtentDefaultPx;
 import 'package:iris/models/enums/breadcrumb_start_side.dart'
     show BreadcrumbStartSide;
+import 'package:iris/models/enums/step_tail_finish_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart' show WebDavScanMode;
 import 'package:iris/models/store/gesture_region.dart';
@@ -651,6 +652,15 @@ abstract class AppState with _$AppState {
     @Default(VideoCachePreset.balanced)
     @JsonKey(includeToJson: false, includeFromJson: false)
     VideoCachePreset videoCachePreset,
+
+    /// How a FORWARD step press that reaches the media tail behaves: finish the
+    /// item (advance) vs an ordinary keyframe step. Metadata-only AUX row
+    /// (`playback.stepTailFinish`, JsonKey-excluded); legacy mode degrades to
+    /// [StepTailFinishMode.strict] via `resolveStepTailFinishMode`. Read by
+    /// both player hooks in `seekRelative` (see `decideStepTail`).
+    @Default(StepTailFinishMode.strict)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    StepTailFinishMode stepTailFinishMode,
 
     // --- Keyboard OSD (PotPlayer-style floating info) ---
     //

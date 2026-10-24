@@ -305,6 +305,84 @@ void main() {
     });
   });
 
+  group('resolveTakeoverPositionMs (pure decision)', () {
+    test('a live takeover may not rewind the stored position', () {
+      expect(
+        resolveTakeoverPositionMs(
+          existingPosMs: 90000,
+          incomingPosMs: 10000,
+          completed: null,
+          intent: ProgressWriteIntent.takeover,
+        ),
+        90000,
+      );
+    });
+
+    test('a live takeover may move forward', () {
+      expect(
+        resolveTakeoverPositionMs(
+          existingPosMs: 10000,
+          incomingPosMs: 30000,
+          completed: null,
+          intent: ProgressWriteIntent.takeover,
+        ),
+        30000,
+      );
+    });
+
+    test('explicit intents stay verbatim after a takeover', () {
+      for (final intent in [
+        ProgressWriteIntent.userSeek,
+        ProgressWriteIntent.explicitClear,
+        ProgressWriteIntent.targeted,
+      ]) {
+        expect(
+          resolveTakeoverPositionMs(
+            existingPosMs: 90000,
+            incomingPosMs: 0,
+            completed: null,
+            intent: intent,
+          ),
+          0,
+          reason: '${intent.name} is an explicit decision',
+        );
+      }
+    });
+
+    test('completed takeover keeps its verbatim value', () {
+      expect(
+        resolveTakeoverPositionMs(
+          existingPosMs: 90000,
+          incomingPosMs: 0,
+          completed: true,
+          intent: ProgressWriteIntent.takeover,
+        ),
+        0,
+      );
+    });
+
+    test('nothing changes without a stored position or an incoming value', () {
+      expect(
+        resolveTakeoverPositionMs(
+          existingPosMs: null,
+          incomingPosMs: 10000,
+          completed: null,
+          intent: ProgressWriteIntent.takeover,
+        ),
+        10000,
+      );
+      expect(
+        resolveTakeoverPositionMs(
+          existingPosMs: 90000,
+          incomingPosMs: null,
+          completed: null,
+          intent: ProgressWriteIntent.takeover,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('funnel guard (repo write path)', () {
     test('a live 633ms write cannot clobber stored 42833', () async {
       await seedNode(positionMs: 42833);

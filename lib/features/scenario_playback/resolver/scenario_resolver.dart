@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
+import 'package:iris/features/media_library/services/media_progress_claim.dart';
 import 'package:iris/features/meta_settings/engine/browse_scope_snapshot.dart'
     show currentBrowseScopeMediaTypes;
 import 'package:iris/features/media_library/play_queue/engine/shuffle_engine.dart';
@@ -800,6 +801,9 @@ class ScenarioResolver {
   /// non-null value is passed it wins over the persisted one, and nothing is
   /// written back. Local shuffle requires BOTH [order] == shuffled AND a
   /// [shuffleSeed]; otherwise the persisted order/seed is used.
+  ///
+  /// [playbackVersion] / [mediaRevision] only ever SELECT the cached resolved
+  /// stream (see [_cacheKey]); they never change the result itself.
   Future<ScenarioResolvePage> resolvePage({
     required String scenarioId,
     required int page,
@@ -811,6 +815,7 @@ class ScenarioResolver {
     int? shuffleSeed,
     DuplicatePolicy? duplicatePolicy,
     int playbackVersion = 0,
+    int mediaRevision = 0,
   }) async {
     assert(page >= 0 && pageSize > 0, 'page must be >= 0 and pageSize > 0');
 
@@ -875,6 +880,7 @@ class ScenarioResolver {
                 shuffleSeed: seed,
                 dedup: effectiveDedup,
                 playbackVersion: playbackVersion,
+                mediaRevision: mediaRevision,
                 shuffleVersion: state?.shuffleVersion ?? 0,
               )
             : null;
@@ -951,6 +957,12 @@ class ScenarioResolver {
   /// get a row). Page p therefore covers display positions
   /// `[p*pageSize, (p+1)*pageSize)` of a dense, fully visible list, and each
   /// returned item carries that position as its `virtualIndex`.
+  ///
+  /// [playbackVersion] and [mediaRevision] are forwarded to the legacy-walk
+  /// fallback, where they are the ONLY thing that can invalidate the cached
+  /// resolved stream. Dropping them there (the two `resolvePage` calls below)
+  /// froze the queue on the pre-rescan snapshot: the fallback cached under a
+  /// constant key 0, so a `media_nodes` rewrite was invisible until restart.
   Future<ScenarioResolvePage> resolvePageIndexed({
     required String scenarioId,
     required int page,
@@ -958,6 +970,8 @@ class ScenarioResolver {
     PlaybackOrder? order,
     int? shuffleSeed,
     SortDirection? sortDirection,
+    int playbackVersion = 0,
+    int mediaRevision = 0,
   }) async {
     final dao = _queueIndexDao;
     // The fallbacks pass the requested VIEW through: the caller asked for this
@@ -972,6 +986,8 @@ class ScenarioResolver {
         order: order,
         shuffleSeed: shuffleSeed,
         sortDirection: sortDirection,
+        playbackVersion: playbackVersion,
+        mediaRevision: mediaRevision,
       );
     }
     final buildId = await dao.currentBuildId(scenarioId);
@@ -987,6 +1003,8 @@ class ScenarioResolver {
         order: order,
         shuffleSeed: shuffleSeed,
         sortDirection: sortDirection,
+        playbackVersion: playbackVersion,
+        mediaRevision: mediaRevision,
       );
     }
 
@@ -1535,14 +1553,24 @@ class ScenarioResolver {
       final dur = f?.durationMs;
       totalMs += dur ?? 0;
       totalBytes += f?.sizeInBytes ?? 0;
+      // A segment may be owned by another IRIS window (multi-instance): this
+      // instance's own memory position must win for its group resume point.
+      final int? memoryPos = MediaProgressClaim.instance.memoryPosition(
+        storageId: node.storageId,
+        path: node.occurrencePath,
+      );
+      final bool? memoryDone = MediaProgressClaim.instance.memoryCompleted(
+        storageId: node.storageId,
+        path: node.occurrencePath,
+      );
       children.add(VirtualChildEntry(
         mediaKey: canonicalKey(node.storageId, node.occurrencePath),
         name: node.name,
         occurrenceIndex: m.occurrenceIndex,
         durationMs: dur,
         sizeInBytes: f?.sizeInBytes,
-        positionMs: f?.playbackPositionMs,
-        completed: f?.playbackCompleted ?? false,
+        positionMs: memoryPos ?? f?.playbackPositionMs,
+        completed: memoryDone ?? f?.playbackCompleted ?? false,
       ));
     }
     final firstFile = first.maybeMap(file: (f) => f, orElse: () => null);
@@ -1612,7 +1640,15 @@ class ScenarioResolver {
 
   /// Cache identity of a persisted-config view: every knob that can change the
   /// effective stream order, plus the volatile revisions ([playbackVersion],
-  /// VM rule revision) that live only in memory.
+  /// `mediaRevision`, VM rule revision) that live only in memory.
+  ///
+  /// [mediaRevision] is the media-snapshot generation (the store's
+  /// `sourceScanRevision`). The cached value is a fully materialized
+  /// [EffectivePlaybackItem] list, i.e. it HOLDS `MediaNode` snapshots: without
+  /// this term a rescan/probe that only rewrites `media_nodes` (duration,
+  /// dimensions — no definition row) would keep serving the pre-scan durations
+  /// and order. Keying on [playbackVersion] alone is not enough because callers
+  /// that do not own that counter (and every legacy-walk fallback) pass 0.
   String _cacheKey(
     String scenarioId, {
     required ScenarioSortField sortField,
@@ -1622,6 +1658,7 @@ class ScenarioResolver {
     required int? shuffleSeed,
     required bool dedup,
     required int playbackVersion,
+    required int mediaRevision,
     required int shuffleVersion,
   }) =>
       [
@@ -1633,6 +1670,7 @@ class ScenarioResolver {
         '${shuffleSeed ?? ''}',
         dedup,
         '$playbackVersion',
+        'm$mediaRevision',
         '$shuffleVersion',
         '${VirtualMediaService.instance.revision}',
       ].join('|');
@@ -1901,6 +1939,11 @@ class ScenarioResolver {
       shuffleSeed: seed,
       dedup: dedup,
       playbackVersion: playbackVersion,
+      // This cache is invalidated by the caller-supplied [playbackVersion]
+      // (every media-mutating path bumps it), so it does not carry its own
+      // media generation. `resolvePage` serves ITEM snapshots and therefore
+      // needs the extra term (see its `mediaRevision`).
+      mediaRevision: 0,
       shuffleVersion: state?.shuffleVersion ?? 0,
     );
 

@@ -76,6 +76,11 @@ class ScenarioSourceRefreshStore extends Store<ScenarioSourceRefreshState> {
     set(state.copyWith(missingExplicitFiles: count));
   }
 
+  /// Files whose metadata the targeted explicit-item probe refreshed.
+  void recordProbedExplicitFiles(int count) {
+    set(state.copyWith(probedExplicitFiles: count));
+  }
+
   void complete() => set(state.copyWith(
         phase: ScenarioSourceRefreshPhase.done,
         currentPath: null,

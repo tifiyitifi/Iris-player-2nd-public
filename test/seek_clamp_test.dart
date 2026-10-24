@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/hooks/player/seek_clamp.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 void main() {
   group('clampSeekTarget', () {
@@ -13,13 +14,13 @@ void main() {
       );
     });
 
-    test('seek beyond total clamps to total', () {
+    test('seek beyond total stops at the shared tail guard', () {
       expect(
         clampSeekTarget(
           const Duration(milliseconds: 100501),
           const Duration(milliseconds: 100000),
         ),
-        const Duration(milliseconds: 100000),
+        Duration(milliseconds: 100000 - kSeekTailGuardMs),
       );
     });
 
@@ -43,13 +44,70 @@ void main() {
       expect(target, Duration.zero);
     });
 
-    test('exact total is preserved', () {
+    test('an exact-total seek stops short by default', () {
+      // Landing exactly ON the duration raises `completed` immediately. Only an
+      // explicit "finish this item" may do that.
       expect(
         clampSeekTarget(
           const Duration(milliseconds: 60000),
           const Duration(milliseconds: 60000),
         ),
+        Duration(milliseconds: 60000 - kSeekTailGuardMs),
+      );
+    });
+
+    test('finishAtEnd keeps an exact-total seek intact', () {
+      expect(
+        clampSeekTarget(
+          const Duration(milliseconds: 60000),
+          const Duration(milliseconds: 60000),
+          intent: SeekIntent.finishAtEnd,
+        ),
         const Duration(milliseconds: 60000),
+      );
+    });
+  });
+
+  group('clampPositionToMedia', () {
+    test('an in-range position is untouched', () {
+      expect(
+        clampPositionToMedia(
+          const Duration(milliseconds: 12000),
+          const Duration(milliseconds: 60000),
+        ),
+        const Duration(milliseconds: 12000),
+      );
+    });
+
+    test('a position past the media is bounded', () {
+      // mpv reports the seek target as `time-pos` while a seek is in flight, and
+      // a step seek forwards an unclamped delta.
+      expect(
+        clampPositionToMedia(
+          const Duration(milliseconds: 64500),
+          const Duration(milliseconds: 60000),
+        ),
+        const Duration(milliseconds: 60000),
+      );
+    });
+
+    test('a negative position clamps to zero', () {
+      expect(
+        clampPositionToMedia(
+          const Duration(milliseconds: -10),
+          const Duration(milliseconds: 60000),
+        ),
+        Duration.zero,
+      );
+    });
+
+    test('an unknown duration leaves the position alone', () {
+      expect(
+        clampPositionToMedia(
+          const Duration(milliseconds: 10),
+          Duration.zero,
+        ),
+        const Duration(milliseconds: 10),
       );
     });
   });

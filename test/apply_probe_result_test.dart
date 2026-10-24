@@ -65,4 +65,81 @@ void main() {
             dir),
         isTrue);
   });
+
+  /// The incremental-rescan skip decision. A rescan with the probe enabled is
+  /// the documented repair path for metadata poisoned by an older cross-file
+  /// write-back, so a probed value that DIFFERS must force the upsert while a
+  /// "could not read it" (null) must never downgrade.
+  group('probeTripleUnchanged', () {
+    test('equal values need no upsert', () {
+      expect(
+        probeTripleUnchanged(
+          rowDurationMs: 44153,
+          freshDurationMs: 44153,
+          rowWidth: 1920,
+          freshWidth: 1920,
+          rowHeight: 1080,
+          freshHeight: 1080,
+        ),
+        isTrue,
+      );
+    });
+
+    test('a differing probed duration forces the upsert (rescan repairs)', () {
+      // Stored 347765 is another file's duration; the probe read 44153.
+      expect(
+        probeTripleUnchanged(
+          rowDurationMs: 347765,
+          freshDurationMs: 44153,
+          rowWidth: 1920,
+          freshWidth: 1920,
+          rowHeight: 1080,
+          freshHeight: 1080,
+        ),
+        isFalse,
+      );
+    });
+
+    test('a differing probed resolution forces the upsert', () {
+      expect(
+        probeTripleUnchanged(
+          rowDurationMs: 44153,
+          freshDurationMs: 44153,
+          rowWidth: 1728,
+          freshWidth: 1920,
+          rowHeight: 1080,
+          freshHeight: 1080,
+        ),
+        isFalse,
+      );
+    });
+
+    test('an unreadable probe never downgrades a stored value', () {
+      expect(
+        probeTripleUnchanged(
+          rowDurationMs: 44153,
+          freshDurationMs: null,
+          rowWidth: 1920,
+          freshWidth: null,
+          rowHeight: 1080,
+          freshHeight: null,
+        ),
+        isTrue,
+      );
+    });
+
+    test('filling a previously unknown row field is an upsert', () {
+      expect(
+        probeTripleUnchanged(
+          rowDurationMs: null,
+          freshDurationMs: 44153,
+          rowWidth: null,
+          freshWidth: 1920,
+          rowHeight: null,
+          freshHeight: 1080,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

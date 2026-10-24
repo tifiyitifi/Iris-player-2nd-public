@@ -1,10 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/meta_settings/contributions/settings_catalog.dart';
+import 'package:iris/features/meta_settings/engine/step_tail_finish_mode.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
+import 'package:iris/hooks/player/live_progress_attribution.dart';
 import 'package:iris/hooks/player/seek_tuning.dart';
+import 'package:iris/models/enums/step_tail_finish_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/utils/live_seek_throttle.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 void main() {
   group('resolveRelativeBaseMs', () {
@@ -172,20 +176,18 @@ void main() {
       );
     });
 
-    test('agrees with the delta handed to the engine for every sample', () {
+    test('a backward press never lands off the front, whatever the sample', () {
+      // The OSD/persist target is always inside the media, and a rewind is the
+      // only direction the delta itself is bounded in.
       const int dur = 60000;
       for (final int reported in [-9000, -1, 0, 1000, 30000, 59000, 60000, 61000]) {
-        for (final int delta in [-8000, -3000, 3000, 8000]) {
-          final int nominal = stepSeekTargetMs(
-              reportedMs: reported, deltaMs: delta, durationMs: dur);
-          final int sent = stepSeekSentDelta(
-              reportedMs: reported, deltaMs: delta, durationMs: dur);
-          expect(
-            nominal - reported.clamp(0, dur),
-            sent,
-            reason: 'reported=$reported delta=$delta',
-          );
-        }
+        final int sent = stepSeekSentDelta(
+            reportedMs: reported, deltaMs: -8000, durationMs: dur);
+        expect(
+          reported.clamp(0, dur) + sent,
+          greaterThanOrEqualTo(0),
+          reason: 'reported=$reported',
+        );
       }
     });
   });
@@ -220,51 +222,69 @@ void main() {
       );
     });
 
-    test('never sends the engine past the end', () {
+    test('a forward step forwards the raw delta, even at the tail', () {
+      // mpv adds the delta to its own playback time and never clamps the target
+      // (`player/playloop.c`), and a forward seek carries SEEK_FORWARD ("prefer
+      // later time if not exact"), so it lands at or AFTER the target; a target
+      // past the end makes the demuxer seek fail, which mpv answers by abandoning
+      // the seek so the file plays out to EOF. Clamping here to `duration - 1`
+      // pinned the target inside the final GOP — the tail rollback that then
+      // repeated on every further press.
+      //
+      // A Virtual-Media segment follows the SAME rule: a target belonging to
+      // another segment never reaches this path (`resolveRelativeSeek` resolves
+      // it and the hook opens it through `jumpToSegment`), so running past the
+      // current file's end just ends that file.
       expect(
         stepSeekSentDelta(reportedMs: 59000, deltaMs: 3000, durationMs: 60000),
-        1000,
+        3000,
+      );
+      expect(
+        stepSeekSentDelta(reportedMs: 59999, deltaMs: 5000, durationMs: 60000),
+        5000,
       );
     });
 
-    test('is 0 while the duration is unknown', () {
+    test('an unknown duration forwards the raw delta', () {
+      // Unreachable in practice — both hooks drop the press before calling when
+      // the duration is unknown — but the helper must not fabricate a no-op.
       expect(
         stepSeekSentDelta(reportedMs: 5000, deltaMs: 3000, durationMs: 0),
+        3000,
+      );
+      expect(
+        stepSeekSentDelta(reportedMs: 5000, deltaMs: -3000, durationMs: 0),
         0,
       );
     });
   });
 
   group('single-file tail step (lastSeekableMs)', () {
-    test('is one ms short of the media duration', () {
-      expect(lastSeekableMs(60000), 59999);
+    test('keeps the shared guard distance from the media end', () {
+      expect(lastSeekableMs(60000), 60000 - kSeekTailGuardMs);
     });
 
-    test('a zero/unknown duration has no seekable ms', () {
+    test('a zero or guard-sized duration stays seekable only when short', () {
       expect(lastSeekableMs(0), 0);
       expect(lastSeekableMs(null), 0);
+      // A guard-sized clip keeps its full range instead of collapsing to 0.
+      expect(lastSeekableMs(kSeekTailGuardMs), kSeekTailGuardMs);
     });
 
-    test('a forward step at the tail never lands on the duration', () {
+    test('the OSD target is bounded by the media, not by the tail guard', () {
+      // Display only: a step seek forwards an unclamped delta, so the HUD target
+      // is clamped to the media — clamping it to `lastSeekableMs` would claim a
+      // landing 100 ms before the one the engine may actually take.
       const dur = 10000;
-      final bound = lastSeekableMs(dur);
-      final sent =
-          stepSeekSentDelta(reportedMs: 9500, deltaMs: 5000, durationMs: bound);
-      final landing = 9500 + sent;
-      expect(landing, bound);
-      expect(landing, lessThan(dur),
-          reason: 'landing ON duration fires an instant completed');
-    });
-
-    test('the OSD target agrees with the sent landing at the tail', () {
-      const dur = 10000;
-      final bound = lastSeekableMs(dur);
-      final sent =
-          stepSeekSentDelta(reportedMs: 9000, deltaMs: 5000, durationMs: bound);
-      final osd =
-          stepSeekTargetMs(reportedMs: 9000, deltaMs: 5000, durationMs: bound);
-      expect(osd, 9000 + sent);
-      expect(osd, lessThan(dur));
+      expect(
+        stepSeekTargetMs(reportedMs: 9500, deltaMs: 5000, durationMs: dur),
+        dur,
+      );
+      expect(
+        stepSeekTargetMs(reportedMs: 9000, deltaMs: -2000, durationMs: dur),
+        7000,
+      );
+      expect(lastSeekableMs(dur), lessThan(dur));
     });
   });
 
@@ -330,6 +350,447 @@ void main() {
       expect(
         resolveVideoCachePreset(s, metadataEnabled: false),
         VideoCachePreset.balanced,
+      );
+    });
+  });
+
+  group('decideStepTail / stepFinishesItem (tail-step policy)', () {
+    // 322.293 s container, the failing tail press from the measured log: the
+    // last decodable frame sits ~321.7 s, so every target from there on is
+    // unreachable and the engine parks/rolls back inside the final GOP.
+    const int dur = 322293;
+
+    test('mid-file presses stay ordinary steps in both modes', () {
+      for (final mode in StepTailFinishMode.values) {
+        expect(
+          decideStepTail(
+            reportedMs: 17816,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: mode,
+            playing: true,
+          ),
+          StepTailAction.step,
+        );
+      }
+    });
+
+    test('a backward press is never a finish', () {
+      for (final mode in StepTailFinishMode.values) {
+        expect(
+          decideStepTail(
+            reportedMs: 321456,
+            deltaMs: -4000,
+            durationMs: dur,
+            mode: mode,
+            playing: true,
+          ),
+          StepTailAction.step,
+        );
+      }
+    });
+
+    test('an unknown duration never finishes', () {
+      for (final mode in StepTailFinishMode.values) {
+        expect(
+          stepFinishesItem(
+              reportedMs: 1000, deltaMs: 4000, durationMs: 0, mode: mode),
+          isFalse,
+        );
+      }
+    });
+
+    test('strict finishes a target that reaches the media end', () {
+      // `target == duration` is as unreachable through a relative keyframe
+      // seek as a target past it (mpv rolls back into the final GOP and never
+      // raises `completed`), so reaching the end must finish.
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 4000,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.strict),
+        isTrue,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 4001,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.strict),
+        isFalse,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 3999,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.strict),
+        isTrue,
+      );
+    });
+
+    test('window also finishes inside the final unreachable GOP', () {
+      // 0.8 s before the end, inside one 4 s step: still unreachable, so the
+      // press must finish instead of rolling the picture back.
+      expect(
+        stepFinishesItem(
+            reportedMs: 321500,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.window),
+        isTrue,
+      );
+      // Just outside the window (4 s step => 4 s window) stays a step.
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 9000,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.window),
+        isFalse,
+      );
+    });
+
+    test('the window never shrinks below its floor for short steps', () {
+      // A 500 ms step would leave the long final GOP unreachable; the 2 s floor
+      // still catches it.
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 1000,
+            deltaMs: 500,
+            durationMs: dur,
+            mode: StepTailFinishMode.window),
+        isTrue,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: dur - 3000,
+            deltaMs: 500,
+            durationMs: dur,
+            mode: StepTailFinishMode.window),
+        isFalse,
+      );
+    });
+
+    test('window never finishes from the head of a short clip', () {
+      // 1.5 s clip + 0.5 s step: the 2 s floor used to put the threshold at
+      // `1500 - 2000` (negative), so the FIRST press — at 0 — finished the item
+      // and the clip could not be stepped at all.
+      for (final bool playing in [true, false]) {
+        expect(
+          decideStepTail(
+              reportedMs: 0,
+              deltaMs: 500,
+              durationMs: 1500,
+              mode: StepTailFinishMode.window,
+              playing: playing),
+          StepTailAction.step,
+          reason: 'playing=$playing',
+        );
+      }
+      // The reachable head region stays steppable ...
+      expect(
+        stepFinishesItem(
+            reportedMs: 0,
+            deltaMs: 500,
+            durationMs: 1500,
+            mode: StepTailFinishMode.window),
+        isFalse,
+      );
+      // ... while the unreachable tail still finishes.
+      expect(
+        stepFinishesItem(
+            reportedMs: 1000,
+            deltaMs: 500,
+            durationMs: 1500,
+            mode: StepTailFinishMode.window),
+        isTrue,
+      );
+    });
+
+    test('the window is capped at half the media, not just at the 2 s floor',
+        () {
+      // 2.4 s clip + 0.5 s step: the duration exceeds the 2 s floor, so a
+      // `duration <= kStepTailFinishWindowMs` fallback would leave this
+      // boundary finishing on the head press. The half-media cap covers it.
+      expect(
+        stepFinishesItem(
+            reportedMs: 0,
+            deltaMs: 500,
+            durationMs: 2400,
+            mode: StepTailFinishMode.window),
+        isFalse,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: 1900,
+            deltaMs: 500,
+            durationMs: 2400,
+            mode: StepTailFinishMode.window),
+        isTrue,
+      );
+      // Exactly twice the floor: capped to duration/2, the head still steps.
+      expect(
+        stepFinishesItem(
+            reportedMs: 0,
+            deltaMs: 500,
+            durationMs: 4000,
+            mode: StepTailFinishMode.window),
+        isFalse,
+      );
+    });
+
+    test('a short clip keeps the strict outcome for a step past the end', () {
+      // 3 s clip + 4 s step: the landing is past the end, which strict finishes
+      // too — the cap must not turn a "reached the end" press into a step.
+      expect(
+        stepFinishesItem(
+            reportedMs: 0,
+            deltaMs: 4000,
+            durationMs: 3000,
+            mode: StepTailFinishMode.window),
+        isTrue,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: 0,
+            deltaMs: 4000,
+            durationMs: 3000,
+            mode: StepTailFinishMode.strict),
+        isTrue,
+      );
+    });
+
+    test('an out-of-range sample anchors on the media bounds first', () {
+      // A stale sample past the end must not turn a rewind into a finish.
+      expect(
+        stepFinishesItem(
+            reportedMs: dur + 5000,
+            deltaMs: -1000,
+            durationMs: dur,
+            mode: StepTailFinishMode.strict),
+        isFalse,
+      );
+      expect(
+        stepFinishesItem(
+            reportedMs: -5000,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.strict),
+        isFalse,
+      );
+    });
+
+    test('playing finishes the item, paused holds the press', () {
+      for (final mode in StepTailFinishMode.values) {
+        expect(
+          decideStepTail(
+            reportedMs: 321656,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: mode,
+            playing: true,
+          ),
+          StepTailAction.finishItem,
+        );
+        expect(
+          decideStepTail(
+            reportedMs: 321656,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: mode,
+            playing: false,
+          ),
+          StepTailAction.hold,
+        );
+      }
+    });
+  });
+
+  group('MpvSeekTailState (mpv playloop parity for a tail press)', () {
+    const int end = 381141;
+    const String evelyn = 'file:///media/evelyn.mp4';
+    const String next = 'file:///media/next.mp4';
+
+    test('the first tail press owns the finish', () {
+      final s = MpvSeekTailState();
+      expect(s.armed, isFalse);
+      expect(s.armFirstPress(evelyn, end), isTrue);
+      expect(s.armed, isTrue);
+      expect(s.endMs, end);
+      expect(s.armedUri, evelyn);
+    });
+
+    test('a held key / rapid taps do NOT queue another seek', () {
+      // The regression this class exists for: every repeat used to issue an
+      // absolute `seek <duration>`, and mpv's `handle_eof()` returns while a
+      // seek is queued (`player/playloop.c:1247-1250`), so EOF never happened
+      // and the picture parked at the tail until the key was released.
+      final s = MpvSeekTailState();
+      expect(s.armFirstPress(evelyn, end), isTrue);
+      for (int i = 0; i < 40; i++) {
+        expect(s.armFirstPress(evelyn, end), isFalse,
+            reason: 'press ${i + 2} must be swallowed (mpv drops the queued seek)');
+      }
+    });
+
+    test('the EOF collapse runs exactly once per armed media', () {
+      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
+      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+      // A late second caller (timer + a racing press) must not advance again.
+      expect(s.consumeCollapse(mediaUri: evelyn), isFalse);
+      expect(s.consumeCollapse(mediaUri: evelyn), isFalse);
+    });
+
+    test('a finish never collapses the entry that replaced it', () {
+      // `.ai_knowledge/tmp/seeK/seekaftempvlog.txt`: the arm belonged to the
+      // previous file, the queue advanced, and the same window's re-arm collapsed
+      // the freshly opened entry (pos=311750/dur=312106 were the OLD file's).
+      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
+      expect(s.consumeCollapse(mediaUri: next), isFalse,
+          reason: 'the arm belongs to another media — mpv cleared it at the switch');
+      // …and the legitimate owner still collapses.
+      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+    });
+
+    test('nothing collapses while no tail press is armed', () {
+      expect(MpvSeekTailState().consumeCollapse(mediaUri: evelyn), isFalse);
+    });
+
+    test('a reset (media change / rewind / completed) re-arms the same media', () {
+      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
+      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+      s.reset();
+      expect(s.armed, isFalse);
+      expect(s.armedUri, isNull);
+      // Repeat-one loops the SAME media: a reset must allow a new finish.
+      expect(s.armFirstPress(evelyn, end), isTrue);
+      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+    });
+
+    test('a second tail press with a revised end is still swallowed', () {
+      // The duration stream can be revised while the finish is pending; mpv
+      // drops the queued seek regardless of its new target, so the arm must
+      // survive a changed caller-axis end (a re-arm would queue a second
+      // finish for the same media).
+      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
+      expect(s.armFirstPress(evelyn, end + 5000), isFalse);
+      expect(s.endMs, end);
+    });
+
+    test('the EOF window is mpv\'s 0.3 s seek window', () {
+      // `MPSEEK_FLAG_DELAY` (player/playloop.c:521-525) waits for one frame /
+      // one seek result before the next seek; the EOF verdict arrives on that
+      // same restart.
+      expect(kMpvSeekEofWindow, const Duration(milliseconds: 300));
+    });
+  });
+
+  group('shouldAcceptStepPress (media must be open before stepping)', () {
+    const String a = 'file:///media/a.mp4';
+    const String b = 'file:///media/b.mp4';
+
+    test('accepts a press for the media whose open completed', () {
+      expect(shouldAcceptStepPress(mediaUri: a, openedUri: a), isTrue);
+    });
+
+    test('drops a press during the switch window (the skipped-episode defect)', () {
+      // The hook already holds the NEXT entry while the engine still describes
+      // the previous one: `file`=b, `opened`=a. Step math would use b's identity
+      // with a's duration/position (log: `end=312106ms` on the new file).
+      expect(shouldAcceptStepPress(mediaUri: b, openedUri: a), isFalse);
+      // Open not finished at all (first open / failure): no current demuxer.
+      expect(shouldAcceptStepPress(mediaUri: a, openedUri: null), isFalse);
+    });
+
+    test('drops an empty / null media instead of stepping into nothing', () {
+      expect(shouldAcceptStepPress(mediaUri: null, openedUri: null), isFalse);
+      expect(shouldAcceptStepPress(mediaUri: '', openedUri: ''), isFalse);
+    });
+  });
+
+  group('shouldAttributeLiveProgress', () {
+    const String a = 'file:///media/a.mp4';
+    const String b = 'file:///media/b.mp4';
+
+    test('accepts a sample from the media whose open completed', () {
+      expect(
+        shouldAttributeLiveProgress(sampleUri: a, openUri: a, latestUri: a),
+        isTrue,
+      );
+    });
+
+    test('drops a sample of the media being LEFT (the 串集 defect)', () {
+      // Log evidence: `liveProgress key=…[ZMSFM]… hit pos=381141` right after
+      // `[sodeno19]` ended there, and `progress-write [timer] 44152->6958
+      // BLOCKED` — the previous file's tail would be persisted onto the next.
+      expect(
+        shouldAttributeLiveProgress(sampleUri: a, openUri: a, latestUri: b),
+        isFalse,
+        reason: 'a newer media is already bound to the hook',
+      );
+      expect(
+        shouldAttributeLiveProgress(sampleUri: b, openUri: a, latestUri: b),
+        isFalse,
+        reason: 'the new media\'s open has not completed yet',
+      );
+    });
+
+    test('drops a sample before any open completed', () {
+      expect(
+        shouldAttributeLiveProgress(sampleUri: a, openUri: null, latestUri: a),
+        isFalse,
+      );
+    });
+
+    test('drops an empty / null uri instead of keying on it', () {
+      expect(
+        shouldAttributeLiveProgress(sampleUri: null, openUri: null, latestUri: null),
+        isFalse,
+      );
+      expect(
+        shouldAttributeLiveProgress(sampleUri: '', openUri: '', latestUri: ''),
+        isFalse,
+      );
+    });
+  });
+
+  group('playback.stepTailFinish catalog def', () {
+    final def = SettingsCatalog.defs
+        .singleWhere((d) => d.key == 'playback.stepTailFinish');
+
+    test('enum values mirror the Dart enum names', () {
+      expect(
+          def.enumValues, StepTailFinishMode.values.map((v) => v.name).toList());
+    });
+
+    test('default is the strict (past-the-end) policy', () {
+      expect(def.defaultValue, StepTailFinishMode.strict.name);
+      expect(const AppState().stepTailFinishMode, StepTailFinishMode.strict);
+    });
+
+    test('is a custom row (out-of-domain AUX) with an editor key', () {
+      expect(def.editorKey, isNotNull);
+    });
+  });
+
+  group('resolveStepTailFinishMode', () {
+    test('returns the stored mode while the metadata gate is ON', () {
+      const AppState s =
+          AppState(stepTailFinishMode: StepTailFinishMode.window);
+      expect(
+        resolveStepTailFinishMode(s, metadataEnabled: true),
+        StepTailFinishMode.window,
+      );
+    });
+
+    test('degrades to strict while the gate is OFF', () {
+      const AppState s =
+          AppState(stepTailFinishMode: StepTailFinishMode.window);
+      expect(
+        resolveStepTailFinishMode(s, metadataEnabled: false),
+        StepTailFinishMode.strict,
       );
     });
   });

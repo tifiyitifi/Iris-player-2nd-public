@@ -21,10 +21,6 @@ class WarningDialogPrefsEditorDialog extends HookWidget {
   const WarningDialogPrefsEditorDialog({super.key});
 
   static Map<String, (String, String)> descriptions(AppLocalizations t) => {
-        kWarningPhysicalDeleteRecycle: (
-          t.dlg_warn_physical_delete_title,
-          t.dlg_warn_physical_delete_desc,
-        ),
         kWarningForceAppendNoMedia: (
           t.dlg_warn_force_append_title,
           t.dlg_warn_force_append_desc,

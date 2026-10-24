@@ -15,6 +15,13 @@ import 'package:provider/provider.dart';
 
 /// Serpentine 5-axis phone scrubber.
 ///
+/// RETIRED — this surface can never render again: the `AppState` normalization
+/// folds arc/timeLens/snake into the classic circle slider on load
+/// (`use_app_store.dart`: "arc/timeLens/snake are FULLY retired"), and the
+/// scrubber-kind dialog never offers it. Kept as the reference implementation
+/// for the serpentine math and for a possible revival; do NOT spend behaviour
+/// fixes on it (see [_commit]).
+///
 /// Path: 5 parallel horizontal bars joined by 4 outward semicircular turns;
 /// progress is arc-length parameterized so the turns occupy playback too.
 ///
@@ -390,13 +397,26 @@ class PhoneSnakeScrubber extends HookWidget {
 }
 
 Future<void> _commit(MediaPlayer player, Duration target, bool autoPlay) async {
-  await player.seek(target);
+  // NOT kept in sync with the live surfaces on purpose. They decide the tail
+  // release with `isSeekReleaseFinish` (99 %, with the short-clip carve-out)
+  // and always `play()` on release, while this one requires the very last
+  // millisecond and pauses + latches a suppressed completion. The difference is
+  // unreachable (see the class doc: the surface is retired), so unifying it
+  // would only churn dead code — the live policies are the linear slider, the
+  // circle slider and the ring dial.
+  //
+  // A release at the very end must land ON the end: the shared tail guard would
+  // park 100 ms short, so the file would never complete. Everything else stays
+  // inside the guard.
+  final int durMs = player.duration.inMilliseconds;
+  final bool atEnd = durMs > 0 && target.inMilliseconds >= durMs - 1;
+  await (atEnd ? (player.finishSeek ?? player.seek) : player.seek)(target);
   if (target == Duration.zero) {
     await player.pause();
     useScrubDragStore().endSeek(ScrubOwners.snake);
     return;
   }
-  if (target.inMilliseconds >= (player.duration.inMilliseconds - 1).clamp(0, 1 << 30)) {
+  if (atEnd) {
     await player.pause();
     usePlayerUiStore().updatePendingCompleted(true);
     useScrubDragStore().endSeek(ScrubOwners.snake);

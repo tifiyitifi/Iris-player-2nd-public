@@ -16,6 +16,7 @@ import 'package:iris/store/kv/secure_kv.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_player_ui_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
@@ -147,6 +148,39 @@ void main() {
       await store.setFloatingButtonFraction(1.4, -0.2);
       expect(store.state.floatingX, 1.0);
       expect(store.state.floatingY, 0.0);
+    });
+
+    test('an extra window keeps its snapshot in memory, never writes it',
+        () async {
+      AppInstance.debugReset();
+      addTearDown(AppInstance.debugReset);
+      final kv = MemoryKvStore();
+      setKvStoreForTest(kv);
+      addTearDown(resetKvStoreForTest);
+
+      final primary = useControlGroupStore();
+      await primary.initialized;
+      await primary.setGroup(PlayerControlGroup.background);
+      await StoreLocator().delete(ControlGroupStore);
+
+      AppInstance.debugSetSlot(2);
+      final extra = useControlGroupStore();
+      await extra.initialized;
+      expect(extra.state.group, PlayerControlGroup.background,
+          reason: 'precondition: the extra window loaded the shared value');
+
+      // A stale local choice plus a floater drag: the whole-state save must not
+      // land, or the primary's group is rolled back by this snapshot.
+      extra.set(extra.state.copyWith(group: PlayerControlGroup.playback));
+      await extra.setFloatingButtonFraction(0.8, 0.2);
+
+      final raw = await kv.read(key: KvKeys.controlGroupState);
+      final stored = jsonDecode(raw!) as Map<String, dynamic>;
+      expect(stored['group'], PlayerControlGroup.background.name);
+      expect(stored['floatingX'], 0.5,
+          reason: 'the extra window does not persist shared config either');
+      expect(extra.state.group, PlayerControlGroup.playback,
+          reason: 'the extra window still honors its in-memory choice');
     });
   });
 

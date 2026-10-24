@@ -6,6 +6,7 @@ import 'package:iris/features/control_group/model/enum/player_control_group.dart
 import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/persistent_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyStore);
@@ -24,6 +25,11 @@ final _log = AreaKeyLog(LogKeys.legacyStore);
 /// never overridden.
 class ControlGroupStore extends PersistentStore<ControlGroupState> {
   ControlGroupStore() : super(const ControlGroupState());
+
+  /// Shared-config store: an extra window's shutdown snapshot may predate a
+  /// change another window made (see [PersistentStore.persistOnDispose]).
+  @override
+  bool get persistOnDispose => AppInstance.isPrimary;
 
   static const String _key = KvKeys.controlGroupState;
 
@@ -105,6 +111,16 @@ class ControlGroupStore extends PersistentStore<ControlGroupState> {
 
   @override
   Future<void> save(ControlGroupState s) async {
+    // Multi-window: this is ONE whole-state KV value. An extra window's copy
+    // predates whatever a sibling wrote since it loaded, so writing it back
+    // reverts the shared `group` / visibility choices — dragging the floating
+    // button is enough to roll the primary's group back. Same rule as
+    // AppState's blob gate: only the primary persists shared config; an extra
+    // window keeps its change in memory for this run.
+    if (!AppInstance.isPrimary) {
+      _log.w('ControlGroupState kept in memory (extra window)');
+      return;
+    }
     try {
       await getKvStore().write(key: _key, value: json.encode(s.toJson()));
     } catch (e) {

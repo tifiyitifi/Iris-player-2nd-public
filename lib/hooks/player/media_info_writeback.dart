@@ -11,6 +11,26 @@ class MediaInfoWritebackGate {
   String? _durationKey;
   String? _dimsKey;
 
+  /// Whether the values currently reported by the player may be attributed to
+  /// the file the hook is bound to.
+  ///
+  /// The hook's `file` (and so its media key) changes on a track switch BEFORE
+  /// the backend resets `duration` / `videoParams`: `open()` is awaited inside
+  /// another effect, so the first build of the new file still carries the
+  /// PREVIOUS media's values. Writing them keyed by the NEW file poisoned
+  /// `media_nodes` — every row ended up with its predecessor's duration and
+  /// dimensions (a 44 s clip row showing the 5:47 of the file played before it,
+  /// dimensions taken from a different file), and the write-once mark below then
+  /// dropped the real values arriving moments later.
+  ///
+  /// [openedUri] is the hook's `openedMediaUri` — null until THIS file's open
+  /// completed and never the uri of a superseded open.
+  bool belongsToOpenFile({
+    required String? mediaUri,
+    required String? openedUri,
+  }) =>
+      mediaUri != null && openedUri == mediaUri;
+
   /// Whether the duration of [mediaKey] still has to be written.
   ///
   /// A zero duration is the backend's "not parsed yet" and a null [mediaKey]
@@ -44,4 +64,33 @@ class MediaInfoWritebackGate {
     if (_durationKey == mediaKey) _durationKey = null;
     if (_dimsKey == mediaKey) _dimsKey = null;
   }
+}
+
+/// Whether a written-back triple CHANGED what the row already stored.
+///
+/// Such a write is the only case where open lists have to re-resolve: a value
+/// that was already correct changes no order and no subtitle, and refreshing
+/// for it would cost a queue re-fetch on every single play. A `null` stored
+/// duration counts as a change — filling it moves the row out of the
+/// NULLS-LAST bucket of every duration sort.
+///
+/// Dimensions are compared only when BOTH sides are known: the player hooks key
+/// their write on the `FileItem`, which carries no resolution, so an unknown
+/// stored side must never look like a correction.
+bool mediaInfoCorrects({
+  required int? storedDurationMs,
+  required int durationMs,
+  int? storedWidth,
+  int? storedHeight,
+  int? width,
+  int? height,
+}) {
+  if (storedDurationMs != durationMs) return true;
+  if (storedWidth == null ||
+      storedHeight == null ||
+      width == null ||
+      height == null) {
+    return false;
+  }
+  return storedWidth != width || storedHeight != height;
 }

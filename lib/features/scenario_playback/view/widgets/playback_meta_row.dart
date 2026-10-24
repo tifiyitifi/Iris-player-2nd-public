@@ -7,7 +7,6 @@ import 'package:iris/features/scenario_playback/view/widgets/vm_group_progress_c
 import 'package:iris/utils/file_size_convert.dart' show formatFileSize;
 import 'package:iris/utils/format_duration_hms.dart';
 import 'package:iris/utils/get_localizations.dart';
-import 'package:iris/widgets/chip.dart';
 
 /// Subtitle content shared by the scenario queue and preview tiles.
 ///
@@ -16,10 +15,12 @@ import 'package:iris/widgets/chip.dart';
 ///   (`N seg · duration · size`, plus the optional sort date) shrinks inside a
 ///   [Flexible] while the important progress chip stays intrinsic. This is the
 ///   common case and keeps tile heights uniform — no accidental wrapping.
-/// - Line 2 exists ONLY when a low-frequency secondary badge is present
-///   (duplicate occurrence / explicit "Added"), so those rare rows are a
-///   deliberate two lines instead of overflowing or pushing the progress chip
-///   onto a stray run.
+/// - Line 2 exists ONLY when a low-frequency secondary marker is present
+///   (duplicate occurrence / explicit item), so those rare rows are a
+///   deliberate extra line instead of overflowing or pushing the progress chip
+///   onto a stray run. The explicit marker is PLAIN text aligned with line 1 —
+///   the duplicate badge is the only pill-shaped one, because an occurrence
+///   index is genuinely a badge while "this file was added by hand" is not.
 ///
 /// The virtual-degraded warning is intentionally NOT rendered here: both the
 /// queue and preview leading slots already draw the yellow warning + tooltip,
@@ -130,7 +131,22 @@ class PlaybackMetaRow extends StatelessWidget {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               if (duplicated) DuplicateBadge(occurrenceIndex: occurrenceIndex),
-              if (explicit) const Chip(text: 'Added', primary: true),
+              // A PLAIN, DELIBERATELY GREY line aligned with the meta line
+              // above: the marker is secondary information, so it must not be
+              // a badge/pill and must not carry full-strength text either.
+              // Every container shape (highlighted "Added", a grey chip, a
+              // lighter chip) still drew the eye from the row title; the field
+              // report asked for ordinary grey text.
+              if (explicit)
+                Text(
+                  t.scn_explicit_item_label,
+                  style: TextStyle(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.45),
+                  ),
+                ),
             ],
           ),
         ],

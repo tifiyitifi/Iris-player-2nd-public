@@ -3,6 +3,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/app_identity/actions/app_identity_actions.dart';
 import 'package:iris/features/app_identity/services/shortcut_channel_service.dart';
+import 'package:iris/features/app_instance/services/startup_open_request.dart';
 import 'package:iris/features/background_playback/engine/background_playback_scope.dart';
 import 'package:iris/features/media_library/scan/view/scan_progress_overlay.dart';
 import 'package:iris/features/scenario_playback/scan/view/scenario_source_refresh_overlay.dart';
@@ -112,6 +113,9 @@ class Home extends HookWidget {
       final navigator = Navigator.of(context);
       () async {
         try {
+          // A window spawned by a "play/open in new window" entry carries an
+          // explicit intent: replay it and skip the generic resume below.
+          if (await applyStartupOpenRequest(context)) return;
           final routed =
               await AppIdentityActions.consumeStartupLaunch(navigator);
           if (routed == ActivationResult.notApplicable) {

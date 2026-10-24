@@ -95,6 +95,7 @@ import 'package:iris/models/db/migration/v43_migration.dart';
 import 'package:iris/models/db/migration/v44_migration.dart';
 import 'package:iris/models/db/migration/v45_migration.dart';
 import 'package:iris/models/db/migration/v46_migration.dart';
+import 'package:iris/models/db/db_busy_retry.dart' show kDbBusyTimeoutMs;
 import 'package:iris/models/db/migration/v47_migration.dart';
 import 'package:iris/models/db/migration/v48_migration.dart';
 import 'package:iris/models/db/migration/v49_migration.dart';
@@ -480,6 +481,20 @@ String resolveDbFilePath({
 ///
 /// Other platforms / installed Windows:
 ///   Uses the application documents directory.
+/// Pragmas applied to EVERY connection to the app database.
+///
+/// WHY: several IRIS windows (processes) may open this same SQLite file, each
+/// with its own writer. WAL lets readers and the single writer coexist,
+/// `busy_timeout` makes a competing writer WAIT instead of failing immediately
+/// with SQLITE_BUSY, and `synchronous=NORMAL` is the durable-enough pairing for
+/// WAL. `journal_mode` is persisted in the database file, so an existing
+/// database switches to WAL on its first open after this change.
+DatabaseSetup get multiInstancePragmaSetup => (db) {
+  db.execute('PRAGMA journal_mode=WAL');
+  db.execute('PRAGMA busy_timeout=$kDbBusyTimeoutMs');
+  db.execute('PRAGMA synchronous=NORMAL');
+};
+
 LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     // Build a unique database file name based on the package name.
@@ -516,6 +531,7 @@ LazyDatabase _openConnection() {
     return NativeDatabase(
       file,
       logStatements: false,
+      setup: multiInstancePragmaSetup,
     );
   });
 }

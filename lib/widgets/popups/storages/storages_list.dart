@@ -188,6 +188,9 @@ class StoragesList extends HookWidget {
                 color: Theme.of(context).colorScheme.surface.withAlpha(250),
                 onSelected: (value) {
                   switch (value) {
+                    // Multi-window only; this legacy list does not offer it.
+                    case StorageOptions.openInNewWindow:
+                      break;
                     case StorageOptions.edit:
                       switch (allStorages[index].type) {
                         case StorageType.internal:

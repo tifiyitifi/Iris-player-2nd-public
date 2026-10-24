@@ -4,6 +4,7 @@ import 'dart:ui' show Offset, Size;
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart';
 import 'package:iris/models/store/app_state.dart' show DialSide;
+import 'package:iris/utils/seek_tail_guard.dart';
 
 /// Dual-ring dial scrubber math ("Ring dial" one-handed design).
 ///
@@ -53,7 +54,10 @@ class PhoneRingDialMath {
   /// end cannot fire completion while pulling back stays risk-free; playing
   /// through the remaining tail completes naturally (release-at-end advances
   /// only when autoplay allows).
-  static const int endGuardMs = 100;
+  ///
+  /// Shares [kSeekTailGuardMs] with every other seek path — this value used to
+  /// be the ring dial's private 100 ms while a step seek used 1 ms.
+  static const int endGuardMs = kSeekTailGuardMs;
 
   /// Random jump avoids the media tail so it can never trigger completion.
   static const Duration randomTailGuard = Duration(seconds: 5);

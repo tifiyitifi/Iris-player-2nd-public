@@ -72,8 +72,8 @@ void main() {
       'selection-restore race', () async {
     // A FRESH store reproduces the cold start: its onReady → refreshScenarios
     // (which restores activeScenarioId) is still in flight when Home fires
-    // the resume. Awaiting only `initialized` used to throw
-    // "No active PlaybackScenario selected" here.
+    // the resume. Awaiting only `initialized` used to leave the resume
+    // without an active scenario here.
     final fresh = PlaybackScenarioStore();
     await ScenarioResolvedActions.resumeScenarioPlayback(
       store: fresh,

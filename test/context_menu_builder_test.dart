@@ -244,6 +244,57 @@ void main() {
       expect(items[seekStepIndex].hint, 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s');
     });
 
+    test('reveal-in-explorer is a top-level entry right after Open', () {
+      final entries = buildPotPlayerContextMenu(
+        isMediaKit: true,
+        supportsSync: true,
+        supportsTrack: true,
+        isFullScreen: false,
+        isAlwaysOnTop: false,
+        seekStepLabel: 'Seek step',
+        seekStepHint: 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s',
+        canRevealInExplorer: true,
+        revealInExplorerLabel: 'Open in Explorer',
+      );
+
+      final openIndex = entries.indexWhere(
+        (e) => e is ContextMenuSubmenu && e.label == 'Open',
+      );
+      final revealIndex = entries.indexWhere(
+        (e) =>
+            e is ContextMenuItem &&
+            e.action == PotPlayerAction.revealCurrentFileInExplorer,
+      );
+
+      expect(openIndex, isNonNegative);
+      expect(revealIndex, openIndex + 1,
+          reason: 'reveal entry sits directly below the Open submenu');
+      final item = entries[revealIndex] as ContextMenuItem;
+      expect(item.label, 'Open in Explorer');
+      // The divider still separates the reveal entry from Playback.
+      expect(entries[revealIndex + 1], isA<ContextMenuDivider>());
+    });
+
+    test('reveal-in-explorer entry is absent when the media is not revealable',
+        () {
+      final entries = buildPotPlayerContextMenu(
+        isMediaKit: true,
+        supportsSync: true,
+        supportsTrack: true,
+        isFullScreen: false,
+        isAlwaysOnTop: false,
+        seekStepLabel: 'Seek step',
+        seekStepHint: 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s',
+      );
+
+      expect(
+        flattenItems(entries)
+            .any((i) => i.action == PotPlayerAction.revealCurrentFileInExplorer),
+        isFalse,
+      );
+      expect(entries.first, isA<ContextMenuSubmenu>());
+    });
+
     test('includes exit at bottom', () {
       final entries = buildPotPlayerContextMenu(
         isMediaKit: true,

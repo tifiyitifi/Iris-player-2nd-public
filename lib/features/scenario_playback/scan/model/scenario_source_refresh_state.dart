@@ -73,6 +73,10 @@ abstract class ScenarioSourceRefreshState
     @Default(0) int dedupedSources,
     @Default(0) int missingExplicitFiles,
 
+    /// Manually added (explicit) items whose metadata the refresh re-probed
+    /// because no source scan covered them.
+    @Default(0) int probedExplicitFiles,
+
     /// Root count of the active unit's scan (display only).
     @Default(0) int currentUnitTotalDirs,
     @Default(0) int currentUnitScannedDirs,

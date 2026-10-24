@@ -259,6 +259,14 @@ class PhoneRingDialScrubber extends HookWidget {
 
     Future<void> finishScrub(Duration committed) async {
       _dialLog.d('[dial-drag] commit target=${committed.inMilliseconds}');
+      // The dial commits a POSITION inside the shared tail guard
+      // (`kSeekTailGuardMs`), it is not a "finish this item" gesture: the
+      // landing stays 100 ms short of the end and the queue advances by
+      // PLAYING that tail out (`if (autoPlay) play()` below → EOF →
+      // `completed`). Do not "unify" it with the slider's
+      // `isSeekReleaseFinish` + `finishSeek` release: a wayfinding dial
+      // jumping exactly onto EOF while paused is not the intent here, and with
+      // autoPlay off the difference is a 100 ms position, not an advance.
       await player.seek(
           PhoneRingDialMath.clampSeekTarget(clampToWindow(committed), duration));
       _dialLog.d('[dial-drag] end committed=$committed autoPlay=$autoPlay '

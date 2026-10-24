@@ -50,7 +50,9 @@ import 'package:iris/features/media_library/scan/view/scan_rescan_reminder_dialo
     show openScanRescanReminder;
 import 'package:iris/features/meta_settings/engine/browse_media_scope.dart';
 import 'package:iris/features/meta_settings/engine/playback_resume.dart';
+import 'package:iris/features/meta_settings/engine/step_tail_finish_mode.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
+import 'package:iris/models/enums/step_tail_finish_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/meta_settings/view/setting_texts.dart';
@@ -263,6 +265,18 @@ abstract final class EditorBindings {
                     s.useMetadataSettings && MetaSettingsModule.ready),
             t),
         open: _openVideoCachePresetDialog,
+      ),
+
+      // ── Play · tail-step policy (`playback.` AUX) ──
+      'playback_step_tail_finish': _tile(
+        icon: Icons.skip_next_rounded,
+        titleKey: 'step_tail_finish',
+        subtitle: (s, t) => _stepTailFinishLabel(
+            resolveStepTailFinishMode(s,
+                metadataEnabled:
+                    s.useMetadataSettings && MetaSettingsModule.ready),
+            t),
+        open: _openStepTailFinishDialog,
       ),
 
       // ── General ──
@@ -1274,6 +1288,27 @@ abstract final class EditorBindings {
     );
   }
 
+  /// Tail-step policy dialog. The subtitle spells out the two runtime halves of
+  /// the policy (playing = advance, paused = hold) because the radios only name
+  /// the threshold.
+  static void _openStepTailFinishDialog(BuildContext context) {
+    final t = getLocalizations(context);
+    final store = useAppStore();
+    showEnumRadioDialog<StepTailFinishMode>(
+      context: context,
+      title: SettingTexts.title('step_tail_finish', t),
+      subtitle: SettingTexts.subtitle('step_tail_finish_desc', t),
+      values: StepTailFinishMode.values,
+      currentValue: resolveStepTailFinishMode(
+        store.state,
+        metadataEnabled:
+            store.state.useMetadataSettings && MetaSettingsModule.ready,
+      ),
+      labelOf: (v) => _stepTailFinishLabel(v, t),
+      onSelected: (v) => unawaited(store.updateStepTailFinishMode(v)),
+    );
+  }
+
   // Shared enum→label helpers: the row subtitle and its dialog must report the
   // SAME localized name (previously duplicated as inline switches).
   static String _browseScopeLabel(BrowseMediaScope scope, AppLocalizations t) =>
@@ -1321,6 +1356,15 @@ abstract final class EditorBindings {
         VideoCachePreset.low => t.set_cache_preset_low,
         VideoCachePreset.balanced => t.set_cache_preset_balanced,
         VideoCachePreset.high => t.set_cache_preset_high,
+      };
+
+  /// Tail-step threshold → localized label, shared by the row subtitle and its
+  /// dialog so the two never disagree.
+  static String _stepTailFinishLabel(
+          StepTailFinishMode v, AppLocalizations t) =>
+      switch (v) {
+        StepTailFinishMode.strict => t.set_step_tail_finish_strict,
+        StepTailFinishMode.window => t.set_step_tail_finish_window,
       };
 
   /// Builds a reactive tile whose subtitle recomputes from live state on

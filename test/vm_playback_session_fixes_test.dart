@@ -14,6 +14,7 @@ import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 import 'helpers/sqlite3_loader.dart';
 
@@ -266,5 +267,100 @@ void main() {
     expect(ctrl.state.item, isNull);
     expect(ctrl.state.lastError,
         vmLocalizations().vm_error_segment_unplayable);
+  });
+
+  test('H7: a cross-segment finish feed lands ON the last segment end',
+      () async {
+    await seed('a0.mp4');
+    await seed('a1.mp4');
+    final a = _item('rA|d|#1', ['a0.mp4', 'a1.mp4']);
+    final ctrl = VirtualMediaController.instance;
+    await ctrl.startSession(queue: [a], queueIndex: 0);
+    expect(ctrl.state.segmentIndex, 0);
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isFalse);
+
+    // Tail step / release at 100% from segment 0: the caller axis target is
+    // the merged item's end, so the jump must open the LAST segment ON its end
+    // and carry the one-shot finish handoff (the hook then seeks to duration).
+    await ctrl.jumpToSegment(1, localMs: 60000, finishAtEnd: true);
+    expect(ctrl.state.segmentIndex, 1);
+    expect(ctrl.state.pendingSeekMs, 60000,
+        reason: 'the feed target must be the segment end, not the tail guard');
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isTrue);
+
+    // The handoff is one-shot: an ordinary jump afterwards must not finish,
+    // and it keeps the SHARED tail guard (`segDur - kSeekTailGuardMs`), not the
+    // old `segDur - 1` rounding error that sits inside the final GOP.
+    await ctrl.jumpToSegment(0, localMs: 60000);
+    expect(ctrl.state.pendingSeekMs, 60000 - kSeekTailGuardMs);
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isFalse);
+
+    await ctrl.deactivateForNavigation();
+  });
+
+  test('H7: an ordinary jump into a segment tail keeps the shared guard',
+      () async {
+    await seed('a0.mp4');
+    await seed('a1.mp4');
+    final a = _item('rA|d|#1', ['a0.mp4', 'a1.mp4']);
+    final ctrl = VirtualMediaController.instance;
+    await ctrl.startSession(queue: [a], queueIndex: 0);
+
+    // A cross-segment scrub target far past the segment end clamps to the
+    // shared guard, never to `segDur - 1` (inside the segment's final GOP).
+    await ctrl.jumpToSegment(1, localMs: 1 << 20);
+    expect(ctrl.state.pendingSeekMs, 60000 - kSeekTailGuardMs);
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isFalse);
+
+    await ctrl.deactivateForNavigation();
+  });
+
+  test('H7: a finish target that is NOT the segment end stays an ordinary jump',
+      () async {
+    // A 99%-release target inside the last segment must play the tail out, not
+    // jump straight to the end (parity with the single-file finishSeek target).
+    await seed('a0.mp4');
+    await seed('a1.mp4');
+    final a = _item('rA|d|#1', ['a0.mp4', 'a1.mp4']);
+    final ctrl = VirtualMediaController.instance;
+    await ctrl.startSession(queue: [a], queueIndex: 0);
+
+    await ctrl.jumpToSegment(1, localMs: 30000, finishAtEnd: true);
+    expect(ctrl.state.pendingSeekMs, 30000);
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isFalse);
+
+    await ctrl.deactivateForNavigation();
+  });
+
+  test('H7: a SAME-segment finish target that clamps onto the current position '
+      'is a no-op', () async {
+    // The cross-segment no-op check compares against the target the jump would
+    // really seek to. Using the intent-relaxed clamp there made an in-guard
+    // "finish" target look different from the position we already hold and
+    // triggered a pointless re-feed of the same spot.
+    await seed('a0.mp4');
+    final a = _item('rA|d|#1', ['a0.mp4']);
+    final ctrl = VirtualMediaController.instance;
+    await ctrl.startSession(queue: [a], queueIndex: 0);
+
+    // Land on the shared tail guard of the CURRENT segment (59900 of 60000).
+    await ctrl.jumpToSegment(0, localMs: 60000);
+    expect(ctrl.state.pendingSeekMs, 60000 - kSeekTailGuardMs);
+    // The hook clears the pending target once it lands: reproduce that state.
+    ctrl.store.replace(
+      ctrl.store.state.copyWith(pendingSeekMs: null),
+    );
+
+    final generation = ctrl.feedGeneration;
+    // 50 ms short of the end is inside the guard band: an ordinary jump, which
+    // clamps back onto the position we already hold.
+    await ctrl.jumpToSegment(0, localMs: 60000 - 50, finishAtEnd: true);
+
+    expect(ctrl.state.pendingSeekMs, isNull);
+    expect(ctrl.feedGeneration, generation,
+        reason: 'the requested target IS the current position — no re-feed');
+    expect(ctrl.feedFinishesItem(ctrl.feedGeneration), isFalse);
+
+    await ctrl.deactivateForNavigation();
   });
 }

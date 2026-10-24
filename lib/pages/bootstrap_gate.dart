@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/app_startup.dart';
 import 'package:iris/features/app_update/view/report_previous_update.dart';
+import 'package:iris/features/media_library/view/storage_duplicate_repair_view.dart';
 import 'package:iris/store/kv/secure_kv.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -76,6 +77,14 @@ class BootstrapGate extends HookWidget {
 
         try {
           await (initialize ?? completeStartupInitialization)();
+          // Duplicate same-volume entries are a data hazard (a path-keyed write
+          // through one entry misses the other's rows). Offer the merge now,
+          // while the app is still on the splash: the DB and stores are ready.
+          try {
+            await runStorageDuplicateRepairFlow(context);
+          } catch (e, s) {
+            areaKeyLog.e('Storage duplicate repair failed: $e', e, s);
+          }
           ready.value = true;
         } catch (e, s) {
           // Keep the user out of the dead-spinner state and out of the app:

@@ -1,3 +1,21 @@
+## v2.0.11
+
+### Changelog
+
+1. Player tail-step mpv parity: a forward step that reaches the end stays a normal relative keyframe seek and finishes through the playloop's own EOF collapse (later presses swallowed, 300ms collapse window), instead of an absolute seek per repeat that parked the picture at the tail; step presses arriving while a media switch is in flight are dropped, and a rewind or absolute seek clears the pending tail arm
+2. Player attribution fixes: live-progress samples and media-info write-back are bound to the media whose open completed, so the previous file's tail position can no longer be persisted under the next entry and every row no longer inherits its predecessor's duration and dimensions; a corrected duration re-resolves open lists
+3. Media library hardening: duplicate-repair merges position and completion from the same playthrough (a half-watched row is no longer marked finished), folds storage base-path case on case-insensitive filesystems, keeps a survivor source on a third storage instead of deleting it by path alone, and counts path depth like the scan; progress writes retry transient SQLITE_BUSY/LOCKED under a fail-fast busy_timeout instead of dropping the sample; the cross-window scan lease is taken after the interrupted-scan prompt; a startup open request for a deleted library falls back to the normal resume
+4. Scenario rescan refreshes manually added items: explicit files outside every scan root are re-probed file by file (existence-checked first, offline-safe), an open queue re-resolves through the media generation so corrected durations and order appear without restarting, and the explicit marker is now recessive grey text instead of a badge
+5. Windows: the video right-click menu gains an Explorer reveal entry for the currently fed file (gated on a revealable on-disk path)
+
+### 更新日志
+
+1. 播放器尾部步进改为 mpv 对齐：到达结尾的前进步进保持普通相对关键帧 seek，由 playloop 自身的 EOF 折叠完成（后续按压吞掉、300ms 折叠窗口），不再每次重复都发绝对 seek 导致画面卡在片尾；媒体切换途中的步进按压直接丢弃，倒带与绝对跳转会清除挂起的尾部 arm
+2. 播放器归因修复：实时进度采样与媒体信息回写只归属 open 已完成的那个媒体，前一个文件的尾部位置不再写到下一个条目下，每行不再继承前一个文件的时长与分辨率；时长被修正时打开的列表会重新解析
+3. 媒体库加固：重复存储合并改为同一次播放的位置与完成标记一起走（半看行不再被误标完成），大小写不敏感文件系统上存储根路径按自身规则折叠，第三方存储上的同路径来源不再按 path 误删，path depth 与扫描口径对齐；进度写在 fail-fast busy_timeout 下对瞬时 SQLITE_BUSY/LOCKED 做有界重试而不是丢采样；跨窗口扫描租约改在中断扫描弹窗之后再拿；启动打开请求指向已删除媒体库时回退到常规恢复
+4. 场景重扫刷新手动添加项：扫描根覆盖不到的显式文件逐个重探测（先做存在性检查、离线安全），打开的队列通过 media generation 重新解析，修正后的时长与排序无需重启即生效；显式标记改为低调灰色文字，不再是 badge
+5. Windows：视频右键菜单新增定位当前播放文件（在 Explorer 中选中该文件，仅在可定位的本地路径下出现）
+
 ## v2.0.10
 
 ### Changelog

@@ -30,6 +30,9 @@ enum StorageType {
 enum StorageOptions {
   edit,
   remove,
+
+  /// Multi-window: open this folder in a fresh IRIS process (no playback).
+  openInNewWindow,
 }
 
 abstract class _Storage {

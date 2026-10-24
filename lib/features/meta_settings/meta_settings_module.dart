@@ -251,8 +251,14 @@ class MetaSettingsModule {
   ///
   /// NOTE: no gate-on guard here — the OFF transition itself must land as a
   /// 'false' row, otherwise a restart would silently re-enable.
-  static Future<void> persistState(dynamic appliedState) async {
-    if (!_ready || appliedState == null) return;
+  ///
+  /// Returns true when the rows landed (or there was nothing to write).
+  /// Returns false when the DB rejected the write: the caller MUST then treat
+  /// its diff baseline as stale, otherwise the fields it tried to write are
+  /// silently missing from the mirror forever (the next diff would not
+  /// contain them any more).
+  static Future<bool> persistState(dynamic appliedState) async {
+    if (!_ready || appliedState == null) return true;
     try {
       await repo.replaceAllRawEntries(
         StateBridge.encodeRows(appliedState)
@@ -263,8 +269,10 @@ class MetaSettingsModule {
                 ))
             .toList(),
       );
+      return true;
     } catch (e) {
       metaLog.w('persistState failed: $e');
+      return false;
     }
   }
 
@@ -274,8 +282,13 @@ class MetaSettingsModule {
   /// The caller (AppStore) diffs the new snapshot against the last persisted
   /// one, so a single setting toggle writes ONE row on the UI isolate instead
   /// of delete+reinserting the whole `app.*` namespace.
-  static Future<void> persistChangedRows(Map<String, String> changed) async {
-    if (!_ready || changed.isEmpty) return;
+  ///
+  /// Returns true when the rows landed (or there was nothing to write).
+  /// Returns false when the DB rejected the write — the caller MUST keep its
+  /// diff baseline unchanged, so the failed fields are retried by the next
+  /// diff instead of disappearing from the mirror.
+  static Future<bool> persistChangedRows(Map<String, String> changed) async {
+    if (!_ready || changed.isEmpty) return true;
     try {
       await repo.upsertRawValues(
         changed.entries
@@ -285,8 +298,10 @@ class MetaSettingsModule {
                 ))
             .toList(),
       );
+      return true;
     } catch (e) {
       metaLog.w('persistChangedRows failed: $e');
+      return false;
     }
   }
 }

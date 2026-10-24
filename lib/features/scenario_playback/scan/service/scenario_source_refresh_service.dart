@@ -8,6 +8,8 @@ import 'package:iris/features/media_library/scan/model/recursive_scan_state.dart
     show ScanPhase;
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
+import 'package:iris/features/media_library/services/media_uri.dart';
+import 'package:iris/features/scenario_playback/actions/explicit_file_probe.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_explicit_item.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_source.dart';
 import 'package:iris/features/scenario_playback/scan/model/scenario_source_refresh_state.dart';
@@ -38,6 +40,7 @@ class ScenarioSourceRefreshUnitSpec {
     required this.rootPaths,
     required this.directories,
     required this.explicitItems,
+    required this.explicitProbeTargets,
     required this.weight,
   });
 
@@ -52,6 +55,16 @@ class ScenarioSourceRefreshUnitSpec {
   /// Explicit single-file picks that live on this storage (only the direct
   /// file itself is existence-checked — never its parent subtree).
   final List<ScenarioExplicitItem> explicitItems;
+
+  /// Explicit items the source scan will NOT re-probe, i.e. the ones whose
+  /// canonical path falls outside every [rootPaths] entry.
+  ///
+  /// The directory scan re-probes everything under its roots, so re-probing a
+  /// covered item would be duplicate work. Anything outside — including EVERY
+  /// item of an explicit-only storage (no roots at all) — is refreshed by a
+  /// targeted per-file probe instead, so "Rescan source" really does update
+  /// every row the queue shows.
+  final List<ScenarioExplicitItem> explicitProbeTargets;
 
   /// Work weight used for the batch progress bar.
   final int weight;
@@ -91,6 +104,33 @@ List<String> collapseRootPaths(Iterable<String> rawPaths) {
     if (!covered) kept.add(path);
   }
   return kept;
+}
+
+/// Whether [filePath] lies at or below [rootPath], comparing PATH SEGMENTS.
+///
+/// A plain string prefix is not enough: the root `…/20260610/001` must not
+/// claim `…/20260610/0010/…` or `…/20260610/001-backup/…`. An empty root is the
+/// storage root and covers everything.
+///
+/// [foldCase] mirrors the platform's filesystem semantics (Windows drive / UNC
+/// / SMB shares fold, POSIX/SAF/remote do not).
+bool pathInsideRoot({
+  required String filePath,
+  required String rootPath,
+  bool foldCase = false,
+}) {
+  String norm(String p) {
+    // Backslashes arrive from legacy / drag-drop absolute Windows forms; the
+    // canonical DOMAIN form is forward-slash, so fold the separator before
+    // comparing (`canonicalDbPath` itself never rewrites `\`).
+    final canonical = canonicalDbPath(p.replaceAll('\\', '/'));
+    return foldCase ? canonical.toLowerCase() : canonical;
+  }
+
+  final file = norm(filePath);
+  final root = norm(rootPath);
+  if (root.isEmpty) return true;
+  return file == root || file.startsWith('$root/');
 }
 
 /// Plans a refresh run from persisted sources + explicit items.
@@ -186,12 +226,38 @@ ScenarioSourceRefreshPlan planSourceRefresh({
       rootPaths: resolvedRoots,
       directories: dirs,
       explicitItems: explicit,
+      explicitProbeTargets: explicitItemsOutsideRoots(
+        explicitItems: explicit,
+        rootPaths: resolvedRoots,
+        foldCase: storage.type == StorageType.network ||
+            pathRidesCaseInsensitiveFs(storage.basePath.join('/')),
+      ),
       weight: (nodeWeightByStorage[id] ?? 1).clamp(1, 1 << 30),
     ));
   }
 
   return ScenarioSourceRefreshPlan(units: units, dedupedSources: dropped);
 }
+
+/// The explicit items a source scan will NOT reach, i.e. the ones outside every
+/// scan root (see [ScenarioSourceRefreshUnitSpec.explicitProbeTargets]).
+///
+/// No roots (an explicit-only storage) means nothing is covered, so every item
+/// is returned.
+List<ScenarioExplicitItem> explicitItemsOutsideRoots({
+  required List<ScenarioExplicitItem> explicitItems,
+  required List<String> rootPaths,
+  bool foldCase = false,
+}) =>
+    [
+      for (final item in explicitItems)
+        if (!rootPaths.any((root) => pathInsideRoot(
+              filePath: item.path,
+              rootPath: root,
+              foldCase: foldCase,
+            )))
+          item,
+    ];
 
 String _parentOf(String path) {
   final canonical = canonicalDbPath(path);
@@ -207,11 +273,19 @@ String _parentOf(String path) {
 /// explicit single files against their parent listings, then refreshes the
 /// resolved queue exactly once.
 class ScenarioSourceRefreshService {
-  ScenarioSourceRefreshService({this.listDir});
+  ScenarioSourceRefreshService({this.listDir, this.probeExplicit});
 
   /// Listing seam for tests (defaults to the storage's detailed listing).
   final Future<FileListResult> Function(Storage storage, List<String> path)?
       listDir;
+
+  /// Targeted explicit-item probe seam (defaults to
+  /// [probeExplicitFilesDetailed]).
+  ///
+  /// Exists so the "source refresh also refreshes manually added items" pass
+  /// can be asserted without touching the filesystem or the Shell probe.
+  final Future<ExplicitProbeOutcome> Function(
+      List<ExplicitFileProbeTarget> targets)? probeExplicit;
 
   /// Entry point. Returns true when a refresh actually ran to completion (the
   /// queue may have been refreshed); false when it was cancelled / refused.
@@ -325,6 +399,7 @@ class ScenarioSourceRefreshService {
     scanStore.setOverlaySuppressed(true);
 
     var missingExplicit = 0;
+    var probedExplicit = 0;
     var batchAborted = false;
 
     // Mirror the generic scan store's per-dir progress into the batch store.
@@ -356,9 +431,17 @@ class ScenarioSourceRefreshService {
         }
 
         // Explicit-only unit: no directory to scan. Go straight to the
-        // direct-file existence check (never walk the parent subtree).
+        // direct-file existence check (never walk the parent subtree), then
+        // refresh the metadata of the files that are still there.
         if (entry.unit.rootPaths.isEmpty) {
-          missingExplicit += await checkExplicitFiles(entry.unit);
+          final check = await checkExplicitFiles(entry.unit);
+          missingExplicit += check.missing;
+          if (probeEnabled) {
+            probedExplicit += await probeUncoveredExplicitFiles(
+              entry.unit,
+              presentPaths: check.presentPaths,
+            );
+          }
           batchStore.finishUnit(unitIndex);
           continue;
         }
@@ -392,8 +475,16 @@ class ScenarioSourceRefreshService {
           break;
         }
 
-        // Existence-check the explicit single files on this (reachable) storage.
-        missingExplicit += await checkExplicitFiles(entry.unit);
+        // Existence-check the explicit single files on this (reachable) storage,
+        // then refresh the ones the scan above could not reach.
+        final check = await checkExplicitFiles(entry.unit);
+        missingExplicit += check.missing;
+        if (probeEnabled) {
+          probedExplicit += await probeUncoveredExplicitFiles(
+            entry.unit,
+            presentPaths: check.presentPaths,
+          );
+        }
         batchStore.finishUnit(unitIndex);
       }
     } finally {
@@ -412,6 +503,7 @@ class ScenarioSourceRefreshService {
         }
       }
       batchStore.recordMissingExplicitFiles(missingExplicit);
+      batchStore.recordProbedExplicitFiles(probedExplicit);
 
       // ── 6. Refresh the resolved queue ONCE ──
       // A stopped run keeps whatever each finished storage already wrote (the
@@ -450,18 +542,64 @@ class ScenarioSourceRefreshService {
     return !batchAborted;
   }
 
+  /// Re-probes the explicit items the source scan does NOT cover.
+  ///
+  /// Sources refresh their own subtrees; a manually added file outside them
+  /// would otherwise keep whatever metadata it had (the field report: 19
+  /// "added" rows kept a poisoned duration after "Rescan source" said it ran).
+  /// Only files the existence check just confirmed are probed — a missing file
+  /// has nothing to probe, and an unreachable parent listing proves nothing.
+  ///
+  /// Returns the number of files whose row was actually written.
+  Future<int> probeUncoveredExplicitFiles(
+    ScenarioSourceRefreshUnitSpec unit, {
+    required Set<String> presentPaths,
+  }) async {
+    final present = {for (final p in presentPaths) canonicalDbPath(p)};
+    final targets = [
+      for (final item in unit.explicitProbeTargets)
+        if (present.contains(canonicalDbPath(item.path))) item,
+    ];
+    if (targets.isEmpty) return 0;
+    try {
+      final probe = probeExplicit ?? probeExplicitFilesDetailed;
+      final outcome = await probe([
+        for (final item in targets)
+          ExplicitFileProbeTarget(
+            storageId: unit.storage.id,
+            path: canonicalDbPath(item.path),
+            uri: mediaNodePlayableUri(
+              unit.storage,
+              pathConv(canonicalDbPath(item.path)),
+            ),
+          ),
+      ]);
+      return outcome.written;
+    } catch (e) {
+      // A probe failure only costs the refresh of these rows; the scan itself
+      // already succeeded.
+      areaKeyLog.w('Explicit probe pass failed: $e');
+      return 0;
+    }
+  }
+
   /// Existence-check explicit single files: list each file's PARENT directory
   /// and delete the media node only when the listing succeeded and the file is
   /// genuinely absent. Failed listings never delete (offline-safe).
   ///
-  /// Returns the number of files confirmed missing (and removed).
-  Future<int> checkExplicitFiles(ScenarioSourceRefreshUnitSpec unit) async {
-    if (unit.explicitItems.isEmpty) return 0;
+  /// Returns the number of files confirmed missing (and removed) plus the
+  /// canonical paths confirmed present (the only ones worth probing).
+  Future<({int missing, Set<String> presentPaths})> checkExplicitFiles(
+      ScenarioSourceRefreshUnitSpec unit) async {
+    if (unit.explicitItems.isEmpty) {
+      return (missing: 0, presentPaths: const <String>{});
+    }
     final byParent = <String, List<ScenarioExplicitItem>>{};
     for (final item in unit.explicitItems) {
       byParent.putIfAbsent(_parentOf(item.path), () => []).add(item);
     }
 
+    final presentPaths = <String>{};
     var missing = 0;
     for (final entry in byParent.entries) {
       final parent = entry.key;
@@ -492,6 +630,8 @@ class ScenarioSourceRefreshService {
         if (!present.contains(name.toLowerCase())) {
           toDelete.add(item.path);
           missing++;
+        } else {
+          presentPaths.add(canonicalDbPath(item.path));
         }
       }
       if (toDelete.isNotEmpty) {
@@ -503,7 +643,7 @@ class ScenarioSourceRefreshService {
         }
       }
     }
-    return missing;
+    return (missing: missing, presentPaths: presentPaths);
   }
 
   /// Best-effort weight estimate for one storage, from the top-level node

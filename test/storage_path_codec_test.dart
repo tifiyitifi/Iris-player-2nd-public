@@ -103,4 +103,69 @@ void main() {
     expect(StoragePathCodec.isStaleAbsoluteBase('s', 'kid'), isFalse);
     expect(StoragePathCodec.isStaleAbsoluteBase('s', ''), isFalse);
   });
+
+  group('sameBasePath (duplicate-entry path root)', () {
+    test('separators and trailing slashes do not matter', () {
+      expect(StoragePathCodec.sameBasePath(const ['E:'], const ['E:']), isTrue);
+      expect(
+        StoragePathCodec.sameBasePath(
+            const ['E:', 'Movies'], const ['E:\\Movies\\']),
+        isTrue,
+      );
+    });
+
+    test('an NTFS drive folds case: one root however it was spelled', () {
+      expect(
+        StoragePathCodec.sameBasePath(
+            const ['E:', 'Movies'], const ['e:', 'movies']),
+        isTrue,
+      );
+      expect(
+        StoragePathCodec.sameBasePath(const ['E:'], const ['e:']),
+        isTrue,
+      );
+    });
+
+    test('a UNC share folds case too', () {
+      expect(
+        StoragePathCodec.sameBasePath(
+          const [r'\\SERVER\Share'],
+          const [r'\\server\share'],
+        ),
+        isTrue,
+      );
+    });
+
+    test('a different base is a different path root', () {
+      expect(
+        StoragePathCodec.sameBasePath(const ['E:'], const ['E:', 'Movies']),
+        isFalse,
+      );
+      expect(
+        StoragePathCodec.sameBasePath(
+            const ['E:', 'Movies'], const ['F:', 'Movies']),
+        isFalse,
+      );
+    });
+
+    test('POSIX and SAF bases stay case-sensitive', () {
+      expect(
+        StoragePathCodec.sameBasePath(
+          const ['/storage/emulated/0/Movies'],
+          const ['/storage/emulated/0/movies'],
+        ),
+        isFalse,
+      );
+      const tree =
+          'content://com.android.externalstorage.documents/tree/primary%3AMovies';
+      const other =
+          'content://com.android.externalstorage.documents/tree/primary%3Amovies';
+      expect(StoragePathCodec.sameBasePath([tree], [other]), isFalse);
+    });
+
+    test('a null base is never the same root', () {
+      expect(StoragePathCodec.sameBasePath(null, const ['E:']), isFalse);
+      expect(StoragePathCodec.sameBasePath(const ['E:'], null), isFalse);
+    });
+  });
 }

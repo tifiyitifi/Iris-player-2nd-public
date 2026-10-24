@@ -168,20 +168,22 @@ class AppIdentityActions {
     bool autoplay,
   ) async {
     final firstLaunch = entry.initializedAt == null;
-    final ws =
+    // 1. The entry's CANONICAL fg/bg rows: they own the shared definition, and
+    //    the primary window plays directly in them.
+    final canonical =
         await scenarioStore.ensureEntryWorkspace(entry.workspaceScenarioId);
     // Every independent entry owns its own fg/bg PAIR: its 副音 workspace is
     // created alongside the foreground one (prefs stay global; only the
     // queue/definition is per context).
-    final bgWs = await scenarioStore
+    final canonicalBg = await scenarioStore
         .ensureEntryBackgroundWorkspace(entry.backgroundWorkspaceScenarioId);
 
     var next = entry;
-    if (next.workspaceScenarioId != ws.id) {
-      next = next.copyWith(workspaceScenarioId: ws.id);
+    if (next.workspaceScenarioId != canonical.id) {
+      next = next.copyWith(workspaceScenarioId: canonical.id);
     }
-    if (next.backgroundWorkspaceScenarioId != bgWs.id) {
-      next = next.copyWith(backgroundWorkspaceScenarioId: bgWs.id);
+    if (next.backgroundWorkspaceScenarioId != canonicalBg.id) {
+      next = next.copyWith(backgroundWorkspaceScenarioId: canonicalBg.id);
     }
 
     if (firstLaunch) {
@@ -189,7 +191,13 @@ class AppIdentityActions {
       if (seedSid != null) {
         final source = await scenarioStore.getScenario(seedSid);
         if (source != null) {
-          await scenarioStore.overrideWorkspace(workspace: ws, source: source);
+          // Seed the CANONICAL row: the definition is shared, so every window
+          // (and the entry's own shortcut) inherits it. A window private row is
+          // copied from it right below.
+          await scenarioStore.overrideWorkspace(
+            workspace: canonical,
+            source: source,
+          );
           await scenarioStore.bumpPlaybackVersion();
         } else {
           await _infoDialog(
@@ -205,6 +213,19 @@ class AppIdentityActions {
     if (next != entry) {
       await store.upsertEntry(next);
     }
+
+    // 2. The row THIS window actually plays: the canonical one for the primary,
+    //    a private claim for an extra window (seeded with the canonical
+    //    DEFINITION, never with another window's queue).
+    final ws = await scenarioStore.ensureWindowEntryWorkspace(
+      entryId: entry.id,
+      sharedId: canonical.id,
+    );
+    await scenarioStore.ensureWindowEntryWorkspace(
+      entryId: entry.id,
+      sharedId: canonicalBg.id,
+      background: true,
+    );
 
     if (scenarioStore.state.activeScenarioId != ws.id) {
       await scenarioStore.setActiveScenario(ws.id);

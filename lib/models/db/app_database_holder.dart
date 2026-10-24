@@ -3,8 +3,49 @@ import 'package:drift_db_viewer/drift_db_viewer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:iris/models/db/app_database.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/platform.dart';
+import 'package:path/path.dart' as p;
 final areaKeyLog = AreaKeyLog(LogKeys.legacyDb);
+
+/// Runs [body] while holding a cross-process "database open" lease.
+///
+/// WHY: schema migrations run as plain statements inside drift's `beforeOpen`
+/// (`GeneratedDatabase.beforeOpen` — no transaction, and drift does not guard
+/// against other processes). Every IRIS window opens the same file, so a second
+/// window starting while the first one migrates would read the OLD
+/// `user_version`, replay the same `ALTER`/`CREATE` steps and fail with
+/// "duplicate column" / "table already exists" — leaving that window's database
+/// unusable. Serializing open+migrate makes the loser open an already-upgraded
+/// file (drift then runs no migration at all).
+///
+/// Contention is waited out (migrations are short); a lease that never arrives
+/// only logs and proceeds, because startup must never hang on a broken lock
+/// directory.
+@visibleForTesting
+Future<T> withDbOpenLease<T>({
+  required String dirPath,
+  required Future<T> Function() body,
+  int attempts = 150,
+  Duration delay = const Duration(milliseconds: 200),
+}) async {
+  final lease = AppLease(lockPath: p.join(dirPath, 'db-open.lock'));
+  var acquired = await lease.acquire();
+  for (var i = 0; i < attempts && !acquired; i++) {
+    await Future<void>.delayed(delay);
+    acquired = await lease.acquire();
+  }
+  if (!acquired) {
+    areaKeyLog.w('db-open lease not acquired after '
+        '${attempts * delay.inMilliseconds}ms; opening without it');
+  }
+  try {
+    return await body();
+  } finally {
+    await lease.release();
+  }
+}
 
 /// Singleton holder for the app's Drift database.
 ///
@@ -21,12 +62,24 @@ class AppDatabaseHolder {
   static AppDatabase get instance => _instance;
 
   static Future<void> init() async {
-    final db = AppDatabase();
-    // Force the database to open
-    await db.customSelect('SELECT 1 ').get();
-    _instance = db;
+    Future<void> openAndStore() async {
+      final db = AppDatabase();
+      // Force the database to open (runs onCreate/onUpgrade on first use).
+      await db.customSelect('SELECT 1 ').get();
+      _instance = db;
+    }
 
-    await _debugDump(db);
+    if (isDesktop) {
+      // Multi-window: only one window may migrate the shared file at a time.
+      await withDbOpenLease(
+        dirPath: await AppInstance.instancesDirPath(),
+        body: openAndStore,
+      );
+    } else {
+      await openAndStore();
+    }
+
+    await _debugDump(_instance);
   }
 
   /// Instead of manually querying every table,

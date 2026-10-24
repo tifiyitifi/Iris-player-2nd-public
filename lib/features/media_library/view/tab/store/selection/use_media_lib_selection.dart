@@ -10,6 +10,10 @@ class MediaLibSelectionStore extends PersistentStore<SelectionState<String>> {
   MediaLibSelectionStore() : super(const SelectionState()) {
     _initController();
   }
+
+  /// Window-scoped view state: the KV key is session-scoped, so two windows
+  /// keep independent selections.
+
   static const _storageKey = 'media_lib_selection';
 
   late SelectionController<String> controller;
@@ -31,7 +35,7 @@ class MediaLibSelectionStore extends PersistentStore<SelectionState<String>> {
 
   @override
   Future<SelectionState<String>?> load() async {
-    final storage = getKvStore();
+    final storage = getSessionKvStore();
     final raw = await storage.read(key: _storageKey);
 
     if (raw == null) return null;
@@ -43,7 +47,7 @@ class MediaLibSelectionStore extends PersistentStore<SelectionState<String>> {
 
   @override
   Future<void> save(SelectionState<String> state) async {
-    final storage = getKvStore();
+    final storage = getSessionKvStore();
     await storage.write(
       key: _storageKey,
       value: json.encode(

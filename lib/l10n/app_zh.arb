@@ -384,6 +384,10 @@
   "scan_incomplete_body": "上次扫描被中断。是否从中断处继续，还是开始新的扫描？",
   "scan_incomplete_new": "开始新扫描",
   "scan_incomplete_resume": "继续",
+  "scan_busy_other_window_title": "另一个窗口正在扫描",
+  "scan_busy_other_window_body": "媒体库正在被另一个 IRIS 窗口扫描。请等它完成，或关闭那个窗口后再试。",
+  "update_busy_other_window_title": "另一个窗口正在更新",
+  "update_busy_other_window_body": "另一个 IRIS 窗口正在下载或安装更新。请等它完成，或关闭那个窗口后再试。",
   "search_scope_tip": "范围",
   "search_scope_all": "全部来源",
   "search_scope_recursive": "当前目录 · 递归",
@@ -1337,6 +1341,7 @@
   "scn_rescan_file": "重新扫描该文件",
   "scn_rescan_dir": "重新扫描该文件所在目录",
   "scn_rescan_source": "重新扫描该文件所在源",
+  "scn_explicit_item_label": "显式添加项",
   "scn_rescan_file_missing_title": "文件不存在",
   "scn_rescan_file_missing_body": "该文件已不在磁盘上，已从媒体库中移除。",
   "scn_rescan_offline_title": "存储不可达",
@@ -1421,6 +1426,12 @@
   },
   "scn_scan_summary_missing": "已移除失效的直接文件：{count}",
   "@scn_scan_summary_missing": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "scn_scan_summary_explicit_refreshed": "已更新 {count} 个手动添加项",
+  "@scn_scan_summary_explicit_refreshed": {
     "placeholders": {
       "count": {"type": "int"}
     }
@@ -1550,6 +1561,15 @@
   "lib_recursive": "递归",
   "lib_direct_only": "仅直接",
   "lib_play_folder": "播放当前目录",
+  "lib_play_in_new_window": "在新窗口播放",
+  "lib_play_selection_in_new_window": "在新窗口播放所选",
+  "lib_open_in_new_window": "在新窗口打开",
+  "new_window_play_failed_title": "新窗口未能开始播放",
+  "new_window_play_failed_body": "新窗口的队列没有解析出可播放的媒体。请先扫描该存储，再在原窗口重试。",
+  "new_window_unavailable_title": "无法打开新窗口",
+  "new_window_unavailable_body": "当前版本只运行单窗口（Microsoft Store 版为单实例），或新进程启动失败。",
+  "new_window_too_many_files_title": "项目过多，无法打开新窗口",
+  "new_window_too_many_files_body": "所选内容过大，无法传递给新窗口。请在当前窗口播放，或减少选择的数量。",
   "lib_mode_path_tree": "路径树",
   "lib_mode_all_media": "全部媒体",
   "lib_mode_all_dirs": "全部目录",
@@ -1612,6 +1632,43 @@
   },
   "recycle_permanent": "永久删除",
   "recycle_cancel": "取消",
+  "physical_delete_failed_title": "文件未删除",
+  "physical_delete_failed_body": "回收站拒绝了该文件，永久删除也失败了（系统错误码 {code}）。文件仍在原处，已恢复播放。",
+  "@physical_delete_failed_body": {
+    "placeholders": {
+      "code": {"type": "int"}
+    }
+  },
+  "osd_delete_unavailable": "没有可删除的本地文件",
+  "storage_duplicate_title": "发现重复的存储条目",
+  "storage_duplicate_intro": "同一块磁盘被登记了多次。合并后只保留一个条目：合并两者的媒体记录（保留播放进度），并改写所有场景、标签、收藏与副音映射的引用。磁盘上已不存在的文件会被标记为缺失；不会删除任何磁盘文件。",
+  "storage_duplicate_group": "{name}（{base}）— {entries} 个条目，{rows} 条记录",
+  "@storage_duplicate_group": {
+    "placeholders": {
+      "name": {"type": "String"},
+      "base": {"type": "String"},
+      "entries": {"type": "int"},
+      "rows": {"type": "int"}
+    }
+  },
+  "storage_duplicate_merge": "合并",
+  "storage_duplicate_cancel": "暂不",
+  "storage_duplicate_done_title": "存储条目已合并",
+  "storage_duplicate_done_body": "合并了 {merged} 条重复记录，迁移了 {moved} 条记录，标记了 {ghosts} 个缺失文件。队列已刷新。",
+  "@storage_duplicate_done_body": {
+    "placeholders": {
+      "merged": {"type": "int"},
+      "moved": {"type": "int"},
+      "ghosts": {"type": "int"}
+    }
+  },
+  "storage_duplicate_failed_title": "合并失败",
+  "storage_duplicate_failed_body": "没有留下无法重试的中间状态。详情：\n{error}",
+  "@storage_duplicate_failed_body": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
   "dlg_force_append": "强制空追加",
   "dlg_play_failed_prefix": "播放失败：{error}",
   "@dlg_play_failed_prefix": {
@@ -2644,7 +2701,7 @@
   "dlg_known_issues_scenario_sort_header": "场景播放队列：按修改时间排序会先按目录分组",
   "dlg_known_issues_scenario_sort_body": "场景播放队列开启「同目录连续」时，会先按目录、再按所选字段排序，因此按修改时间排序并不是整条队列的全局时间顺序：只有同一文件夹内的文件才按时间排序，而 PotPlayer 的播放列表是整张列表按日期排序——这就是两者顺序不一致的原因。在排序菜单里取消勾选「同目录连续」即可改为整表的扁平排序。时间取扫描时记录的文件修改时间（毫秒精度），从未扫描、没有时间的条目恒排在最后。",
   "dlg_known_issues_seek_step_header": "步进定位按关键帧量化（media_kit / mpv）",
-  "dlg_known_issues_seek_step_body": "快速步进（← / →、双击）使用 mpv 原生的 relative + keyframes 定位——也就是 mpv 方向键自己所走的寻址路径：落点为最近的关键帧，因此步进秒数是“最小目标”而非精确距离。当视频的关键帧间隔大于步长时，按一下会前进一个完整的关键帧间隔（如关键帧间隔 4s 的视频，3s 步长实际跳约 4s）。mpv 的行为完全相同。若要求“精确 N 秒”，只能使用精确定位——它会从上一个关键帧开始逐帧解码，画面明显卡顿；IRIS 有意选择播放体验优先于定位精确。",
+  "dlg_known_issues_seek_step_body": "快速步进（← / →、双击）使用 mpv 原生的 relative + keyframes 定位——也就是 mpv 方向键自己所走的寻址路径：落点为最近的关键帧，因此步进秒数是“最小目标”而非精确距离。当视频的关键帧间隔大于步长时，按一下会前进一个完整的关键帧间隔（如关键帧间隔 4s 的视频，3s 步长实际跳约 4s）。mpv 的行为完全相同。若要求“精确 N 秒”，只能使用精确定位——它会从上一个关键帧开始逐帧解码，画面明显卡顿；IRIS 有意选择播放体验优先于定位精确。\n\n唯一例外是片尾：目标到达片尾的前进无法真正落点（最后一个关键帧更靠前），因此由 IRIS 直接判定——播放中视为本集看完并自动跳下一集，暂停时保留该次按键。距片尾多近算“看完”由「片尾步进」设置决定。",
   "dlg_known_issues_bg_anchor_header": "副音对齐的自动锚定规则",
   "dlg_known_issues_bg_anchor_body": "开启副音、或在副音列表/面板切换到另一个副音文件时，锚定由两个真实时长自动决定：副音比视频长 → 同刻度（视频 10:00 ↔ 副音 10:00，副音会一直播到视频结束之后）；副音比视频短、且视频剩余时间能装进副音 → 把副音末尾对齐视频末尾（副音不会再提前播完，代价是跳过副音开头相应的时长，可能从文件中间开始）；其余情况 → 副音从 00:00 对齐视频当前位置。默认锚定不再提供选项，对齐弹窗只说明这条规则，其中的手动方案均为即时更新；手动「更新对齐」只对当前会话生效，重启后回到自动规则。尾部锚定同时会跳过「副音即将播完」的提示，因为此时副音与视频同时结束。",
   "dlg_known_issues_bg_anchor_vm_header": "副音尾部锚定与虚拟媒体段切换",
@@ -3365,6 +3422,10 @@
   "set_cache_preset_low": "低",
   "set_cache_preset_balanced": "均衡",
   "set_cache_preset_high": "高",
+  "set_step_tail_finish": "片尾步进",
+  "set_step_tail_finish_desc": "前进到片尾时的行为：播放中视为本集看完并自动跳下一集；暂停时保留（不跳集、不写入）。片尾几秒本来就无法精确落点——最后一个关键帧更靠前，引擎只会把画面回退到那里。",
+  "set_step_tail_finish_strict": "到达或越过片尾",
+  "set_step_tail_finish_window": "距片尾一个步长内",
   "startup_failed_title": "启动失败",
   "startup_failed_body": "IRIS 无法完成启动。你的数据没有被修改。\n\n$error",
   "@startup_failed_body": {

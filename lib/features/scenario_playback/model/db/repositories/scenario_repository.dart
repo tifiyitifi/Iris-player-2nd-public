@@ -113,6 +113,31 @@ class ScenarioRepository {
     return scenario;
   }
 
+  /// Creates a PRIVATE SystemPlaying workspace for one extra IRIS window.
+  ///
+  /// Multi-instance: [ensureSystemPlayingScenario] keeps the single shared row
+  /// for the primary window (historical behavior), while every additional
+  /// window owns a row of the same kind. A manual scope play (folder / library
+  /// / selection override) writes its sources into the playing workspace; with
+  /// one shared row, window B would silently rewrite the queue window A is
+  /// playing. The owning window remembers the id in its session scope and
+  /// reuses it, so its own queue survives a restart.
+  Future<Scenario> createSystemPlayingWorkspace({String? name}) async {
+    final now = DateTime.now();
+    final scenario = Scenario(
+      id: const Uuid().v4(),
+      name: name ?? systemPlayingScenarioName,
+      type: ScenarioKind.systemPlaying,
+      version: null,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await scenariosDao.upsert(scenario);
+    await _ensureState(scenario.id);
+    areaKeyLog.i('Created instance SystemPlaying workspace: ${scenario.id}');
+    return scenario;
+  }
+
   /// Creates a fresh, dedicated workspace for ONE custom desktop entry
   /// (`ScenarioKind.entryWorkspace`). Unlike [ensureSystemPlayingScenario]
   /// there can be many of these, so it always creates a new row; the caller
@@ -132,6 +157,14 @@ class ScenarioRepository {
     areaKeyLog.i('Created entry workspace: ${scenario.id}');
     return scenario;
   }
+
+  /// Removes an INTERNAL workspace row (systemPlaying / entryWorkspace /
+  /// entryBackground) and everything it owns, bypassing the userSaved guard.
+  ///
+  /// Only for rows whose owner is gone: workspace GC and the ephemeral-window
+  /// exit. Never call this with an id that may still be in use — use
+  /// [deleteScenario] (which refuses internal kinds) for user-facing deletes.
+  Future<void> purgeInternalWorkspace(String id) => _purgeScenarioRecords(id);
 
   /// Removes an entry workspace and every record it owns. Unlike
   /// [deleteScenario] this bypasses the userSaved guard — the row is internal

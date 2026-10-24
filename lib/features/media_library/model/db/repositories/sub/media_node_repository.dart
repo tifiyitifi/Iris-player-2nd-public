@@ -8,9 +8,17 @@ import 'package:iris/features/media_library/model/enum/media_node.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/media_library/search/model/search_context.dart';
 import 'package:iris/features/media_library/search/model/search_exclude_rule.dart';
+import 'package:iris/features/media_library/services/media_progress_claim.dart';
 import 'package:iris/models/db/app_database.dart' show MediaNodesTableData;
+import 'package:iris/models/db/db_busy_retry.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
+
+/// Fail-fast `busy_timeout` (ms) for progress writes: this DB connection lives
+/// on the UI isolate, so a sample must never wait out a multi-second writer.
+/// A dropped sample is rewritten by the next timer tick; a frozen window is not
+/// recoverable. Worst case is ~3 x this value plus the tens-of-ms backoff.
+const int _kProgressBusyTimeoutMs = 250;
 
 class MediaNodeRepository {
   final MediaNodesDao _nodesDao;
@@ -374,43 +382,122 @@ class MediaNodeRepository {
     // CLOSE_DEBUG_LOG: progress-lose attribution — every write logs
     // old→new with the caller tag so the next repro log is conclusive.
     const funnelDiag = AreaKeyLog(LogKeys.player);
-    final canonical = canonicalDbPath(path);
-    var row = await _nodesDao.getByPath(storageId, canonical);
-    row ??=
-        canonical == path ? null : await _nodesDao.getByPath(storageId, path);
-    final tag = writeTag ?? 'unknown';
-    if (row == null) {
-      funnelDiag.w('progress-write [$tag] DROP (no row) $storageId:$path '
-          'pos=$positionMs completed=$completed budget=$historyRestoreBudgetMs');
-      return;
-    }
-    final node = MediaNodeDriftAdapter.fromDb(row);
-    final existingPos =
-        node.maybeMap(file: (f) => f.playbackPositionMs, orElse: () => null);
-    final existingDur =
-        node.maybeMap(file: (f) => f.durationMs, orElse: () => null);
-    final blocked = shouldBlockFunnelWrite(
-      existingPosMs: existingPos,
-      incomingPosMs: positionMs,
-      durationMs: existingDur,
-      completed: completed,
-      intent: intent,
-    );
-    funnelDiag.i('progress-write [$tag] '
-        '${existingPos ?? "null"}->${positionMs ?? "keep"} '
-        'completed=$completed budget=$historyRestoreBudgetMs '
-        'intent=${intent.name}${blocked ? " BLOCKED" : ""} '
-        '$storageId:$path');
-    if (blocked) return;
-    return _nodesDao.updatePlaybackProgress(
+    final claimKey = MediaProgressClaim.keyFor(
       storageId: storageId,
       path: path,
-      positionMs: positionMs,
-      completed: completed,
-      lastPlayedAt: lastPlayedAt,
-      playCount: playCount,
-      historyRestoreBudgetMs: historyRestoreBudgetMs,
     );
+    final claim = await MediaProgressClaim.instance.claim(
+      storageId: storageId,
+      path: path,
+    );
+    if (claim == ProgressClaimResult.denied) {
+      // Another IRIS window owns this file's row: keep the position in memory
+      // only (the later-opener rule). No column is touched.
+      // A finished file restarts from the head, exactly like the player-side
+      // denied branch — storing the tail here would make this window resume at
+      // the end of a file it just completed.
+      MediaProgressClaim.instance.remember(
+        storageId: storageId,
+        path: path,
+        positionMs: completed == true ? 0 : positionMs,
+        completed: completed,
+      );
+      funnelDiag.i('progress-write [${writeTag ?? 'unknown'}] '
+          'DENIED (owned by another instance) $storageId:$path '
+          'pos=$positionMs completed=$completed');
+      return;
+    }
+    final ProgressWriteIntent effectiveIntent =
+        claim == ProgressClaimResult.takeover &&
+                intent == ProgressWriteIntent.live
+            ? ProgressWriteIntent.takeover
+            : intent;
+    final tag = writeTag ?? 'unknown';
+    // Register the in-flight write BEFORE touching the DB: a release() in the
+    // same window (file switch) must wait for it instead of handing the claim
+    // to another window mid-save.
+    final writeToken = MediaProgressClaim.instance.beginWrite(claimKey);
+    try {
+      final canonical = canonicalDbPath(path);
+      var row = await _nodesDao.getByPath(storageId, canonical);
+      row ??=
+          canonical == path ? null : await _nodesDao.getByPath(storageId, path);
+      if (row == null) {
+        funnelDiag.w('progress-write [$tag] DROP (no row) $storageId:$path '
+            'pos=$positionMs completed=$completed budget=$historyRestoreBudgetMs');
+        return;
+      }
+      final node = MediaNodeDriftAdapter.fromDb(row);
+      final existingPos =
+          node.maybeMap(file: (f) => f.playbackPositionMs, orElse: () => null);
+      final existingDur =
+          node.maybeMap(file: (f) => f.durationMs, orElse: () => null);
+      // A takeover must not rewind the row: the waiting window's live sample
+      // may be behind the previous owner's stored position. Explicit seeks stay
+      // verbatim (they are already a different intent).
+      final writePos = resolveTakeoverPositionMs(
+        existingPosMs: existingPos,
+        incomingPosMs: positionMs,
+        completed: completed,
+        intent: effectiveIntent,
+      );
+      final blocked = shouldBlockFunnelWrite(
+        existingPosMs: existingPos,
+        incomingPosMs: writePos,
+        durationMs: existingDur,
+        completed: completed,
+        intent: effectiveIntent,
+      );
+      funnelDiag.i('progress-write [$tag] '
+          '${existingPos ?? "null"}->${writePos ?? "keep"} '
+          'incoming=$positionMs completed=$completed '
+          'budget=$historyRestoreBudgetMs '
+          'intent=${effectiveIntent.name}${blocked ? " BLOCKED" : ""} '
+          '$storageId:$path');
+      if (blocked) return;
+      // Two windows write one file: a scan batch (or the startup repair) can
+      // hold the write lock long enough for the busy_timeout to expire. Retry
+      // the transient lock conflict a couple of times instead of dropping the
+      // sample as "no row" — but never retry a real error, and keep the wait
+      // tiny because this runs on the UI isolate. The retry runs under a
+      // fail-fast busy_timeout (not the connection default 5s): a sample is
+      // rewritten by the next timer tick anyway, so waiting out a long
+      // transaction here would only freeze the window (~15s over 3 attempts).
+      await withShortDbBusyTimeout(
+        _nodesDao.attachedDatabase,
+        _kProgressBusyTimeoutMs,
+        () => retryOnDbBusy(
+          () => _nodesDao.updatePlaybackProgress(
+            storageId: storageId,
+            path: path,
+            positionMs: writePos,
+            completed: completed,
+            lastPlayedAt: lastPlayedAt,
+            playCount: playCount,
+            historyRestoreBudgetMs: historyRestoreBudgetMs,
+          ),
+          onRetry: (attempt, error) => funnelDiag.w(
+              'progress-write [$tag] busy retry=$attempt $storageId:$path: $error'),
+        ),
+      );
+      // A takeover flush has landed: the row is authoritative again, so the
+      // memory-only position (and the takeover bypass) can be dropped. Only a
+      // write that actually carried a position/completion counts — a
+      // budget-only write must not discard the memory position.
+      if (claim == ProgressClaimResult.takeover &&
+          (positionMs != null || completed != null)) {
+        MediaProgressClaim.instance.markPersisted(claimKey);
+      }
+    } catch (e) {
+      // The write is dropped (the caller keeps its in-memory/History fallback).
+      // Log it with attribution instead of letting the caller mistake it for
+      // "this file has no row".
+      funnelDiag.e('progress-write [$tag] FAILED (sample dropped) '
+          '$storageId:$path pos=$positionMs completed=$completed: $e');
+      rethrow;
+    } finally {
+      MediaProgressClaim.instance.endWrite(claimKey, writeToken);
+    }
   }
 
   /// Returns {MediaType: count} for all files under [parentPath] in [storageId].

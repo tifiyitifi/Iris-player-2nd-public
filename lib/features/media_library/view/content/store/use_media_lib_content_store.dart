@@ -50,9 +50,12 @@ class MediaLibContentStore extends PersistentStore<MediaLibContentState> {
     required this.facade,
   }) : super(const MediaLibContentState());
 
+  /// Window-scoped view state: the KV key is session-scoped, so two windows
+  /// keep independent library/view/sort/path positions.
+
   static const _storageKey = 'media_lib_content_state';
 
-  final KvStore _storage = getKvStore();
+  final KvStore _storage = getSessionKvStore();
 
   int _refreshVersion = 0;
 

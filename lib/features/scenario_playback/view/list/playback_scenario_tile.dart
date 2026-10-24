@@ -3,6 +3,9 @@ import 'package:iris/widgets/a11y_tooltip.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/media_library/selection/selection_controller.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_kind.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_list_sort_by.dart';
@@ -81,6 +84,11 @@ class PlaybackScenarioTile extends HookWidget {
                     //       override: true, direction: popupDirection);
                     case 'playAppend':
                       await _playIntoWorkspace(context, override: false);
+                    case 'newWindow':
+                      await launchNewWindow(
+                        context,
+                        newWindowRequestForScenario(scenario.id),
+                      );
                     case 'preview':
                       openScenarioPreview(context, scenarioId: scenario.id);
                     case 'scanSources':
@@ -106,6 +114,11 @@ class PlaybackScenarioTile extends HookWidget {
                 itemBuilder: (context) => [
                   PopupMenuItem(
                       value: 'playAppend', child: Text(t.scn_play_append)),
+                  if (NewWindowLauncher.isSupported)
+                    PopupMenuItem(
+                      value: 'newWindow',
+                      child: Text(t.lib_play_in_new_window),
+                    ),
                   PopupMenuItem(
                       value: 'preview', child: Text(t.scn_preview_queue)),
                   PopupMenuItem(

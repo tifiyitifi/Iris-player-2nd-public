@@ -20,10 +20,13 @@ final areaKeyLog = AreaKeyLog(LogKeys.legacyStore);
 class MediaLibSearchStore extends PersistentStore<MediaLibSearchState> {
   MediaLibSearchStore() : super(const MediaLibSearchState());
 
+  /// Window-scoped view state: the KV key is session-scoped, so two windows
+  /// keep independent search history/scope.
+
   static const _storageKey = 'media_lib_search_state';
   static const int historyLimit = 50;
 
-  final KvStore _storage = getKvStore();
+  final KvStore _storage = getSessionKvStore();
 
   @override
   Future<MediaLibSearchState?> load() async {

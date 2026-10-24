@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 
 VirtualMediaItem _twoSeg() => VirtualMediaItem(
       ruleId: 'r',
@@ -35,13 +36,16 @@ void main() {
       expect(idx, 1);
       // locate itself returns segDur at the very end; sinks must clamp.
       expect(local, 20000);
-      expect(clampVmLocalMs(item.segments[idx].durationMs, local), 19999);
+      expect(
+        clampVmLocalMs(item.segments[idx].durationMs, local),
+        20000 - kSeekTailGuardMs,
+      );
     });
 
     test('helper keeps in-range values exact', () {
       expect(clampVmLocalMs(10000, 0), 0);
-      expect(clampVmLocalMs(10000, 9999), 9999);
       expect(clampVmLocalMs(10000, 5000), 5000);
+      expect(clampVmLocalMs(10000, 9899), 9899);
     });
 
     test('helper handles zero/unknown duration', () {
@@ -50,9 +54,26 @@ void main() {
       expect(clampVmLocalMs(null, 50), 0);
     });
 
-    test('helper clamps over-range to segDur-1', () {
-      expect(clampVmLocalMs(10000, 10000), 9999);
-      expect(clampVmLocalMs(10000, 1 << 30), 9999);
+    test('helper clamps over-range to the shared tail guard', () {
+      expect(clampVmLocalMs(10000, 10000), 10000 - kSeekTailGuardMs);
+      expect(clampVmLocalMs(10000, 1 << 30), 10000 - kSeekTailGuardMs);
+      // A value inside the guard band is pulled back to it as well.
+      expect(clampVmLocalMs(10000, 9950), 10000 - kSeekTailGuardMs);
+    });
+
+    test('finishAtEnd may land ON the segment end (tail step / release)', () {
+      // The one intent that must raise `completed` to advance the session: a
+      // tail step while playing, or a scrub release at 100%.
+      expect(
+        clampVmLocalMs(20000, 20000, intent: SeekIntent.finishAtEnd),
+        20000,
+      );
+      expect(
+        clampVmLocalMs(20000, 1 << 30, intent: SeekIntent.finishAtEnd),
+        20000,
+      );
+      // Every other caller keeps the guard, including the default.
+      expect(clampVmLocalMs(20000, 1 << 30), 20000 - kSeekTailGuardMs);
     });
   });
 }

@@ -27,10 +27,16 @@ class ScenarioCommands {
   /// (manual scope, e.g. play a folder), the workspace is simply reset.
   /// [importPersistentExcludes] lets the caller choose whether the source's
   /// persistent excludes are imported (Load-row "Replace/Merge by user choice").
+  ///
+  /// [copyState] = false installs the Definition only. Used when minting a
+  /// window-private workspace for an independent entry: sources/sort/excludes
+  /// are shared intent, while the queue position belongs to the window that is
+  /// about to play (a fresh row must not resume another window's item).
   static Future<void> override({
     required Scenario workspace,
     Scenario? source,
     bool importPersistentExcludes = true,
+    bool copyState = true,
     ScenarioRepository? repo,
   }) async {
     final r = repo ?? DbModule.scenarioRepo;
@@ -68,6 +74,7 @@ class ScenarioCommands {
       ));
 
       // F2: origin = source; copy Playback State (D1).
+      if (!copyState) return;
       final sourceState = await r.getState(source.id);
       await r.updateState(
         (sourceState ?? ScenarioState(scenarioId: wsId)).copyWith(

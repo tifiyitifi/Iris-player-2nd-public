@@ -551,27 +551,60 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
   /// (remove / temporary exclude / batch remove / override). If the current
   /// item is gone, immediately advances to the next effective item so playback
   /// never hangs on a deleted entry (B3).
-  Future<void> revalidateCurrent() async {
+  ///
+  /// Returns true when a new entry was fed to the player.
+  ///
+  /// [skipMediaKeys] names media keys the caller KNOWS are gone (a just-deleted
+  /// file). The derived index can serve the removed occurrence for a beat; the
+  /// old code then re-persisted it as current and re-fed the same FileItem, so
+  /// the backend (whose handle survives a recycle-bin rename) kept playing the
+  /// deleted file and the queue looked frozen. Skipped keys are walked past.
+  Future<bool> revalidateCurrent({Set<String> skipMediaKeys = const {}}) async {
     final token = _contextToken();
     final current = await _store.getCurrentItem();
-    if (current != null) return; // still in the effective set
+    if (current != null && !skipMediaKeys.contains(current.mediaKey)) {
+      return false; // still in the effective set
+    }
 
     final state = await _store.activeState();
     final hint = state?.currentVirtualPos;
     if (hint != null) {
-      final atHint = await _itemAt(hint);
-      if (atHint != null) {
-        await _persistCurrent(atHint, virtualPos: hint);
-        await _storeLocated(atHint, hint, token: token);
-        await advanceEntry(atHint);
-        return;
-      }
+      if (await _advanceFrom(hint, token, skipMediaKeys)) return true;
     }
     final first = await itemAt(0);
-    if (first != null) {
+    if (first != null && first.available && !skipMediaKeys.contains(first.key)) {
       await _storeLocated(first, 0, token: token);
       await advanceEntry(first);
+      return true;
     }
+    return false;
+  }
+
+  /// Feeds the first item at/after [from] that is not in [skipMediaKeys].
+  ///
+  /// A stale index keeps the deleted row's SLOT but cannot rebuild its node, so
+  /// `_itemAt` returns null at that position (a hole) — the walk must probe PAST
+  /// it, not treat it as the end of the queue. The bound only guards a corrupt
+  /// index; one delete shifts by one, so a couple of probes always suffice.
+  Future<bool> _advanceFrom(
+    int from,
+    int token,
+    Set<String> skipMediaKeys,
+  ) async {
+    for (var probe = from; probe < from + 32; probe++) {
+      final item = await _itemAt(probe);
+      if (item == null) continue; // stale-index hole, not the queue end
+      if (skipMediaKeys.contains(item.key)) continue;
+      // The queue surfaces an empty/broken source as a greyed, UN-TAPPABLE
+      // placeholder (D28). Never auto-advance ONTO one: it cannot open, and the
+      // delete flow would otherwise claim "advanced" instead of unloading.
+      if (!item.available) continue;
+      await _persistCurrent(item, virtualPos: probe);
+      await _storeLocated(item, probe, token: token);
+      await advanceEntry(item);
+      return true;
+    }
+    return false;
   }
 
   // ── Helpers ──

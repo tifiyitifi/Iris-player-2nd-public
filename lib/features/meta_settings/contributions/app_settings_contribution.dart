@@ -316,6 +316,25 @@ abstract final class AppSettingsContribution {
       iconKey: 'playback_cache_preset',
       sortOrder: 35,
     ),
+    // Tail-step policy: what a FORWARD step press does once its target reaches
+    // the media tail — finish the item (advance to the next queue entry) or keep
+    // stepping. Metadata-only `playback.` AUX row (JsonKey-excluded AppState
+    // field), so it renders as a custom radio-dialog tile. Backend-neutral: both
+    // player hooks apply it (see `decideStepTail`), hence no backend visibility
+    // gate beyond the shared `playback.` prefix.
+    SettingDef(
+      key: 'playback.stepTailFinish',
+      section: SettingsSection.play,
+      valueType: SettingValueType.enumeration,
+      defaultValue: 'strict',
+      enumValues: ['strict', 'window'],
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'playback_step_tail_finish',
+      titleKey: 'step_tail_finish',
+      subtitleKey: 'step_tail_finish_desc',
+      iconKey: 'playback_step_tail_finish',
+      sortOrder: 36,
+    ),
     // ── 手机滑动与手势 ──
     SettingDef(
       key: 'app.phoneLandscapeSliderType',

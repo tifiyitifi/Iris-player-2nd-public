@@ -210,6 +210,26 @@ void main() {
         reason: 'the scenario being viewed must survive eviction');
   });
 
+  test('a generation evicted by another window rebuilds on the next read',
+      () async {
+    final store = usePlaybackScenarioStore();
+    final id = await scenarioWith('evicted-a', 'a.mp4');
+    await store.setActiveScenario(id);
+    await store.resolvePage(page: 0, pageSize: 10);
+    final before = await indexDao.currentBuildId(id);
+    expect(before, greaterThan(0));
+
+    // Another window's retention pass drops this scenario's generation while
+    // this window still holds a matching signature for it.
+    await indexDao.clearScenario(id);
+
+    final page = await store.resolvePage(page: 0, pageSize: 10);
+    expect(page.items, isNotEmpty);
+    expect(await indexDao.currentBuildId(id), greaterThan(before),
+        reason: 'a vanished generation must rebuild instead of leaving this '
+            'window on the legacy walk for the rest of the session');
+  });
+
   test('retention keeps only the most-recently-used generations', () async {
     final store = usePlaybackScenarioStore();
     final ids = <String>[];

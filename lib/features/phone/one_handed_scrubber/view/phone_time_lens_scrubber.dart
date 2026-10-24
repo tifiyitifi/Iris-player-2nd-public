@@ -7,6 +7,7 @@ import 'package:iris/features/phone/one_handed_scrubber/view/phone_scrubber_time
 import 'package:iris/models/player.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/seek_tail_guard.dart';
 import 'package:iris/store/use_scrub_drag_store.dart';
 import 'package:provider/provider.dart';
 
@@ -63,9 +64,21 @@ class PhoneTimeLensScrubber extends HookWidget {
 
     Future<void> step(int seconds) async {
       showControl();
-      final int current = _clampDuration(progress.position, duration).inMilliseconds;
-      final int next = (current + seconds * 1000).clamp(0, duration.inMilliseconds);
-      await player.seek(Duration(milliseconds: next));
+      if (progress.duration <= Duration.zero) return;
+      // Route through the player's OWN step path (`seekRelative`) instead of
+      // deciding the tail here: the hooks own the shared `decideStepTail`
+      // policy, the mpv-parity tail arm (`MpvSeekTailState`), the EOF collapse
+      // and the media-switch gate (`gateStepPress`). A local `finishSeek`
+      // bypassed all four, so a second tap inside the queue-advance window
+      // resolved against the previous file's duration and finished the entry
+      // that had just opened — one episode skipped. The side effect is the
+      // same landing the region-gesture double tap produces, which is what
+      // this button already documents as its reference.
+      if (seconds >= 0) {
+        await player.forward(seconds);
+      } else {
+        await player.backward(-seconds);
+      }
     }
 
     final Color accent = color ?? Theme.of(context).colorScheme.primary;
@@ -233,7 +246,12 @@ class _StepButton extends StatelessWidget {
 }
 
 Future<void> _commit(MediaPlayer player, Duration target, bool autoPlay) async {
-  await player.seek(target);
+  // A release at the very end is the explicit "finish this item": it lands ON the
+  // end so the file completes and advances. Every other release stays inside the
+  // shared tail guard.
+  final bool atEnd =
+      isSeekReleaseFinish(target.inMilliseconds, player.duration.inMilliseconds);
+  await (atEnd ? (player.finishSeek ?? player.seek) : player.seek)(target);
   if (autoPlay) await player.play();
   useScrubDragStore().endSeek(ScrubOwners.timeLens);
 }

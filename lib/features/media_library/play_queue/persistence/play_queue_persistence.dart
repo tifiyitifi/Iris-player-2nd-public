@@ -16,7 +16,7 @@ class LegacyPlayQueuePersistence implements PlayQueuePersistence {
   @override
   Future<PlayQueueState?> load() async {
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
       final raw = await storage.read(key: _key);
       if (raw != null) {
         return PlayQueueState.fromJson(json.decode(raw));
@@ -30,7 +30,7 @@ class LegacyPlayQueuePersistence implements PlayQueuePersistence {
   @override
   Future<void> save(PlayQueueState state) async {
     try {
-      final storage = getKvStore();
+      final storage = getSessionKvStore();
       await storage.write(key: _key, value: json.encode(state.toJson()));
     } catch (e) {
       areaKeyLog.e('LegacyPlayQueuePersistence save error: $e');

@@ -84,6 +84,15 @@ abstract class PersistentStore<T> extends Store<T> {
 
   Future<void> save(T state);
 
+  /// Whether [dispose] may persist the current state.
+  ///
+  /// Multi-window override point: an extra IRIS window holds a snapshot that may
+  /// be stale for settings another window changed while it was open, so its
+  /// shutdown must not rewrite the shared blob. Every immediate mutation already
+  /// persists through the store's own write path, so nothing is lost.
+  @protected
+  bool get persistOnDispose => true;
+
   /// Dispose safely by saving state first.
   ///
   /// The save is SKIPPED when [loadOk] is false: several backends write as a
@@ -92,11 +101,11 @@ abstract class PersistentStore<T> extends Store<T> {
   @override
   @mustCallSuper
   Future<void> dispose() async {
-    if (_loadOk) {
+    if (_loadOk && persistOnDispose) {
       try {
         await save(state);
       } catch (_) {}
-    } else {
+    } else if (!_loadOk) {
       _log.w('skip save on dispose: $runtimeType never loaded successfully');
     }
     await super.dispose();

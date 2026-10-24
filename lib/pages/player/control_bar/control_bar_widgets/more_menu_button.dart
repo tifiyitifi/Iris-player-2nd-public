@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
@@ -10,6 +13,13 @@ import 'package:iris/features/playback_tools/view/screenshot_capture_flow.dart';
 import 'package:iris/features/playback_tools/store/playback_tools_store.dart';
 import 'package:iris/features/playback_tools/view/screenshot_feedback.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
+import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
+import 'package:iris/features/media_library/model/enum/basic_enum.dart'
+    show SortDirection;
+import 'package:iris/l10n/app_localizations.dart';
+import 'package:iris/models/file.dart';
+import 'package:iris/store/use_play_queue_store.dart';
+import 'package:iris/utils/path_conv.dart';
 import 'package:iris/features/scenario_playback/scan/commands/scenario_source_scan_command.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/tag_play/commands/tag_play_actions.dart';
@@ -216,6 +226,24 @@ class MoreMenuButton extends HookWidget {
         ? currentPlaybackWorkspace(usePlaybackScenarioStore())?.id
         : null;
 
+    // Multi-window: the file currently fed to the player, plus the workspace's
+    // sort. Precomputed for the same reason as everything else in this build —
+    // itemBuilder runs during the tap gesture, where context.select() asserts.
+    final FileItem? currentFileForNewWindow = usePlayQueueStore().select(
+      context,
+      (s) {
+        final i = s.playQueue.indexWhere((e) => e.index == s.currentIndex);
+        return i < 0 ? null : s.playQueue[i].file;
+      },
+    );
+    final (ScenarioSortField, SortDirection) workspaceSort =
+        usePlaybackScenarioStore().select(context, (s) {
+      for (final c in s.scenarios) {
+        if (c.id == s.activeScenarioId) return (c.sortField, c.sortDirection);
+      }
+      return (ScenarioSortField.name, SortDirection.asc);
+    });
+
     return PopupMenuButton(
       key: menuKey,
       icon: Icon(Icons.more_vert_rounded, size: kIconSizeSecondary, color: color),
@@ -234,6 +262,8 @@ class MoreMenuButton extends HookWidget {
         // adjuster is a rarely-used setting, so it left the primary bar.
         _seekStepItem(context, t, seekStepSec),
         _tagPlayItem(context, t),
+        if (NewWindowLauncher.isSupported && currentFileForNewWindow != null)
+          _newWindowItem(context, t, currentFileForNewWindow, workspaceSort),
         if (scanScenarioId != null)
           _scanSourcesItem(context, t, scanScenarioId),
         // DEPRECATED (sub_media §2): the legacy More-menu 副音 entries are
@@ -305,6 +335,37 @@ class MoreMenuButton extends HookWidget {
       onTap: () {
         showControlForHover(openTagPlaySheet(context));
       },
+    );
+  }
+
+  /// Multi-window: plays the current file's folder scope in a fresh process,
+  /// landing on that file (the same contract as tapping it in the browser).
+  PopupMenuItem _newWindowItem(
+    BuildContext context,
+    AppLocalizations t,
+    FileItem file,
+    (ScenarioSortField, SortDirection) sort,
+  ) {
+    final List<String> path = file.path;
+    final String folder =
+        path.isEmpty ? '' : path.sublist(0, path.length - 1).join('/');
+    return PopupMenuItem(
+      child: ListTile(
+        mouseCursor: SystemMouseCursors.click,
+        leading: const Icon(Icons.open_in_new_rounded,
+            size: kMenuTileIconSizeTiny),
+        title: Text(t.lib_play_in_new_window),
+      ),
+      onTap: () => launchNewWindow(
+        context,
+        newWindowRequestForFile(
+          item: file,
+          folderPath: canonicalDbPath(folder),
+          itemPath: canonicalOccurrencePath(path.join('/')),
+          sortField: sort.$1,
+          sortDirection: sort.$2,
+        ),
+      ),
     );
   }
 

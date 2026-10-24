@@ -64,6 +64,13 @@ enum ProgressWriteIntent {
   /// A targeted landing decision (VM pre-write: jump target or sequential
   /// advance 0) — verbatim.
   targeted,
+
+  /// Progress ownership was just taken over from another IRIS window that was
+  /// playing the same file (see `MediaProgressClaim`). A live takeover write
+  /// may only move the stored position FORWARD
+  /// ([resolveTakeoverPositionMs]); an explicit rewind is declared as
+  /// [userSeek] and stays verbatim.
+  takeover,
 }
 
 /// Backward tolerance for a NATURAL ([ProgressWriteIntent.live]) write.
@@ -114,4 +121,25 @@ bool shouldBlockFunnelWrite({
     return false;
   }
   return incomingPosMs < existingPosMs - liveWriteBackwardToleranceMs;
+}
+
+/// Resolves the position a [ProgressWriteIntent.takeover] write may store.
+///
+/// WHY: takeover exists so the newly-active window can flush the position it
+/// kept while it was denied — but that live sample can be BEHIND the value the
+/// previous owner stored (the waiting window played on from its own resume
+/// point). A handover is not a rewind request: after the owner closed at 90%,
+/// the waiting window's 10% tick must not overwrite 90%. Explicit intents
+/// ([ProgressWriteIntent.userSeek] / [ProgressWriteIntent.explicitClear]) stay
+/// verbatim so a deliberate rewind or finish still lands.
+int? resolveTakeoverPositionMs({
+  required int? existingPosMs,
+  required int? incomingPosMs,
+  required bool? completed,
+  required ProgressWriteIntent intent,
+}) {
+  if (intent != ProgressWriteIntent.takeover) return incomingPosMs;
+  if (completed == true || incomingPosMs == null) return incomingPosMs;
+  if (existingPosMs == null || existingPosMs <= 0) return incomingPosMs;
+  return incomingPosMs < existingPosMs ? existingPosMs : incomingPosMs;
 }

@@ -41,6 +41,7 @@ void main() {
         rootPaths: const [],
         directories: const [],
         explicitItems: items,
+        explicitProbeTargets: items,
         weight: 1,
       );
 
@@ -78,11 +79,12 @@ void main() {
 
     // The parent listing succeeds and returns nothing → the explicit file is
     // confirmed gone and its media node is removed.
-    final removed = await service.checkExplicitFiles(
+    final check = await service.checkExplicitFiles(
       unitWith([explicit('movies/gone.mp4')]),
     );
 
-    expect(removed, 1);
+    expect(check.missing, 1);
+    expect(check.presentPaths, isEmpty);
     expect(await DbModule.mediaNodeRepo.getNodeByPath(
       storageId: 's1',
       path: const ['movies', 'gone.mp4'],
@@ -105,11 +107,13 @@ void main() {
       ]),
     );
 
-    final removed = await service.checkExplicitFiles(
+    final check = await service.checkExplicitFiles(
       unitWith([explicit('movies/kept.mp4')]),
     );
 
-    expect(removed, 0);
+    expect(check.missing, 0);
+    // Confirmed present → this is the set the targeted probe may refresh.
+    expect(check.presentPaths, {'movies/kept.mp4'});
     expect(await DbModule.mediaNodeRepo.getNodeByPath(
       storageId: 's1',
       path: const ['movies', 'kept.mp4'],
@@ -126,11 +130,13 @@ void main() {
       ),
     );
 
-    final removed = await service.checkExplicitFiles(
+    final check = await service.checkExplicitFiles(
       unitWith([explicit('movies/keep.mp4')]),
     );
 
-    expect(removed, 0);
+    // A failed listing proves nothing: neither a delete NOR a probe target.
+    expect(check.missing, 0);
+    expect(check.presentPaths, isEmpty);
     expect(await DbModule.mediaNodeRepo.getNodeByPath(
       storageId: 's1',
       path: const ['movies', 'keep.mp4'],

@@ -165,6 +165,92 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
         .go();
   }
 
+  /// Every scope id among [candidateScopes] that currently holds [rawPath].
+  ///
+  /// The candidate set is the storage's scope family; a row written through a
+  /// sibling entry (same physical tree, independent scope) is still found.
+  Future<Set<String>> scopesContainingPath({
+    required String storageId,
+    required Iterable<String> candidateScopes,
+    required String rawPath,
+  }) async {
+    final scopes = candidateScopes.where((e) => e.isNotEmpty).toSet();
+    final canonical = StoragePathCodec.relativizeRaw(storageId, rawPath);
+    if (scopes.isEmpty || canonical.isEmpty) return const <String>{};
+    final rows = await (selectOnly(mediaNodesTable, distinct: true)
+          ..addColumns([mediaNodesTable.dataScopeId])
+          ..where(mediaNodesTable.dataScopeId.isIn(scopes) &
+              mediaNodesTable.path.equals(canonical)))
+        .get();
+    return <String>{
+      for (final row in rows)
+        if (row.read(mediaNodesTable.dataScopeId) case final scope?) scope,
+    };
+  }
+
+  /// Identity-safe delete of [rawPath] across [scopeIds].
+  ///
+  /// Physical delete / scan-repair callers must use this instead of
+  /// [deleteNode]: a node row may live under a scope id that is NOT the storage
+  /// entry the caller holds (a re-added drive with a NULL `data_scope_id`, or a
+  /// linked sibling), and a scope-only WHERE silently deleted 0 rows while the
+  /// file disappeared from disk. Returns the number of removed rows.
+  Future<int> deleteNodeAcrossScopes({
+    required String storageId,
+    required Iterable<String> scopeIds,
+    required String rawPath,
+  }) {
+    final scopes = scopeIds.where((e) => e.isNotEmpty).toSet();
+    final canonical = StoragePathCodec.relativizeRaw(storageId, rawPath);
+    if (scopes.isEmpty || canonical.isEmpty) return Future<int>.value(0);
+    return (delete(mediaNodesTable)
+          ..where((t) =>
+              t.dataScopeId.isIn(scopes) & t.path.equals(canonical)))
+        .go();
+  }
+
+  /// Marks [rawPath] absent in every scope of [scopeIds] (does NOT delete rows).
+  ///
+  /// The fallback when a physical delete removed the file but no node row
+  /// matched: the library must stop offering a file that no longer exists, and
+  /// a later rescan can still reconcile the row. Returns the affected rows.
+  Future<int> markNodeAbsentAcrossScopes({
+    required String storageId,
+    required Iterable<String> scopeIds,
+    required String rawPath,
+  }) {
+    final scopes = scopeIds.where((e) => e.isNotEmpty).toSet();
+    final canonical = StoragePathCodec.relativizeRaw(storageId, rawPath);
+    if (scopes.isEmpty || canonical.isEmpty) return Future<int>.value(0);
+    return (update(mediaNodesTable)
+          ..where((t) =>
+              t.dataScopeId.isIn(scopes) & t.path.equals(canonical)))
+        .write(const MediaNodesTableCompanion(isPresent: Value(false)));
+  }
+
+  /// Every row of one canonical scope (used by the duplicate-entry merge).
+  Future<List<MediaNodesTableData>> rowsInScope(String scopeId) =>
+      (select(mediaNodesTable)
+            ..where((t) => t.dataScopeId.equals(scopeId)))
+          .get();
+
+  /// Deletes a node row by primary key.
+  Future<int> deleteNodeById(int id) =>
+      (delete(mediaNodesTable)..where((t) => t.id.equals(id))).go();
+
+  /// Moves one row to another canonical scope/owner (duplicate-entry merge).
+  Future<int> moveNodeToScope({
+    required int id,
+    required String storageId,
+    required String dataScopeId,
+  }) =>
+      (update(mediaNodesTable)..where((t) => t.id.equals(id))).write(
+        MediaNodesTableCompanion(
+          storageId: Value(storageId),
+          dataScopeId: Value(dataScopeId),
+        ),
+      );
+
   // --- Batch Operations (for recursive scan) ---
 
   Future<void> batchUpsert(List<MediaNodesTableCompanion> entries) async {

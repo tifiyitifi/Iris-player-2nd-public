@@ -26,6 +26,17 @@ class MediaPlayer {
   final Future<void> Function() stepForward;
   final Future<void> Function(Duration) seek;
 
+  /// Seek honouring the explicit "finish this item" intent: the landing may sit
+  /// ON the media end, which raises `completed` and advances to the next entry.
+  /// Only a scrub RELEASE at 100% may use it (see `isSeekReleaseFinish` in
+  /// `utils/seek_tail_guard.dart`); every live drag tick stops at the shared tail
+  /// guard instead so the engine never reaches EOF mid-gesture.
+  ///
+  /// Null when the backend cannot express the intent — callers then fall back to
+  /// [seek], whose landing stays inside the guard (the drag simply parks just
+  /// before the end instead of advancing).
+  final Future<void> Function(Duration)? finishSeek;
+
   /// Latest accumulated step-seek target (ms, on the same axis as [position])
   /// while a ← / → / double-tap step burst is heading to its target, else null.
   /// The OSD reads this instead of the pre-seek [position] snapshot so the
@@ -72,6 +83,7 @@ class MediaPlayer {
     required this.stepBackward,
     required this.stepForward,
     required this.seek,
+    this.finishSeek,
     this.stepIntentTargetMs,
   });
 }
@@ -182,6 +194,7 @@ class MediaKitPlayer extends MediaPlayer {
     required super.stepBackward,
     required super.stepForward,
     required super.seek,
+    super.finishSeek,
     super.stepIntentTargetMs,
   });
 }
@@ -209,6 +222,7 @@ class FvpPlayer extends MediaPlayer {
     required super.stepBackward,
     required super.stepForward,
     required super.seek,
+    super.finishSeek,
     super.stepIntentTargetMs,
   });
 }

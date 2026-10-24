@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:iris/widgets/a11y_tooltip.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/services/new_window_requests.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/models/storages/local.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_storage_store.dart';
@@ -77,6 +80,15 @@ class Favorites extends HookWidget {
               case StorageOptions.remove:
                 useStorageStore().removeFavorite(favorites[index]);
                 break;
+              case StorageOptions.openInNewWindow:
+                launchNewWindow(
+                  context,
+                  newWindowRequestForPath(
+                    storageId: favorites[index].storageId,
+                    path: favorites[index].path,
+                  ),
+                );
+                break;
               default:
                 break;
             }
@@ -87,6 +99,11 @@ class Favorites extends HookWidget {
               //   value: StorageOptions.edit,
               //   child: Text(t.edit),
               // ),
+              if (NewWindowLauncher.isSupported)
+                PopupMenuItem(
+                  value: StorageOptions.openInNewWindow,
+                  child: Text(t.lib_open_in_new_window),
+                ),
               PopupMenuItem(
                 value: StorageOptions.remove,
                 child: Text(t.remove),

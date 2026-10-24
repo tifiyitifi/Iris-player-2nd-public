@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -37,6 +38,21 @@ class _FailingReadKv extends FileJsonKv {
   @override
   Future<String> readRaw(File file) async {
     throw const FileSystemException('simulated read failure');
+  }
+}
+
+/// [FileJsonKv] that loads fine once and then serves a TORN payload to the
+/// write-time reload, simulating a parse failure on an otherwise readable file.
+class _FlakyParseKv extends FileJsonKv {
+  _FlakyParseKv({required super.filePath, required this.validContent});
+
+  final String validContent;
+  int reads = 0;
+
+  @override
+  Future<String> readRaw(File file) async {
+    reads++;
+    return reads == 1 ? validContent : '{"keep":"me", torn';
   }
 }
 
@@ -92,6 +108,25 @@ void main() {
       expect(File(filePath).existsSync(), isTrue);
     });
 
+    test('a second window write keeps the first window keys (merge on write)',
+        () async {
+      // Two windows (two backends on one file), each loaded the empty store.
+      final window1 = FileJsonKv(filePath: filePath);
+      final window2 = FileJsonKv(filePath: filePath);
+      expect(await window1.read(key: 'seed'), isNull);
+      expect(await window2.read(key: 'seed'), isNull);
+
+      await window1.write(key: 'theme_config', value: 'dark');
+      // Window 2 still holds its stale empty cache; the rewrite must not drop
+      // window 1's key.
+      await window2.write(key: 's2.playQueue_state', value: '[]');
+
+      final stored = json.decode(await File(filePath).readAsString())
+          as Map<String, dynamic>;
+      expect(stored['theme_config'], 'dark');
+      expect(stored['s2.playQueue_state'], '[]');
+    });
+
     test('no leftover temp file after a write', () async {
       final kv = FileJsonKv(filePath: filePath);
       await kv.write(key: 'k', value: 'v');
@@ -116,6 +151,27 @@ void main() {
       // ...and the store keeps working afterwards.
       await kv.write(key: 'k', value: 'v');
       expect(await FileJsonKv(filePath: filePath).read(key: 'k'), 'v');
+    });
+
+    test('a torn write-time reload aborts the write instead of rewriting',
+        () async {
+      // The initial load succeeded, so the store holds a snapshot; the reload
+      // that guards the whole-file rewrite then cannot parse what is on disk
+      // (a torn/unreadable payload another window left behind). Rewriting from
+      // the stale snapshot would delete every key that window wrote — the write
+      // must fail and the file must stay EXACTLY as it was.
+      const original = '{"keep":"me","their":"bytes"}';
+      await File(filePath).writeAsString(original);
+      final kv = _FlakyParseKv(filePath: filePath, validContent: original);
+      expect(await kv.read(key: 'keep'), 'me');
+
+      await expectLater(
+          kv.write(key: 'new', value: 'v'), throwsA(isA<FormatException>()));
+      expect(File(filePath).readAsStringSync(), original,
+          reason: 'a failed reload must never be followed by a stale rewrite');
+
+      // The in-memory snapshot was not clobbered by the half-parsed payload.
+      expect(await kv.read(key: 'their'), 'bytes');
     });
 
     test('a read failure keeps the store unloaded and never wipes the file',

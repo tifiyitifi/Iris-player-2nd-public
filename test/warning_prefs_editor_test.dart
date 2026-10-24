@@ -77,10 +77,10 @@ void main() {
         isNull);
 
     // Suppress via store -> must rebuild to OFF.
-    await tester.runAsync(() => useAppStore().suppressWarning(kWarningPhysicalDeleteRecycle));
+    await tester.runAsync(() => useAppStore().suppressWarning(kWarningForceAppendNoMedia));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    expect(useAppStore().state.suppressedWarnings, contains(kWarningPhysicalDeleteRecycle));
+    expect(useAppStore().state.suppressedWarnings, contains(kWarningForceAppendNoMedia));
     expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile).first).value, isFalse);
     expect(
         tester.widget<TextButton>(find.widgetWithText(TextButton, 'Restore all warnings')).onPressed,
@@ -99,11 +99,11 @@ void main() {
     expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile).last).value, isFalse);
 
     // Reset one -> rebuild to ON.
-    await tester.runAsync(() => useAppStore().resetWarning(kWarningPhysicalDeleteRecycle));
+    await tester.runAsync(() => useAppStore().resetWarning(kWarningForceAppendNoMedia));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile).first).value, isTrue);
-    expect(useAppStore().state.suppressedWarnings, isNot(contains(kWarningPhysicalDeleteRecycle)));
+    expect(useAppStore().state.suppressedWarnings, isNot(contains(kWarningForceAppendNoMedia)));
 
     // Suppress all, then reset-all.
     for (final id in kSuppressibleWarningIds) {

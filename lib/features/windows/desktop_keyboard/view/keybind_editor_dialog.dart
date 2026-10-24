@@ -19,8 +19,11 @@ final _log = AreaKeyLog(LogKeys.legacyStore);
 /// [PotPlayerAction.seekStepPopover] would resurrect the modal popover that
 /// gated off every other shortcut. Its keyboard alternative is
 /// seekStepIncrease / seekStepDecrease (direct OSD, no window).
+/// [PotPlayerAction.revealCurrentFileInExplorer] is likewise a right-click
+/// command (shell hand-off), not a transport action.
 const Set<PotPlayerAction> kMenuOnlyPotPlayerActions = <PotPlayerAction>{
   PotPlayerAction.seekStepPopover,
+  PotPlayerAction.revealCurrentFileInExplorer,
 };
 
 /// Human-readable names for actions (localized via `keybind_act_*` keys).
@@ -41,6 +44,7 @@ String keybindActionLabel(PotPlayerAction a, AppLocalizations t) => switch (a) {
       PotPlayerAction.seekStepPopover => t.keybind_act_seek_step_popover,
       PotPlayerAction.seekStepIncrease => t.keybind_act_seek_step_increase,
       PotPlayerAction.seekStepDecrease => t.keybind_act_seek_step_decrease,
+      PotPlayerAction.revealCurrentFileInExplorer => t.open_in_explorer,
       PotPlayerAction.restart => t.keybind_act_restart,
       PotPlayerAction.jumpToTime => t.keybind_act_jump_to_time,
       PotPlayerAction.volumeUp => t.keybind_act_volume_up,

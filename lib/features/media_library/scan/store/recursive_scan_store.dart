@@ -32,9 +32,12 @@ class RecursiveScanStore extends PersistentStore<RecursiveScanState> {
   static final Stopwatch _monotonic = Stopwatch()..start();
   static Duration _defaultMonotonic() => _monotonic.elapsed;
 
+  /// Window-scoped scan snapshot: the KV key is session-scoped, so a second
+  /// window's scan view never shows (or rewrites) the first one's progress.
+
   final MonotonicClock _clock;
 
-  final KvStore _storage = getKvStore();
+  final KvStore _storage = getSessionKvStore();
 
   Timer? _saveDebounce;
   bool _disposed = false;

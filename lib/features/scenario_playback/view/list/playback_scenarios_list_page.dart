@@ -22,8 +22,7 @@ class PlaybackScenariosListPage extends HookWidget {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final system =
-        scenarios.where((s) => s.type == ScenarioKind.systemPlaying).firstOrNull;
+    final system = store.select(context, store.systemPlayingScenarioOf);
     // The unified workspace is an internal context, never a user-visible
     // "saved scenario" — only userSaved rows are listed.
     final saved =

@@ -11,9 +11,11 @@ import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
 import 'package:iris/globals.dart';
 import 'package:iris/features/windows/context_menu/controller/context_menu_builder.dart';
 import 'package:iris/features/windows/context_menu/view/potplayer_context_menu_anchor.dart';
+import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/hooks/use_gesture.dart';
 import 'package:iris/hooks/use_gesture_mode.dart';
 import 'package:iris/hooks/use_region_gesture.dart';
+import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/store/gesture_region.dart';
@@ -22,6 +24,7 @@ import 'package:iris/pages/player/overlays/dual_axis_speed_selector.dart';
 import 'package:iris/pages/player/overlays/speed_selector.dart';
 import 'package:iris/pages/player/overlays/transient_speed_tip.dart';
 import 'package:iris/store/use_app_store.dart';
+import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_player_ui_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/platform.dart';
@@ -288,6 +291,19 @@ class GestureOverlay extends HookWidget {
     final isAlwaysOnTopForMenu =
         playerUiStore.select(context, (s) => s.isAlwaysOnTop);
     final playerForMenu = context.read<MediaPlayer>();
+    // The file currently fed to the player — same identity the play-queue and
+    // history popups reveal. Subscribing to the FileItem (not the whole state)
+    // rebuilds this overlay only when the media changes, and re-evaluates
+    // whether the reveal entry applies.
+    final FileItem? currentFileForMenu = usePlayQueueStore().select(
+      context,
+      (s) {
+        final i = s.playQueue.indexWhere((e) => e.index == s.currentIndex);
+        return i < 0 ? null : s.playQueue[i].file;
+      },
+    );
+    final bool canRevealForMenu = currentFileForMenu != null &&
+        canRevealFileInExplorer(currentFileForMenu);
     final l10n = getLocalizations(context);
     final menuEntries = useMemoized(
       () => buildPotPlayerContextMenu(
@@ -298,6 +314,8 @@ class GestureOverlay extends HookWidget {
         isAlwaysOnTop: isAlwaysOnTopForMenu,
         seekStepLabel: l10n.context_menu_seek_step,
         seekStepHint: l10n.context_menu_seek_step_hint,
+        canRevealInExplorer: canRevealForMenu,
+        revealInExplorerLabel: l10n.open_in_explorer,
       ),
       [
         isMediaKitForMenu,
@@ -305,6 +323,7 @@ class GestureOverlay extends HookWidget {
         supportsTrackForMenu,
         isFullScreenForMenu,
         isAlwaysOnTopForMenu,
+        canRevealForMenu,
         // Rebuild the label/hint when the language changes. Deliberately NOT
         // keyed on seekStepSeconds: the label is static, so the full-screen
         // overlay never rebuilds on each held Ctrl+↑/↓ live update.

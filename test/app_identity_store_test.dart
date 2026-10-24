@@ -191,4 +191,34 @@ void main() {
       expect(e.initializedAt, isNull);
     });
   });
+
+  group('load outcome', () {
+    test('a successful load flips `loaded`, even with no entries', () async {
+      final store = AppIdentityStore(persistence: _MemPersistence());
+      expect(store.loaded, isFalse);
+      await store.load();
+      expect(store.loaded, isTrue,
+          reason: 'an empty entry list is a VALID loaded state — deletion '
+              'cleanup must still be allowed to run');
+    });
+
+    test('a failed load stays unloaded so maintenance cannot sweep', () async {
+      final store = AppIdentityStore(persistence: _ThrowingPersistence());
+      await store.load();
+      expect(store.loaded, isFalse,
+          reason: 'an empty list after a failure must not be confused with '
+              '"no entry references any workspace"');
+      expect(store.state.entries, isEmpty);
+    });
+  });
+}
+
+/// Persistence backend whose every read fails (a broken AUX read at startup).
+class _ThrowingPersistence implements IdentityPersistence {
+  @override
+  Future<Map<String, String>> loadAll() async =>
+      throw StateError('aux read failed');
+
+  @override
+  Future<void> saveRow(String key, String encoded) async {}
 }

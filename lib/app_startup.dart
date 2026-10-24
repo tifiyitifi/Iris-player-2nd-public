@@ -9,6 +9,9 @@ import 'package:iris/app_shutdown.dart';
 import 'package:iris/features/app_identity/services/app_identity_paths.dart';
 import 'package:iris/features/app_identity/services/shortcut_channel_service.dart';
 import 'package:iris/features/app_identity/store/use_app_identity_store.dart';
+import 'package:iris/features/app_update/services/update_lease.dart';
+import 'package:iris/features/media_library/services/media_progress_claim.dart';
+import 'package:iris/features/media_library/scan/service/scan_lease.dart';
 import 'package:iris/features/media_library/services/saf_uri_backfill_service.dart';
 import 'package:iris/features/playback_tools/services/screenshot_service.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
@@ -22,6 +25,7 @@ import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/scenario_playback/actions/drag_drop_gate.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/features/scenario_playback/playback/vm_group_position_sync.dart';
+import 'package:iris/features/scenario_playback/services/workspace_gc.dart';
 import 'package:iris/features/settings_transfer/transfer_module.dart';
 import 'package:iris/features/tag_play/playback/tag_play_controller.dart';
 import 'package:iris/features/tag_play/store/tag_play_bootstrap.dart';
@@ -35,10 +39,12 @@ import 'package:iris/models/db/storage_scope.dart';
 import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/models/storages/storage_name_prefs.dart';
+import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_storage_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
-import 'package:iris/utils/platform.dart' show isMobilePlatform;
+import 'package:iris/utils/platform.dart' show isDesktop, isMobilePlatform;
 import 'package:media_stream/media_stream.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -61,16 +67,22 @@ Future<void> windowManagerEnsureReady() async {
   await windowManager.setPreventClose(true);
   windowManager.addListener(_WindowCloseShutdownListener());
 
-  WindowOptions windowOptions = const WindowOptions(
-    size: Size(1280, 720),
-    minimumSize: Size(427, 240),
-    center: true,
+  WindowOptions windowOptions = WindowOptions(
+    size: const Size(1280, 720),
+    minimumSize: const Size(427, 240),
+    // The primary window keeps the historical centered placement; a second
+    // window is cascaded instead of covering the first one exactly.
+    center: AppInstance.isPrimary,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
     titleBarStyle: TitleBarStyle.hidden,
   );
 
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+    if (!AppInstance.isPrimary) {
+      final double offset = 32.0 * (AppInstance.slot - 1);
+      await windowManager.setPosition(Offset(offset + 16, offset + 16));
+    }
     await windowManager.show();
     await windowManager.focus();
   });
@@ -103,6 +115,45 @@ Future<void> completeStartupInitialization() async {
   StorageScope.resolver = (storageId) =>
       useStorageStore().findById(storageId)?.dataScopeId ?? storageId;
 
+  // Path-keyed writes must also reach the entries that represent the SAME
+  // physical tree but were stored as independent scopes (a re-added drive with
+  // a NULL data_scope_id). Without this, deleting a file through the newer
+  // entry left the older entry's `media_nodes` row behind: the file vanished
+  // from disk while the queue kept listing and playing it.
+  StorageScope.familyResolver = (storageId) {
+    final storages = useStorageStore().state.storages;
+    final entryIndex = storages.indexWhere((s) => s.id == storageId);
+    if (entryIndex < 0) return <String>{storageId};
+    final entry = storages[entryIndex];
+
+    final family = <String>{storageId};
+    if (entry.dataScopeId != null && entry.dataScopeId!.isNotEmpty) {
+      family.add(entry.dataScopeId!);
+    }
+    // Exact duplicates only: same family, same stable volume id, same base.
+    // A different base path means a different path root, so sharing a scope
+    // would re-interpret every stored relative path.
+    if (entry is! LocalStorage) return family;
+    final volumeId = entry.volumeId;
+    if (volumeId == null || volumeId.isEmpty) return family;
+    for (final other in storages) {
+      if (other.id == entry.id) continue;
+      if (other is! LocalStorage) continue;
+      if (other.volumeId != volumeId) continue;
+      // One path root, under the filesystem's own case rules: the duplicate
+      // repair groups `E:/Movies` with `e:/movies` on NTFS, so path-keyed writes
+      // must reach that sibling too (see StoragePathCodec.sameBasePath).
+      if (!StoragePathCodec.sameBasePath(other.basePath, entry.basePath)) {
+        continue;
+      }
+      family.add(other.id);
+      if (other.dataScopeId != null && other.dataScopeId!.isNotEmpty) {
+        family.add(other.dataScopeId!);
+      }
+    }
+    return family;
+  };
+
   // Media-node paths are stored RELATIVE to the storage base (schema v38), so a
   // drive-letter reassignment changes only `storages_table.base_path` — the node
   // rows need no rewrite. The base is resolved here from the live store; remote
@@ -118,6 +169,17 @@ Future<void> completeStartupInitialization() async {
 
   Log.init();
   PlaybackProviderRegistry.init();
+  if (isDesktop) {
+    // Multi-instance: a closing window hands every claimed file back AFTER
+    // its final progress save, so the other window can take over; the slot is
+    // released so a new window can take the lowest free number.
+    AppShutdown.registerDisposer(() async {
+      await UpdateLease.instance.release();
+      await ScanLease.instance.release();
+      await MediaProgressClaim.instance.releaseAll();
+      await AppInstance.release();
+    });
+  }
   // Merged-session → scenario bookkeeping: a VM session advances across groups
   // without the scenario ever being told, which left the queue highlight (and
   // the locate hint) on the previously tapped row.
@@ -210,6 +272,12 @@ Future<void> completeStartupInitialization() async {
   // Custom desktop entries: icon storage + persisted entries + capability.
   await AppIdentityPaths.ensureInitialized();
   await useAppIdentityStore().load();
+  if (isDesktop) {
+    // Reclaim internal workspaces whose owning window can never come back
+    // (entry deleted, slot directory wiped, ephemeral residue). Fire-and-forget:
+    // startup must not wait on a maintenance sweep.
+    unawaited(WorkspaceGc.sweepAtStartup());
+  }
   if (!kIsWeb && Platform.isAndroid) {
     final cap = await ShortcutChannelService().capability();
     await useAppIdentityStore().setSupported(cap.pinAvailable);

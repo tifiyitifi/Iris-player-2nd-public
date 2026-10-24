@@ -1,22 +1,26 @@
+import 'package:iris/utils/seek_tail_guard.dart';
+
 /// Clamps an intra-segment seek target so a virtual-total (100%) seek never
 /// lands past the segment end (`localMs == segDur` fires an instant
-/// `completed`). Segments report `segDur - 1` as the last seekable ms;
-/// zero/unknown durations clamp to 0.
-int clampVmLocalMs(int? segDurMs, int localMs) {
+/// `completed`). Segments report `segDur - kSeekTailGuardMs` as the last
+/// seekable ms — the same guard an ordinary single file uses, because `segDur`
+/// is the container duration too: its last decodable frame sits a frame duration
+/// earlier and its last key frame up to a whole GOP before that. Zero/unknown
+/// durations clamp to 0.
+///
+/// [intent] is the one exception: a caller that explicitly means "finish this
+/// item" ([SeekIntent.finishAtEnd] — a scrub release at 100%, or a tail step
+/// while playing) may land ON `segDur`, which is what raises the `completed`
+/// that advances the virtual session. The guard stays for every other caller.
+int clampVmLocalMs(
+  int? segDurMs,
+  int localMs, {
+  SeekIntent intent = SeekIntent.stopAtTail,
+}) {
   final segDur = segDurMs ?? 0;
   if (segDur <= 0) return 0;
-  return localMs.clamp(0, segDur - 1);
-}
-
-/// Last SEEKABLE millisecond inside a segment: `segDur - 1`.
-///
-/// The same "one ms short of the end" contract as [clampVmLocalMs]: landing ON
-/// `segDur` fires an instant `completed`. A step seek therefore has to be bounded
-/// by THIS, not by the raw duration, or it hands the engine a delta whose landing
-/// the OSD and the persisted position deliberately avoid.
-int vmLastSeekableMs(int? segDurMs) {
-  final segDur = segDurMs ?? 0;
-  return segDur <= 0 ? 0 : segDur - 1;
+  final int maxMs = seekTailMaxMs(segDur, intent: intent);
+  return localMs.clamp(0, maxMs);
 }
 
 /// One physical video inside a Virtual Media item.

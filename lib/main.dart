@@ -9,6 +9,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/app_startup.dart';
+import 'package:iris/features/app_update/services/update_lease.dart';
+import 'package:iris/features/media_library/services/media_progress_claim.dart';
+import 'package:iris/features/media_library/scan/service/scan_lease.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/info.dart';
 import 'package:iris/l10n/app_localizations.dart';
@@ -18,6 +21,7 @@ import 'package:iris/pages/home/home.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/theme.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/app_paths.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/platform.dart';
@@ -155,6 +159,17 @@ void main(List<String> arguments) async {
   // Portable-mode decision MUST precede any database / store initialization:
   // it relocates the Drift file and selects the KV backend.
   await AppPaths.init();
+
+  if (isDesktop) {
+    // Multi-instance playback: per-window session identity (queue/history/
+    // active scenario scoping) and per-file progress ownership so two windows
+    // never overwrite each other's resume point. Portable mode decides where
+    // both lock directories live, hence after AppPaths.init().
+    await AppInstance.init();
+    MediaProgressClaim.instance = await MediaProgressClaim.createFileBacked();
+    ScanLease.instance = await ScanLease.createFileBacked();
+    UpdateLease.instance = await UpdateLease.createFileBacked();
+  }
 
   if (isDesktop) {
     await windowManagerEnsureReady();

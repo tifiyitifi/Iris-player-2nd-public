@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/meta_settings/data/value_codec.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/app_paths.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/features/meta_settings/engine/effects_registry.dart';
@@ -16,6 +18,7 @@ import 'package:iris/models/db/app_database.dart'
     show SettingValuesTableCompanion;
 import 'package:iris/models/enums/breadcrumb_start_side.dart'
     show BreadcrumbStartSide;
+import 'package:iris/models/enums/step_tail_finish_mode.dart';
 import 'package:iris/models/enums/video_cache_preset.dart';
 import 'package:iris/models/enums/webdav_scan_mode.dart' show WebDavScanMode;
 import 'package:iris/models/store/phone_landscape_slider_type_helper.dart';
@@ -90,6 +93,18 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
   /// diff a metadata mutation down to a single-row upsert. Null = baseline
   /// unknown, so the next rows write falls back to a full snapshot replace.
   Map<String, String>? _lastPersistedRows;
+
+  /// Serializes the rows writes so two overlapping mutations cannot interleave
+  /// their diff computation with their DB write: an older snapshot landing
+  /// last would overwrite the newer value while the baseline already claims
+  /// it.
+  ///
+  /// The FIRST write runs INLINE (in the caller's own await chain): deferring
+  /// it to a queued microtask would take the DB write out of that chain, and
+  /// a write that is not awaited by its caller never settles under the widget
+  /// test's fake clock.
+  bool _rowsWriteBusy = false;
+  final List<({AppState next, Completer<void> completer})> _rowsWriteQueue = [];
 
   Future<void> updateAutoPlay(bool autoPlay) async =>
       set(state.copyWith(autoPlay: autoPlay));
@@ -218,6 +233,12 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     set(state.copyWith(rate: rate, rateBeforeReset: rateBeforeReset));
   }
 
+  /// Extra windows must not rewrite the shared settings blob on shutdown: their
+  /// in-memory snapshot can predate changes another window made, and every
+  /// immediate mutation already persisted through [_persist].
+  @override
+  bool get persistOnDispose => AppInstance.isPrimary;
+
   @override
   Future<void> dispose() async {
     // A held X/C mutates only memory; if the app tears down before the KeyUp
@@ -242,6 +263,20 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
             : volume > 100
                 ? 100
                 : volume));
+    await _persistVolume();
+  }
+
+  /// Persists a volume/mute change — PRIMARY WINDOW ONLY.
+  ///
+  /// Multi-window: every process owns its own live volume (each player renders
+  /// its own audio), so the extra windows keep the change in memory. Persisting
+  /// it from there would rewrite the whole shared `app_state` blob (carrying that
+  /// window's stale copy of every other setting) and would make the windows fight
+  /// over one stored value. The shared value therefore follows the first window;
+  /// a restarted window starts from it (users chose "independent for this run,
+  /// shared on restart").
+  Future<void> _persistVolume() async {
+    if (!AppInstance.isPrimary) return;
     await _persist(state);
   }
 
@@ -528,6 +563,15 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         'videoCachePreset', v.name, SettingValueType.enumeration);
   }
 
+  /// Sets the tail-step policy (what a forward step press does once its target
+  /// reaches the media tail); persisted as a `playback.stepTailFinish` AUX row.
+  /// Both player hooks read it live in `seekRelative` (see `decideStepTail`).
+  Future<void> updateStepTailFinishMode(StepTailFinishMode v) async {
+    set(state.copyWith(stepTailFinishMode: v));
+    await _savePlaybackRow(
+        'stepTailFinish', v.name, SettingValueType.enumeration);
+  }
+
   // ── Keyboard OSD (PotPlayer-style) ──────────────────────────────────────
   // AUX `osd.` rows — JsonKey-excluded, desktop-only, gate-OFF degrades to
   // no OSD / defaults via resolveOsd* helpers.
@@ -600,12 +644,12 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
 
   Future<void> updateMute(bool isMuted) async {
     set(state.copyWith(isMuted: isMuted));
-    await _persist(state);
+    await _persistVolume();
   }
 
   Future<void> toggleMute() async {
     set(state.copyWith(isMuted: !state.isMuted));
-    _persist(state);
+    await _persistVolume();
   }
 
   Future<void> updateThemeMode(ThemeMode themeMode) async {
@@ -1041,9 +1085,18 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
 
   /// The funnel tail. [next] must already be `set` — callers pass the same
   /// snapshot they applied so matrix flags are evaluated on it.
-  Future<void> _persist(AppState next) async {
+  ///
+  /// [forceBlob] is for explicit whole-settings replacements (import): they are
+  /// deliberate user actions and must land even from an extra window.
+  Future<void> _persist(AppState next, {bool forceBlob = false}) async {
     final t = PersistPolicy.targets(next);
-    if (t.writeBlob) await save(next);
+    // Multi-window: the blob is ONE whole-snapshot value, and an extra window's
+    // copy can predate a change a sibling made — writing it back would revert
+    // that change (in legacy mode the blob is authoritative, so it is real data
+    // loss; otherwise it corrupts the rollback mirror). The rows path below is a
+    // per-field diff and stays window-safe. Gate transitions bypass this funnel
+    // and call `save()` directly on purpose.
+    if (t.writeBlob && (forceBlob || AppInstance.isPrimary)) await save(next);
     if (t.writeRows) await _persistChangedRows(next);
   }
 
@@ -1053,23 +1106,82 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
   /// Falls back to a full snapshot replace when the baseline is unknown (fresh
   /// boot / after a fallback-to-blob load) so the mirror can never drift. The
   /// baseline is refreshed on every write, on load, and on gate transitions.
-  Future<void> _persistChangedRows(AppState next) async {
+  ///
+  /// The baseline is advanced ONLY when the rows really landed: it is a
+  /// "these rows are stored" claim, never an "we tried" claim. A failed write
+  /// keeps the previous baseline, so the same fields are re-sent by the next
+  /// diff instead of silently vanishing from the mirror.
+  ///
+  /// Writes are serialized: two overlapping mutations must not interleave
+  /// their diff computation with their DB write, or an older snapshot landing
+  /// last would overwrite the newer value while the baseline already claims
+  /// it.
+  Future<void> _persistChangedRows(AppState next) {
+    if (!_rowsWriteBusy) return _runRowsWrite(next);
+    final completer = Completer<void>();
+    _rowsWriteQueue.add((next: next, completer: completer));
+    return completer.future;
+  }
+
+  /// Runs one rows write and then the queued ones, in order.
+  Future<void> _runRowsWrite(AppState next) async {
+    _rowsWriteBusy = true;
+    try {
+      await _persistChangedRowsNow(next);
+    } finally {
+      _rowsWriteBusy = false;
+      if (_rowsWriteQueue.isNotEmpty) {
+        final queued = _rowsWriteQueue.removeAt(0);
+        try {
+          await _runRowsWrite(queued.next);
+          queued.completer.complete();
+        } catch (e, s) {
+          queued.completer.completeError(e, s);
+        }
+      }
+    }
+  }
+
+  Future<void> _persistChangedRowsNow(AppState next) async {
     if (!MetaSettingsModule.ready) return;
     final encoded = StateBridge.encodeRows(next);
     final last = _lastPersistedRows;
     if (last == null) {
-      await MetaSettingsModule.persistState(next);
-      _lastPersistedRows = encoded;
+      // Unknown baseline (load fell back to the blob / the rows were unusable).
+      // A whole-namespace replace is safe only for the authoritative window: an
+      // extra window's snapshot predates whatever a sibling wrote since, so it
+      // must not rewrite rows it never read. The primary reseeds the mirror.
+      if (!AppInstance.isPrimary) {
+        areaKeyLog.w('skip rows reseed: extra window has no rows baseline');
+        return;
+      }
+      final ok = await MetaSettingsModule.persistState(next);
+      // A failed reseed leaves the baseline unknown, so the next mutation
+      // reseeds the whole namespace instead of diffing against a lie.
+      _lastPersistedRows = ok ? encoded : null;
       return;
     }
     final changed = <String, String>{};
     encoded.forEach((key, value) {
       if (last[key] != value) changed[key] = value;
     });
-    _lastPersistedRows = encoded;
-    if (changed.isEmpty) return;
-    await MetaSettingsModule.persistChangedRows(changed);
+    if (changed.isEmpty) {
+      _lastPersistedRows = encoded;
+      return;
+    }
+    final ok = await MetaSettingsModule.persistChangedRows(changed);
+    // Keep the OLD baseline on failure: the next diff then re-sends exactly
+    // the fields that never landed.
+    _lastPersistedRows = ok ? encoded : last;
   }
+
+  /// Drops the rows diff baseline (test seam).
+  ///
+  /// The baseline is per-store state, so a test that swaps the metadata repo
+  /// needs a way to force the next write to reseed the whole namespace
+  /// instead of diffing against rows the previous test wrote.
+  @visibleForTesting
+  void debugResetRowsBaseline() => _lastPersistedRows = null;
 
   @override
   AppState get currentState => state;
@@ -1110,6 +1222,28 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
           )
         : state.copyWith(useMetadataSettings: next);
     set(nextState);
+
+    // Multi-window: this is the ONE settings write that replaces whole
+    // namespaces — the shared `app_state` blob AND every `app.*` row. An extra
+    // window's snapshot predates whatever a sibling wrote since it loaded (the
+    // blob is a startup snapshot, see FileJsonKv), so replaying either write
+    // from here reverts that sibling's data. Same rule as [_persist]'s blob
+    // gate and [_persistChangedRows]' unknown-baseline guard; the switch
+    // therefore stays in memory for this run, exactly like the per-window
+    // volume (see [_persistVolume]). The shared value follows the first window
+    // and a restart picks it up.
+    if (!AppInstance.isPrimary) {
+      // WARNING level on purpose: legacy area INFO is silenced, and this is the
+      // one place a user-visible toggle deliberately does not persist.
+      areaKeyLog.w('setMetadataGate($next) kept in memory (extra window)');
+      if (next) {
+        // Keep the read-only half of the transition: gate-ON is the recovery
+        // point for the AUX-only domains, and re-hydrating them writes nothing.
+        final withAux = await applyAuxDomains(state);
+        if (!identical(withAux, state)) set(withAux);
+      }
+      return;
+    }
 
     try {
       await save(nextState); // forced: discovery + rollback anchor
@@ -1314,6 +1448,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     final String? raw = rows['resumeOnStartup'];
     final String? dropRaw = rows['dropAppendPercent'];
     final String? cacheRaw = rows['videoCachePreset'];
+    final String? stepTailRaw = rows['stepTailFinish'];
     return base.copyWith(
       resumeOnStartup: raw == null
           ? base.resumeOnStartup
@@ -1331,6 +1466,12 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
           : VideoCachePreset.values.firstWhere(
               (v) => v.name == cacheRaw,
               orElse: () => base.videoCachePreset,
+            ),
+      stepTailFinishMode: stepTailRaw == null
+          ? base.stepTailFinishMode
+          : StepTailFinishMode.values.firstWhere(
+              (v) => v.name == stepTailRaw,
+              orElse: () => base.stepTailFinishMode,
             ),
     );
   }
@@ -2790,7 +2931,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     imported = await applyAuxDomains(imported);
 
     set(imported);
-    await _persist(imported);
+    await _persist(imported, forceBlob: true);
   }
 
   Map<String, dynamic> exportToJson() {

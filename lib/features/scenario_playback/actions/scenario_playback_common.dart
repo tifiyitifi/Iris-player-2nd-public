@@ -37,7 +37,8 @@ Scenario? currentPlaybackWorkspace(PlaybackScenarioStore store) {
   final entryId = identity.state.activeEntryId;
   final entry = entryId == null ? null : identity.entryById(entryId);
   if (entry != null && !entry.sharedWithDefault) {
-    final id = entry.workspaceScenarioId;
+    final id = store.claimedEntryWorkspaceId(entry.id) ??
+        entry.workspaceScenarioId;
     if (id != null) {
       for (final s in store.state.scenarios) {
         if (s.id == id) return s;
@@ -61,7 +62,11 @@ Future<Scenario> ensurePlaybackWorkspace() async {
 
   final Scenario ws;
   if (entry != null && !entry.sharedWithDefault) {
-    ws = await store.ensureEntryWorkspace(entry.workspaceScenarioId);
+    // Every window plays the entry in its OWN row (primary: the canonical one).
+    ws = await store.ensureWindowEntryWorkspace(
+      entryId: entry.id,
+      sharedId: entry.workspaceScenarioId,
+    );
   } else {
     ws = await store.ensureSystemPlayingScenario();
   }
@@ -82,7 +87,8 @@ Scenario? currentBackgroundWorkspace(PlaybackScenarioStore store) {
   final entryId = identity.state.activeEntryId;
   final entry = entryId == null ? null : identity.entryById(entryId);
   if (entry != null && !entry.sharedWithDefault) {
-    final id = entry.backgroundWorkspaceScenarioId;
+    final id = store.claimedEntryWorkspaceId(entry.id, background: true) ??
+        entry.backgroundWorkspaceScenarioId;
     if (id != null) {
       for (final s in store.state.scenarios) {
         if (s.id == id) return s;
@@ -102,13 +108,19 @@ Future<Scenario> ensureBackgroundPlaybackWorkspace() async {
   final entryId = identity.state.activeEntryId;
   final entry = entryId == null ? null : identity.entryById(entryId);
   if (entry != null && !entry.sharedWithDefault) {
-    final bg = await store
+    // The entry's canonical 副音 row owns the shared DEFINITION; this window
+    // plays its own claimed row (primary: the canonical one).
+    final canonical = await store
         .ensureEntryBackgroundWorkspace(entry.backgroundWorkspaceScenarioId);
-    if (entry.backgroundWorkspaceScenarioId != bg.id) {
+    if (entry.backgroundWorkspaceScenarioId != canonical.id) {
       await identity.upsertEntry(
-          entry.copyWith(backgroundWorkspaceScenarioId: bg.id));
+          entry.copyWith(backgroundWorkspaceScenarioId: canonical.id));
     }
-    return bg;
+    return store.ensureWindowEntryWorkspace(
+      entryId: entry.id,
+      sharedId: canonical.id,
+      background: true,
+    );
   }
   return store.ensureBackgroundWorkspace();
 }

@@ -45,6 +45,7 @@ import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:iris/store/persistent_store.dart';
+import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
 
@@ -62,6 +63,20 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   static const _key = KvKeys.backgroundPlaybackState;
 
+  /// This window's remembered 副音 file (media key), kept in the session
+  /// position payload. Null until the window plays something / a legacy load.
+  String? _sessionFocusKey;
+
+  /// Fields of [BackgroundPlaybackState] that describe WHERE this window is
+  /// rather than app-wide preferences. They persist to the session-scoped
+  /// position payload so two windows never inherit each other's queue.
+  static const Set<String> _positionFields = {
+    'queue',
+    'queueWindowStart',
+    'queueTotal',
+    'shuffleSeed',
+  };
+
   // ── Session lifecycle ──
 
   /// The ACTIVE background workspace's scenario id (the per-entry pairing
@@ -78,18 +93,21 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     }
   }
 
-  /// Records the CURRENT 副音 item as the background scenario's occurrence.
+  /// Records the CURRENT 副音 item: this window's own cursor in the session
+  /// position payload, plus (primary only) the shared scenario occurrence.
   ///
   /// 副音 keeps NO media progress (the engine's `saveProgress` is a no-op); it
   /// only remembers WHICH file of its list it was on, so a restart continues
-  /// with that file. Stored on the scenario (like the foreground's own current
-  /// item), so it is per entry and needs no per-file progress row.
+  /// with that file.
+  ///
+  /// Multi-window: the position is per-window (the session payload), so the
+  /// shared scenario row is written ONLY by the primary window — the first
+  /// window's "last file" is the shared one; an extra window keeps its own and
+  /// never overwrites it.
   Future<void> _persistCurrentOccurrence() async {
     try {
       final s = state;
       if (s.currentIndex < 0 || s.currentIndex >= s.queue.length) return;
-      final scenarioId = await _bgScenarioId();
-      if (scenarioId == null) return;
       final file = s.queue[s.currentIndex];
       // SAF single-picked files carry no path: their identity is the document
       // uri, matching [backgroundMediaKey] / MediaNode.occurrencePath. Storing
@@ -98,6 +116,11 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       final occPath = file.path.isEmpty && file.uri.isNotEmpty
           ? canonicalOccurrencePath(file.uri)
           : canonicalOccurrencePath(file.path.join('/'));
+      await _persistPosition(s,
+          focusKey: canonicalKey(file.storageId, occPath));
+      if (!AppInstance.isPrimary) return;
+      final scenarioId = await _bgScenarioId();
+      if (scenarioId == null) return;
       await usePlaybackScenarioStore().setCurrentItemFor(
         scenarioId,
         occurrence: PlaybackOccurrenceId(
@@ -112,14 +135,77 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     }
   }
 
+  /// Writes THIS window's 副音 cursor to the session-scoped position key.
+  ///
+  /// [focusKey] is the remembered media key (see [_persistedOccurrenceKey]).
+  /// Best-effort: the position is a convenience, never a prerequisite for
+  /// playback.
+  Future<void> _persistPosition(
+    BackgroundPlaybackState s, {
+    String? focusKey,
+  }) async {
+    if (focusKey != null) _sessionFocusKey = focusKey;
+    try {
+      final json = s.toJson();
+      await getSessionKvStore().write(
+        key: KvKeys.backgroundPlaybackPosition,
+        value: jsonEncode({
+          for (final field in _positionFields) field: json[field],
+          'focusKey': _sessionFocusKey,
+        }),
+      );
+    } catch (e) {
+      _log.w('Error saving 副音 position: $e');
+    }
+  }
+
+  /// Overlays THIS window's queue/cursor over the shared preferences blob.
+  ///
+  /// A legacy install has the queue inside the shared blob and no position key
+  /// yet: that value seeds the window that loads first (nothing is lost on
+  /// upgrade), and from then on each window keeps its own.
+  Future<BackgroundPlaybackState> _mergeSessionPosition(
+    BackgroundPlaybackState base,
+  ) async {
+    try {
+      final raw = await getSessionKvStore()
+          .read(key: KvKeys.backgroundPlaybackPosition);
+      if (raw == null) return base;
+      final map = json.decode(raw) as Map<String, dynamic>;
+      _sessionFocusKey = map['focusKey'] as String?;
+      final queueRaw = map['queue'];
+      final queue = queueRaw is List
+          ? [
+              for (final e in queueRaw)
+                if (e is Map<String, dynamic>) FileItem.fromJson(e),
+            ]
+          : base.queue;
+      return base.copyWith(
+        queue: queue,
+        queueWindowStart:
+            (map['queueWindowStart'] as num?)?.toInt() ?? base.queueWindowStart,
+        queueTotal: (map['queueTotal'] as num?)?.toInt() ?? base.queueTotal,
+        shuffleSeed:
+            (map['shuffleSeed'] as num?)?.toInt() ?? base.shuffleSeed,
+      );
+    } catch (e) {
+      _log.w('副音 position read failed: $e');
+      return base;
+    }
+  }
+
   /// The persisted 副音 position for the active background workspace, as a
   /// canonical media key, or null when nothing is remembered (first run).
+  ///
+  /// This window's own remembered key wins; the shared scenario row is only a
+  /// seed (legacy installs and the very first 副音 start in a new window).
   ///
   /// Mirrors [backgroundMediaKey]: a SAF single-picked file has an EMPTY segment
   /// path, so its identity is the persisted `uri`. A path-only key here would
   /// never match the live file's [backgroundMediaKey] and the resume lookup
   /// (`indexWhere`) would miss on every restart.
   Future<String?> _persistedOccurrenceKey() async {
+    if (_sessionFocusKey != null) return _sessionFocusKey;
     try {
       final scenarioId = await _bgScenarioId();
       if (scenarioId == null) return null;
@@ -2042,7 +2128,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       final decoded = raw == null
           ? const BackgroundPlaybackState()
           : BackgroundPlaybackState.fromJson(json.decode(raw));
-      final merged = await _mergeAuxRows(decoded);
+      // Shared prefs first, then this window's own queue/cursor on top.
+      final withPosition = await _mergeSessionPosition(decoded);
+      final merged = await _mergeAuxRows(withPosition);
       return normalizeLoaded(merged);
     } catch (e) {
       _log.e('Error loading BackgroundPlaybackState: $e');
@@ -2225,8 +2313,16 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   @override
   Future<void> save(BackgroundPlaybackState s) async {
+    // WHERE this window is belongs to it alone; the shared blob keeps only the
+    // preferences (volume ratios, apply scope, rate, shuffle-on, repeat, …).
+    await _persistPosition(s);
+    if (!AppInstance.isPrimary) return;
     try {
-      await getKvStore().write(key: _key, value: json.encode(s.toJson()));
+      final json = s.toJson();
+      for (final field in _positionFields) {
+        json.remove(field);
+      }
+      await getKvStore().write(key: _key, value: jsonEncode(json));
     } catch (e) {
       _log.e('Error saving BackgroundPlaybackState: $e');
     }

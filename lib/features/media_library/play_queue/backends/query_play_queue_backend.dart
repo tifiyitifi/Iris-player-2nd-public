@@ -634,7 +634,7 @@ class QueryPlayQueueBackend extends PersistentStore<QueryPlayQueueState>
   Future<QueryPlayQueueState?> queryLoad() async {
     areaKeyLog.i('Loading QueryPlayQueueState');
     try {
-      final KvStore sec = getKvStore();
+      final KvStore sec = getSessionKvStore();
       final raw = await sec.read(key: 'query_play_queue_state');
       if (raw != null) {
         // Clamp ON READ: the queue's own page-size prompt caps at
@@ -658,7 +658,7 @@ class QueryPlayQueueBackend extends PersistentStore<QueryPlayQueueState>
   @override
   Future<void> save(QueryPlayQueueState s) async {
     try {
-      final KvStore sec = getKvStore();
+      final KvStore sec = getSessionKvStore();
       await sec.write(
         key: 'query_play_queue_state',
         value: json.encode(s.toJson()),
@@ -670,7 +670,7 @@ class QueryPlayQueueBackend extends PersistentStore<QueryPlayQueueState>
 
   Future<void> saveLegacy(PlayQueueState legacy) async {
     try {
-      final KvStore sec = getKvStore();
+      final KvStore sec = getSessionKvStore();
       await sec.write(
         key: 'playQueue_state',
         value: json.encode(legacy.toJson()),
