@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/background_playback_gate.dart';
-import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/background_queue_panel.dart';
 import 'package:iris/features/scenario_playback/view/coordinator/scenario_browser.dart';
@@ -58,8 +57,11 @@ Future<void> openPlayQueueFromControlBar(
   }
 
   final bg = useBackgroundPlaybackStore();
-  final bool bgEnabled = bg.state.enabled &&
-      bg.state.controlTarget == ControlTarget.background;
+  // The 副音 queue is offered only while the pair actually owns the controls:
+  // `bgOwnsControls` folds the scope/exhausted/queue-ended session states in,
+  // so an inactive pair (or a closed gate) falls through to the foreground
+  // queue instead of opening a list for a silent engine.
+  final bool bgEnabled = bg.state.bgOwnsControls;
   if (BackgroundPlaybackGate.enabled && bgEnabled) {
     await showControlForHover(
       showPopup(

@@ -3,12 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
 import 'package:iris/features/background_playback/model/domain/background_mapping.dart';
 import 'package:iris/features/background_playback/resolver/active_mapping_resolver.dart';
 import 'package:iris/features/background_playback/resolver/mapping_timeline_math.dart';
 import 'package:iris/features/background_playback/services/background_file_builder.dart';
 import 'package:iris/features/background_playback/store/use_background_mapping_staging_store.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
@@ -41,6 +44,10 @@ class MappingScope extends HookWidget {
     // that is what made a cold launch auto-play the resumed media's mapping.
     final gateOpen = bg.select(context, (s) => s.gateOpen);
     final mappingEnabled = bg.select(context, (s) => s.mappingEnabled);
+    final exhausted = bg.select(context, (s) => s.bgExhausted);
+    final applyScope = bg.select(context, (s) => s.applyScope);
+    final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
+    final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
     final ignoreNoBg = bg.select(context, (s) => s.ignoreNoBg);
     final followFgSwitch = bg.select(context, (s) => s.bgFollowsFgSwitch);
     final mappedActive = bg.select(context, (s) => s.mappedFile != null);
@@ -80,6 +87,39 @@ class MappingScope extends HookWidget {
     final String fgCanonicalPath =
         fgFile == null ? '' : canonicalDbPath(fgFile.path.join('/'));
 
+    // 简播 suspends the pair for THIS media; the E 節 driver must stand down
+    // exactly like the scope observer does (it used to re-enter mapped segments
+    // and play over the cut).
+    final bool fakeCutActive = fakeCutBlocksBackground(
+      fgKey,
+      useFakeCutStore().select(context, (FakeCutStoreState s) => s.playingKey),
+    );
+    // The queue-end hand-back: the run walked off the end of its list, so the
+    // driver must not re-enter a mapped segment (which would set `bgAutoPlay`
+    // true and make 副音 sound behind an "inactive" pair).
+    final bool queueEnded = bg.select(context, (s) => s.bgQueueEnded);
+    // The scope verdict for the media playing now: 副音 is applied to it only
+    // inside the run's 作用范围 and never for a user opt-out / a cut.
+    final bool scopeApplied = resolveApplyToCurrent(
+      enabled: bgEnabled,
+      applyScope: applyScope,
+      anchorKey: anchorKey,
+      offMediaKeys: offMediaKeys,
+      fgKey: fgKey,
+      fakeCutActive: fakeCutActive,
+    );
+    // The single gate every branch below reads. The mapping layer is a SECOND
+    // owner of the 副音 runtime: an out-of-scope / exhausted pair must never let
+    // it open files, hold silence or mirror transport.
+    final bool mayDrive = mappingMayDrive(
+      enabled: bgEnabled,
+      gateOpen: gateOpen,
+      mappingEnabled: mappingEnabled,
+      scopeApplied: scopeApplied,
+      exhausted: exhausted,
+      queueEnded: queueEnded,
+    );
+
     final fg = context.select<MediaPlayer, ({int posMs, int durMs, bool playing})>(
       (p) => (
         posMs: p.position.inMilliseconds,
@@ -108,7 +148,7 @@ class MappingScope extends HookWidget {
 
     // Timeline (re)load — keyed on the fg file and the mapping switches.
     useEffect(() {
-      final want = bgEnabled && gateOpen && mappingEnabled && fgKey != null;
+      final want = mayDrive && fgKey != null;
       if (!want) {
         if (timeline.value != null) {
           timeline.value = null;
@@ -147,9 +187,7 @@ class MappingScope extends HookWidget {
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
-      bgEnabled,
-      gateOpen,
-      mappingEnabled,
+      mayDrive,
       fgKey,
       fgStorageId,
       fgCanonicalPath,
@@ -166,10 +204,11 @@ class MappingScope extends HookWidget {
         // is ever edited at a time, so dropping them all is precise.
         useBackgroundMappingStagingStore().discardAllApbOverlays();
         // Follow OFF: 副音 never follows a foreground switch — bail out of any
-        // active mapped/silence state (re-enter only after the user re-toggles
-        // mapping or the follow switch is on for a mapped file).
+        // active mapped/silence state. When the new media is OUT of 作用范围 the
+        // scope already owns the transition: drop the override IN PLACE (never
+        // step — advancing the queue here contradicted `bgCrossStepAllowed`).
         if (!followFgSwitch) {
-          unawaited(_leaveAllMapped(bg));
+          unawaited(_leaveAllMapped(bg, advance: mayDrive));
         }
       }
       lastFgKey.value = fgKey;
@@ -181,6 +220,7 @@ class MappingScope extends HookWidget {
       mappedActive,
       silenceActive,
       editing,
+      mayDrive,
     ]);
 
     // Playback stop / foreground unload: the editor overlay is "this playback
@@ -198,10 +238,17 @@ class MappingScope extends HookWidget {
     useEffect(() {
       final store = useBackgroundPlaybackStore();
       if (editing) return null;
-      // Gate closed: 副音 is stopped and must stay silent — never enter a
-      // mapped segment or resume a silence hold. Forget the region so the next
-      // gate open re-evaluates from scratch.
-      if (!bgEnabled || !gateOpen || !mappingEnabled || fgKey == null) {
+      // Gate closed / out of 作用范围 / exhausted: 副音 is stopped and must stay
+      // silent — never enter a mapped segment or resume a silence hold. Forget
+      // the region so a return to scope re-evaluates from scratch.
+      //
+      // The override is dropped IN PLACE: `exitMappedNatural` would `step` the
+      // natural queue and `resumeNatural` would set `bgAutoPlay` true, both
+      // undoing the pause the scope just issued.
+      if (!mayDrive || fgKey == null) {
+        if (mappedActive || silenceActive) {
+          unawaited(store.dropMappedOverride());
+        }
         prevRegion.value = (kind: 'gap', key: null);
         lastPosMs.value = -1;
         return null;
@@ -334,9 +381,7 @@ class MappingScope extends HookWidget {
       return null;
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
-      bgEnabled,
-      gateOpen,
-      mappingEnabled,
+      mayDrive,
       ignoreNoBg,
       fgKey,
       fg.posMs,
@@ -353,7 +398,21 @@ class MappingScope extends HookWidget {
     return child;
   }
 
-  static Future<void> _leaveAllMapped(BackgroundPlaybackStore store) async {
+  /// Leaves the E 節 override when the foreground moves on.
+  ///
+  /// [advance] false means the pair is not (or no longer) applied to the new
+  /// media — the scope owns that transition and the queue must NOT move, so the
+  /// override is dropped in place. A real follow-off switch inside scope keeps
+  /// the §13 "natural next" semantics ([BackgroundPlaybackStore
+  /// .exitMappedNatural]).
+  static Future<void> _leaveAllMapped(
+    BackgroundPlaybackStore store, {
+    bool advance = true,
+  }) async {
+    if (!advance) {
+      await store.dropMappedOverride();
+      return;
+    }
     final s = store.state;
     if (s.mappedFile != null) {
       await store.exitMappedNatural();

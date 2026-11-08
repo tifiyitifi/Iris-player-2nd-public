@@ -12,6 +12,13 @@ void main() {
     expect(scan.widgetKind, SettingWidgetKind.custom);
   });
 
+  test('scan completion-prompt switch is contributed as a custom row', () {
+    final prompt = defs.singleWhere((d) => d.key == 'scan.autoClosePrompt');
+    expect(prompt.widgetKind, SettingWidgetKind.custom,
+        reason: 'the value lives in the scan store, not the app.* snapshot');
+    expect(prompt.editorKey, 'scan_auto_close_prompt');
+  });
+
   test('every custom/slider def has a registered editor builder', () {
     EditorBindings.ensureRegistered();
     final unbound = defs

@@ -61,6 +61,7 @@ class ScenarioQueueBuilder {
     required List<VirtualMediaRule> rules,
     required int Function(int baseRank, EffectivePlaybackItem item) mediaNodeIdOf,
     AppLocalizations? l10n,
+    Set<String> excludedMediaKeys = const <String>{},
   }) {
     if (stream.isEmpty) {
       return const ScenarioQueuePlan(groups: [], entries: [], totalRanks: 0);
@@ -74,7 +75,7 @@ class ScenarioQueueBuilder {
       if (!item.available) continue;
       final f = item.media.maybeMap(file: (f) => f, orElse: () => null);
       if (f == null) continue;
-      final key = canonicalKey(f.storageId, f.path.join('/'));
+      final key = canonicalMediaKey(f.storageId, f.path, uri: f.uri);
       // First occurrence wins the rank (dedup already removed repeats).
       rankOf.putIfAbsent(key, () => rank);
       segs.add(VirtualSegment(
@@ -96,6 +97,7 @@ class ScenarioQueueBuilder {
     final rawGroups = resolveRuleGroups(
       rules: rules,
       library: segs,
+      excludedMediaKeys: excludedMediaKeys,
       l10n: l10n ?? vmLocalizations(),
     );
     final partitioned = partitionVmItems(rawGroups);
@@ -179,7 +181,7 @@ class ScenarioQueueBuilder {
         entries.add(fileRow(rank, item));
         continue;
       }
-      final key = canonicalKey(f.storageId, f.path.join('/'));
+      final key = canonicalMediaKey(f.storageId, f.path, uri: f.uri);
       final group = validGroupByKey[key];
       if (group != null) {
         // Skip every member rank; emit the group row once at its anchor.

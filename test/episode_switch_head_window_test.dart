@@ -164,8 +164,12 @@ void main() {
       lock.armTarget(42833);
       expect(lock.checkLanding(533, 72661), isFalse);
       expect(lock.blocksWrites, isTrue);
-      // Landing observed: exactly then do writes resume.
-      expect(lock.checkLanding(42833, 72661), isTrue);
+      // The seek target echoed back is NOT proof (mpv reports `last_seek_pts`
+      // before decoding a frame): playback must be observed past the intent.
+      expect(lock.checkLanding(42833, 72661), isFalse);
+      expect(lock.blocksWrites, isTrue);
+      // Landing observed and decoded past the intent: writes resume.
+      expect(lock.checkLanding(43833, 72661), isTrue);
       expect(lock.blocksWrites, isFalse);
     });
   });

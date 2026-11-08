@@ -44,18 +44,25 @@ enum SeekIntent {
   /// NOT at the end). The landing can never raise `completed`.
   ///
   /// A step press that DOES reach the end is not a `stopAtTail` caller: while
-  /// playing it is a tail finish (`decideStepTail` in
-  /// `hooks/player/seek_tuning.dart` — the ordinary relative keyframe seek plus
-  /// mpv's EOF collapse) and while paused it is swallowed.
+  /// playing it finishes the item through `decideStepTail` in
+  /// `hooks/player/seek_tuning.dart` (the queue advances without a seek), and
+  /// while paused it is swallowed (no advance, no write).
+  ///
+  /// The two step-tail outcomes are DISTINCT and ordered — `decideStepTail`
+  /// tests the finish predicate first:
+  ///  * target at/past the end → playing finishes, paused is swallowed;
+  ///  * target still inside the media but within the final-GOP exact-seek window
+  ///    (see `stepNeedsExactSeek`) → a real EXACT seek, playing OR paused. That
+  ///    band sits above the finish threshold, so "paused does nothing" only
+  ///    holds for presses that reach the end.
   stopAtTail,
 
   /// Land on the end (release at 100%): the user explicitly finished this
   /// item, so `completed` fires and playback advances. Single absolute seek —
   /// the engine can honour it exactly once, so there is nothing to collapse.
   ///
-  /// A tail STEP is NOT a caller any more: mpv answers it with the ordinary
-  /// relative keyframe seek plus the playloop's EOF collapse (see
-  /// `MpvSeekTailState` in `hooks/player/seek_tuning.dart`).
+  /// A tail STEP is NOT a caller: it finishes the item directly through
+  /// `decideStepTail` in `hooks/player/seek_tuning.dart`.
   finishAtEnd,
 }
 

@@ -114,5 +114,35 @@ void main() {
         100,
       );
     });
+
+    test('first sample during a mid-file lock reports the intent, not the head',
+        () {
+      // Field log (second launch, Android): the first 1s tick fired BEFORE the
+      // resume seek was observed, so the pre-land head sample (~580ms) seeded
+      // `lastSane` and every later tick followed it — the progress UI reset to
+      // 0 while the DB row still held 277156.
+      expect(
+        sanePlaybackPos(null, 580, dur,
+            userSeeked: false, inFlightTargetMs: 277156),
+        277156,
+      );
+    });
+
+    test('first sample during a head lock keeps the head', () {
+      // A from-the-beginning intent (target 0) has no head sample to reject.
+      expect(
+        sanePlaybackPos(null, 120, dur,
+            userSeeked: false, inFlightTargetMs: 0),
+        120,
+      );
+    });
+
+    test('first sample is verbatim when no lock is in flight', () {
+      expect(
+        sanePlaybackPos(null, 580, dur,
+            userSeeked: false, inFlightTargetMs: null),
+        580,
+      );
+    });
   });
 }

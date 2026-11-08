@@ -1,6 +1,7 @@
 import 'package:iris/features/media_library/model/db/adapters/media_node_drift_adapter.dart';
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_query.dart';
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_result.dart';
+import 'package:iris/features/media_library/model/db/dao/keyset_parent_scope.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/progress_write_guard.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
@@ -340,6 +341,8 @@ class MediaNodeRepository {
     int? width,
     int? height,
     int? pixelCount,
+    int? sizeInBytes,
+    DateTime? modifiedAt,
   }) async {
     final rows = await _nodesDao.updateFileMediaInfo(
       storageId: storageId,
@@ -349,11 +352,28 @@ class MediaNodeRepository {
       width: width,
       height: height,
       pixelCount: pixelCount,
+      sizeInBytes: sizeInBytes,
+      modifiedAt: modifiedAt,
     );
     if (durationMs != null) {
       await _nodesDao.recomputeDurationAncestors(storageId, path);
     }
+    if (sizeInBytes != null && sizeInBytes > 0) {
+      // Folder rows carry an aggregate size the browser and the size sort read;
+      // a healed file size must reach them, or the folder keeps the old total.
+      final parent = _parentOf(path);
+      if (parent.isNotEmpty) {
+        await recomputeDirAncestors(storageId: storageId, startPath: parent);
+      }
+    }
     return rows;
+  }
+
+  /// Parent directory of a canonical path ('' for a root-level file).
+  static String _parentOf(String path) {
+    final canonical = canonicalDbPath(path);
+    final slash = canonical.lastIndexOf('/');
+    return slash <= 0 ? '' : canonical.substring(0, slash);
   }
 
   /// Global per-file playback progress (uniform across all scenarios).
@@ -712,6 +732,42 @@ class MediaNodeRepository {
     return _nodesDao.getPagedNodes(query);
   }
 
+  /// Keyset page in natural (name) order — see
+  /// [MediaNodesDao.getFilePagesByNaturalKey]. Used by `SharedMediaOrder.build`
+  /// so a 500k order is walked once instead of re-walking OFFSETs.
+  Future<
+      List<
+          ({
+            int id,
+            String? parentPath,
+            String key,
+            String path,
+          })>> getFilePagesByNaturalKey({
+    required String storageId,
+    required List<MediaType> mediaTypes,
+    required SortDirection direction,
+    bool grouped = false,
+    KeysetParentScope parentScope = KeysetParentScope.any,
+    bool hasCursor = false,
+    String? afterParentPath,
+    String? afterKey,
+    String? afterPath,
+    required int limit,
+  }) {
+    return _nodesDao.getFilePagesByNaturalKey(
+      storageId: storageId,
+      mediaTypes: mediaTypes,
+      direction: direction,
+      grouped: grouped,
+      parentScope: parentScope,
+      hasCursor: hasCursor,
+      afterParentPath: afterParentPath,
+      afterKey: afterKey,
+      afterPath: afterPath,
+      limit: limit,
+    );
+  }
+
   /// Paginated query scoped to a set of library sources (allMedia / allDirs).
   ///
   /// Each source contributes its own match rule (storage = full storage,
@@ -748,8 +804,7 @@ class MediaNodeRepository {
     );
   }
 
-  /// Media-search scoped query over [SearchSource]s (F-005/F-007, §5.2.1).
-  ///
+  /// Media-search scoped query over [SearchSource]s (F-005/F-007, §5.2.1).  ///
   /// Files-only by default (C1); always passes `pathGroupFirst: true` so the DB
   /// segment is globally grouped by parent directory (F-008), and forwards
   /// [excludeRules] so count and data queries both honor them (v5-D3).

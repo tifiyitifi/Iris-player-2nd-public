@@ -24,7 +24,7 @@ local files, WebDAV, and FTP. Package `iris`, version `1.6.0+6` (`pubspec.yaml`)
 | Concern | Library | Notes |
 |---|---|---|
 | State | `flutter_zustand` | Zustand stores. NOT Riverpod. |
-| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v51**. |
+| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v53**. |
 | Models | `freezed` + `json_serializable` | All domain models and DTOs. |
 | Widgets | `flutter_hooks` | `HookWidget` preferred over `StatefulWidget`. |
 | Playback | `media_kit` + `fvp` | Two swappable backends (`AppState.playerBackend`). |
@@ -57,7 +57,7 @@ Other key paths:
 
 - `lib/models/db/` — global Drift layer: `app_database.dart` (schema), `db_module.dart`
   (DAO→repository wiring), `tables/`, `dao/`, `repositories/`, `adapters/`,
-  `migration/` (`v2`–`v51`).
+  `migration/` (`v2`–`v53`).
 - `lib/store/` — global Zustand stores; `persistent_store.dart` is the `PersistentStore<T>`
   base class (`load`/`save` lifecycle).
 - `lib/pages/` — top-level pages (`home/`, `player/`, `bootstrap_gate.dart`).
@@ -165,6 +165,14 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
 - **CHANGELOG encoding:** `CHANGELOG.md` is strict-valid UTF-8 without BOM; Chinese
   mojibake in GBK viewers (codepage 936 console, `Get-Content` without `-Encoding utf8`,
   legacy Notepad) is a viewer artifact, not corruption. Do NOT re-encode or add BOM.
+- **Ordering semantics (natural sort):** `media_nodes.natural_name` holds the key from
+  `lib/utils/natural_sort_key.dart`, and `ORDER BY natural_name` IS the natural order
+  (`1 < 2 < 10`). Any change to that ordering must bump
+  `SharedMediaOrder.formatVersion` AND clear `media_orders` / `scenario_shared_index` /
+  `scenario_queue_builds`, or persisted orders keep serving the old sequence.
+  In-memory sorts must compare `naturalNameValue` / `naturalSortKey`, never a hand-rolled
+  digit rule — SQL and Dart have to agree column for column
+  (`test/scenario_order_comparator_dao_parity_test.dart` enforces it past one page).
 
 ## Release Process (private → public mirror)
 

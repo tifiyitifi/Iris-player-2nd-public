@@ -2,6 +2,7 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/actions/scan_play_gate.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
@@ -20,6 +21,10 @@ import 'package:iris/utils/get_localizations.dart';
 ///
 /// The intent now lives in this call's own closure (no global holder), so the
 /// observable contract is: nothing resumes.
+///
+/// An `error`-stamped directory is used on purpose: a merely never-scanned one
+/// no longer opens the gate at all (see scan_gate_silent_unscanned_test.dart),
+/// while a failed root is still a real decision and keeps both dialogs.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -39,6 +44,10 @@ void main() {
     await useStorageStore().initialized;
   });
 
+  tearDown(() {
+    debugScanRunner = null;
+  });
+
   tearDownAll(() => db.close());
 
   testWidgets(
@@ -51,6 +60,14 @@ void main() {
       name: 't',
       basePath: const ['root'],
     ));
+    // A stale/errored root: the gate still asks, so scan-options is reachable.
+    await DbModule.mediaNodesDao.insertNode(MediaNode.directory(
+      id: 'seed:$storageId:errored',
+      storageId: storageId,
+      path: const ['errored'],
+      name: 'errored',
+    ));
+    await DbModule.mediaNodesDao.markDirScanError(storageId, 'errored');
 
     late String scanNowLabel;
     late String scanCancelLabel;
@@ -74,7 +91,7 @@ void main() {
                   const <ScenarioSourceSpec>[
                     (
                       storageId: storageId,
-                      path: 'unscanned',
+                      path: 'errored',
                       recursive: true,
                       kind: ScenarioSourceKind.folder,
                     ),

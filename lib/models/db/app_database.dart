@@ -101,6 +101,8 @@ import 'package:iris/models/db/migration/v48_migration.dart';
 import 'package:iris/models/db/migration/v49_migration.dart';
 import 'package:iris/models/db/migration/v50_migration.dart';
 import 'package:iris/models/db/migration/v51_migration.dart';
+import 'package:iris/models/db/migration/v52_migration.dart';
+import 'package:iris/models/db/migration/v53_migration.dart';
 import 'package:iris/models/db/tables/app_meta_table.dart';
 import 'package:iris/models/db/tables/navigation_table.dart';
 import 'package:iris/models/db/tables/storage_table.dart';
@@ -192,7 +194,7 @@ class AppDatabase extends _$AppDatabase {
 
   /// Increment schema version whenever the database structure changes.
   @override
-  int get schemaVersion => 51;
+  int get schemaVersion => 53;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -406,6 +408,14 @@ class AppDatabase extends _$AppDatabase {
           if (from < 51) {
             await MigrationV51(this).run(m);
           }
+
+          if (from < 52) {
+            await MigrationV52(this).run(m);
+          }
+
+          if (from < 53) {
+            await MigrationV53(this).run(m);
+          }
         },
 
         /// Optional hook useful during development.
@@ -419,6 +429,11 @@ class AppDatabase extends _$AppDatabase {
           // queries + exempt from UNIQUE(data_scope_id, path)). No-op when
           // every row is already scope-keyed.
           await MigrationV31.backfillNullScopes(this);
+          // v53 natural-order key: chunked backfill + index creation. Lives
+          // here (not in onUpgrade) because onUpgrade is NOT transactional in
+          // drift, and one transaction over 500k row updates would grow the WAL
+          // to roughly the table size. No-op once the index exists.
+          await MigrationV53.ensureNaturalOrder(this);
         },
       );
 
@@ -442,6 +457,10 @@ class AppDatabase extends _$AppDatabase {
     // v42 drops the redundant ones v39 created, so a fresh install converges on
     // the same index set an upgraded database has.
     await MigrationV42.dropRedundantIndexes(this);
+    // v53 natural-order indexes (also drops the superseded
+    // normalized_name sort index). Fresh installs have an empty table, so the
+    // backfill in `beforeOpen` is a no-op.
+    await MigrationV53.createNaturalNameIndexes(this);
     // NOTE: no v43 call here. v43's indexes belong to the row tables v45 drops,
     // so a fresh install (and every upgraded one) has neither.
   }

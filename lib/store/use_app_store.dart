@@ -554,6 +554,15 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         'dropAppendPercent', clamped, SettingValueType.double);
   }
 
+  /// Sets the desktop drag-drop scan policy (true = scan the dropped folders
+  /// immediately without asking); persisted as a `playback.dropAutoScan` AUX
+  /// row. Read by the drop handler when it decides whether to keep the
+  /// "scan first?" gate.
+  Future<void> updateDropAutoScan(bool value) async {
+    set(state.copyWith(dropAutoScan: value));
+    await _savePlaybackRow('dropAutoScan', value, SettingValueType.bool);
+  }
+
   /// Sets the media_kit (mpv) demuxer cache sizing preset; persisted as a
   /// `playback.videoCachePreset` AUX row. The player applies it on the next
   /// player init and on every change (see `useMediaKitPlayer`).
@@ -1447,6 +1456,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         prefetched ?? await MetaSettingsModule.loadPlaybackRows();
     final String? raw = rows['resumeOnStartup'];
     final String? dropRaw = rows['dropAppendPercent'];
+    final String? dropAutoScanRaw = rows['dropAutoScan'];
     final String? cacheRaw = rows['videoCachePreset'];
     final String? stepTailRaw = rows['stepTailFinish'];
     return base.copyWith(
@@ -1459,6 +1469,10 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
                   fallback: base.dropAppendZonePercent)
               .clamp(10.0, 90.0)
               .toDouble(),
+      dropAutoScan: dropAutoScanRaw == null
+          ? base.dropAutoScan
+          : ValueCodec.decodeBool(dropAutoScanRaw,
+              fallback: base.dropAutoScan),
       // Malformed / unknown names degrade to [base] (same contract as the
       // fields above).
       videoCachePreset: cacheRaw == null
@@ -1974,6 +1988,16 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         'scenarioQueueShowBreadcrumb', visible, SettingValueType.bool);
   }
 
+  /// Whether the open scenario queue follows the playing item when playback
+  /// switches (next/previous, auto-advance, a play from another surface).
+  /// Persisted as the `window.scenarioQueueAutoLocate` AUX row; opening on the
+  /// current item and the "Go to current" button are independent of this.
+  Future<void> updateScenarioQueueAutoLocate(bool enabled) async {
+    set(state.copyWith(scenarioQueueAutoLocate: enabled));
+    await _saveWindowRow(
+        'scenarioQueueAutoLocate', enabled, SettingValueType.bool);
+  }
+
   /// Desktop window-fit mode (窗口适应模式). Runtime toggle: the control-bar
   /// button and Ctrl+R (gate ON) flip it; every video open/switch re-applies
   /// [WindowFitMode.fitVideo].
@@ -2464,6 +2488,13 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         ? null
         : ValueCodec.decodeBool(crumbRaw,
             fallback: base.scenarioQueueShowBreadcrumb);
+    // Same rule for the follow-on-switch switch: its default is TRUE, so a
+    // missing row must keep the base, and a present `0` must win over it.
+    final autoLocateRaw = rows['scenarioQueueAutoLocate'];
+    final bool? queueAutoLocate = autoLocateRaw == null
+        ? null
+        : ValueCodec.decodeBool(autoLocateRaw,
+            fallback: base.scenarioQueueAutoLocate);
 
     var next = base;
     for (final profile in ScenarioQueueProfile.values) {
@@ -2493,6 +2524,8 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
       keepWindowInBounds: keepInBounds ?? base.keepWindowInBounds,
       scenarioQueueShowBreadcrumb:
           showQueueBreadcrumb ?? base.scenarioQueueShowBreadcrumb,
+      scenarioQueueAutoLocate:
+          queueAutoLocate ?? base.scenarioQueueAutoLocate,
     );
   }
 

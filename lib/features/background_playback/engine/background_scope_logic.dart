@@ -42,13 +42,27 @@ BgScopeAction resolveBgScopeOnFgChange({
   Set<String> offMediaKeys = const <String>{},
   bool newFgHasSavedMapping = false,
   bool gateOpen = true,
+  bool fakeCutActive = false,
+  bool exhausted = false,
 }) {
   final key = newFgKey;
   if (key == null) return BgScopeAction.none;
   if (offMediaKeys.contains(key)) return BgScopeAction.pauseBg;
+  // 简播 (fake cut): the cut owns the picture and a virtual timeline the 副音
+  // pairing cannot describe, so 副音 pauses for THIS media under every scope —
+  // the same shape as a user opt-out, but temporary and resolved by the caller
+  // (`BackgroundPlaybackStore.resumeAfterFakeCut`) when the foreground leaves.
+  // Checked before the scope switch so 「全部」also stands down here instead of
+  // playing an untethered track against the cut.
+  if (fakeCutActive) return BgScopeAction.pauseBg;
   // An explicit gate stop (quick-bar gate OFF / bg stop button) wins over every
   // scope: no auto-resume or auto-start until the user opens the gate again.
   if (!gateOpen) return BgScopeAction.none;
+  // stopRestoreFg terminal state: the run is over and must stay silent. Without
+  // this, leaving the media and coming back resolved to `resumeBg`, and the
+  // resume set `bgAutoPlay` true on a run whose 副音 track is muted to 0 — a
+  // silent engine occupying the bar until a manual activation cleared it.
+  if (exhausted) return BgScopeAction.none;
 
   switch (applyScope) {
     case BgApplyScope.all:
@@ -68,55 +82,67 @@ BgScopeAction resolveBgScopeOnFgChange({
   }
 }
 
-/// What the pair does when the follower can no longer continue at the 副音
-/// boundary (the foreground reached its end / the 副音 content mapped to the
-/// foreground 100% is exhausted).
-enum BgBoundaryAction {
-  /// Strict lockstep: BOTH runtimes stop (the master included). The 仅当前
-  /// contract — 副音 exists only inside this media, so when it runs out the
-  /// pair ends here.
-  stopBoth,
-
-  /// 全部作用 with 「切新 bg」: advance the 副音 queue one step.
-  newBg,
-
-  /// 全部作用 with 「正常连播」, or 智能 with a saved mapping: 副音 keeps
-  /// playing (its own queue, or the saved timeline driving the pair).
-  keepPlaying,
-}
-
-/// Scope-aware boundary decision (高同步 follower exhausted).
+/// Whether a foreground media switch may advance 副音's OWN queue
+/// ([BgCrossAction.newBg]).
 ///
-/// - [BgApplyScope.currentOnly]: the pair is confined to this media →
-///   [BgBoundaryAction.stopBoth] (strict lockstep, master included).
-/// - [BgApplyScope.all]: follow the 跨视频 switch setting — a new LIST ITEM uses
-///   [bgItemSwitch], an internal VIRTUAL segment uses [bgSegmentSwitch];
-///   「切新 bg」→ [BgBoundaryAction.newBg], 「正常连播」→ keep.
-/// - [BgApplyScope.smart]: the newly-current foreground's saved 副音 mapping
-///   decides — present → [BgBoundaryAction.keepPlaying] (the timeline drives
-///   副音), absent → [BgBoundaryAction.stopBoth].
-BgBoundaryAction resolveBgBoundaryAction({
-  required BgApplyScope applyScope,
-  required BgCrossAction bgItemSwitch,
-  required BgCrossAction bgSegmentSwitch,
-  required bool transitionIsItem,
-  required bool fgHasSavedMapping,
+/// 简播 suspends the pair for the whole cut, so a step taken while the cut is
+/// active only moves the queue behind a silent engine: the resume then restores
+/// the transport onto a DIFFERENT track (the "队列位置丢了" report), and the step
+/// races the suspend in the same commit. Both DIRECTIONS of the transition are
+/// exempt — entering a cut must not advance either — which is why the caller
+/// passes the previous frame's [prevFakeCutActive].
+///
+/// [BgApplyScope] wins over the cross setting: only a plain [BgScopeAction.none]
+/// (全部 with no opt-out) is a "plain switch" that advances the track. A scope
+/// transition (pause / resume / start) must never do it too.
+bool bgCrossStepAllowed({
+  required bool enabled,
+  required bool vmSessionActive,
+  required bool gateOpen,
+  required BgCrossAction itemSwitch,
+  required bool fakeCutActive,
+  required bool prevFakeCutActive,
+  required bool fgChanged,
+  required BgScopeAction scopeAction,
 }) {
-  switch (applyScope) {
-    case BgApplyScope.currentOnly:
-      return BgBoundaryAction.stopBoth;
-    case BgApplyScope.all:
-      final BgCrossAction rule =
-          transitionIsItem ? bgItemSwitch : bgSegmentSwitch;
-      return rule == BgCrossAction.newBg
-          ? BgBoundaryAction.newBg
-          : BgBoundaryAction.keepPlaying;
-    case BgApplyScope.smart:
-      return fgHasSavedMapping
-          ? BgBoundaryAction.keepPlaying
-          : BgBoundaryAction.stopBoth;
-  }
+  if (!enabled || vmSessionActive) return false;
+  // Gate closed: an explicit stop must never be undone by a track switch.
+  if (!gateOpen) return false;
+  if (itemSwitch != BgCrossAction.newBg) return false;
+  if (!fgChanged) return false;
+  if (fakeCutActive || prevFakeCutActive) return false;
+  return scopeAction == BgScopeAction.none;
 }
+
+/// Whether the E 节 saved-timeline driver may own 副音 right now.
+///
+/// The mapping layer is a SECOND owner of the 副音 runtime (it opens files,
+/// holds silence, mirrors play/pause). It must stand down whenever the pair
+/// itself is not in effect: a media outside the 作用范围 (仅当前 left its
+/// anchor / 智能 has no pairing / user opt-out), a terminal exhausted run, a gate
+/// that has run off the end of its queue, or a closed gate. Otherwise it
+/// re-entered mapped segments and played `bgAutoPlay: true` on a media the scope
+/// had just paused, and its per-tick transport mirror pulled the pause back
+/// every frame.
+///
+/// [queueEnded] is the 队尾 hand-back: `enterMappedSegment` sets `bgAutoPlay:
+/// true`, which the engine's autoplay sync turns into a real `play()` — 副音
+/// would sound while every reader (duck, title, controls, transport mirror)
+/// treats the pair as inactive.
+bool mappingMayDrive({
+  required bool enabled,
+  required bool gateOpen,
+  required bool mappingEnabled,
+  required bool scopeApplied,
+  required bool exhausted,
+  bool queueEnded = false,
+}) =>
+    enabled &&
+    gateOpen &&
+    mappingEnabled &&
+    scopeApplied &&
+    !exhausted &&
+    !queueEnded;
 
 /// Whether an enabled-but-targetless scope must stop the stale audio.
 ///
@@ -132,15 +158,58 @@ bool shouldStopStaleEngine({
 
 /// Whether 副音 is currently applied to the playing foreground media — the
 /// quick-bar "对当前 / 不对当前" switch state.
+///
+/// [fakeCutActive] is the 简播 exclusion: while a cut is on screen the pair is
+/// not a pair (no alignment, no transport mirror, gate greyed), and this runs
+/// before the scope rules so it holds under 「全部」as well as 「仅当前」.
 bool resolveApplyToCurrent({
   required bool enabled,
   required BgApplyScope applyScope,
   required String? anchorKey,
   required Set<String> offMediaKeys,
   required String? fgKey,
+  bool fakeCutActive = false,
 }) {
   if (!enabled || fgKey == null || fgKey.isEmpty) return false;
   if (offMediaKeys.contains(fgKey)) return false;
+  if (fakeCutActive) return false;
   if (applyScope == BgApplyScope.currentOnly) return anchorKey == fgKey;
   return true;
+}
+
+/// Direction of a foreground queue move, for stepping 副音 the same way.
+///
+/// 副音 used to ALWAYS step forward on a foreground switch, so 「上一集」 pushed
+/// the 副音 queue forward. The move is judged from the play queue's item ids
+/// (`PlayQueueItem.index`), which are monotonic with the list order but NOT
+/// dense — an insert takes `maxIndex + 1` and a removal leaves a hole, so
+/// `playQueue.length - 1` is NOT the last entry's id.
+///
+/// [firstIndex] / [lastIndex] are the ids of the queue's first and last entry.
+/// The only wrap the ids can recognise on their own is `next()`'s last → head.
+///
+/// [moveWasForward] is the stamp `UnifiedPlayQueueStore.next()` / `previous()`
+/// leaves for the move it just performed, and it WINS whenever present. Ids
+/// cannot separate the remaining cases: 「上一集」 at the head and a tap on the
+/// last row both arrive as `first → last`, and on a two-entry queue 「下一集」 at
+/// the head and 「上一集」 at the head produce the very same pair. Only the queue
+/// knows which function ran, so a stamped move is never re-derived from the ids.
+bool isForwardQueueMove({
+  required int? previousIndex,
+  required int currentIndex,
+  required int firstIndex,
+  required int lastIndex,
+  bool? moveWasForward,
+}) {
+  if (moveWasForward != null) return moveWasForward;
+  final previous = previousIndex;
+  if (previous == null || previous < 0 || currentIndex < 0) return true;
+  // `next()` wrapped off the end: the target is the head, which reads as a
+  // BACKWARD jump by id.
+  if (firstIndex != lastIndex &&
+      currentIndex == firstIndex &&
+      previous == lastIndex) {
+    return true;
+  }
+  return currentIndex > previous;
 }

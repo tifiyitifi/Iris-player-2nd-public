@@ -206,6 +206,17 @@ abstract class PaginatedBrowserDataSource<T> extends ChangeNotifier {
   /// target page (`index ~/ pageSize`) and the in-page row to center.
   Future<int?> resolveCurrentItemIndex() async => null;
 
+  /// Cheap, synchronous identity of the current item, compared by the generic
+  /// page to decide whether an OPEN list must re-locate (the "follow a playing
+  /// item switch" option). Implementations return a value that changes exactly
+  /// when "what is playing" changes; content-only refreshes must leave it
+  /// alone. Null means "nothing to follow / unknown" and keeps the mount-only
+  /// behaviour.
+  ///
+  /// Implementations that can change it at runtime must [notifyListeners] when
+  /// it does, otherwise the page has no event to react to.
+  Object? get currentItemToken => null;
+
   /// Direction long-press button tooltips pop out from. Defaults to above.
   TooltipDirection get tooltipDirection => TooltipDirection.above;
 

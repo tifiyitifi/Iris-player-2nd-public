@@ -131,6 +131,39 @@ void main() {
     expect(store.state.bgRunSeq, runSeq);
   });
 
+  test('a gate press after 副音 ran off the end sounds again', () async {
+    // The 队尾 hand-back (`Repeat.none`, last 副音 file finished) is a
+    // re-activation target, not a dead end: the quick bar draws its "play" glyph
+    // from `bgPairInEffect`, so the press means 「在这片开启副音」. The 下一首 branch
+    // used to write `bgQueueEnded` straight back and stay paused, so under
+    // 仅当前 + 「下一首」 (both defaults) the gate did nothing no matter how often
+    // the user pressed it — the only way out was switching the feature off/on in
+    // the 副音 menu.
+    await store.enableWithQueue(
+      [_f('b1'), _f('b2')],
+      applyScope: BgApplyScope.currentOnly,
+      anchorKey: 'fg',
+    );
+    store.set(store.state.copyWith(bgRepeat: Repeat.none));
+    await store.jumpTo(1);
+    // The natural end: `step` walks off the list and hands the pair back.
+    expect(await store.step(forward: true), isFalse);
+    expect(store.state.bgQueueEnded, isTrue,
+        reason: 'precondition: the run is handed back at the queue end');
+    expect(store.state.bgAutoPlay, isFalse);
+    final int runSeq = store.state.bgRunSeq;
+
+    store.openGate(mediaKey: 'fg', stepForward: true);
+
+    expect(store.state.bgQueueEnded, isFalse,
+        reason: 'one press re-activates; the hand-back is cleared');
+    expect(store.state.bgAutoPlay, isTrue);
+    expect(store.state.currentIndex, 1,
+        reason: 'the last track is the one it was on: replay it, do not skip');
+    expect(store.state.bgRunSeq, greaterThan(runSeq),
+        reason: 'a stopped pair needs the file re-opened, not just an unpause');
+  });
+
   test('openGate stepForward skips the foreground file (double-play guard)',
       () async {
     // The foreground file is ALSO a queue entry; 下一首 re-activation must not

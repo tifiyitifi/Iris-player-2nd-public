@@ -36,6 +36,7 @@ class ScenarioCommands {
     required Scenario workspace,
     Scenario? source,
     bool importPersistentExcludes = true,
+    bool importTemporaryExcludes = false,
     bool copyState = true,
     ScenarioRepository? repo,
   }) async {
@@ -58,8 +59,11 @@ class ScenarioCommands {
       await r.copyExplicitItems(
           sourceScenarioId: source.id, targetScenarioId: wsId);
       if (importPersistentExcludes) {
-        await r.copyPersistentExcludes(
-            sourceScenarioId: source.id, targetScenarioId: wsId);
+        await r.copyExcludes(
+          sourceScenarioId: source.id,
+          targetScenarioId: wsId,
+          includeTemporary: importTemporaryExcludes,
+        );
       }
 
       // Copy Definition config (sorting / shuffle config / duplicate / repeat).

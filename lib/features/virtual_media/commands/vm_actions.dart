@@ -6,6 +6,7 @@ import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
+import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 import 'package:iris/features/virtual_media/rule/vm_naming.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
@@ -318,7 +319,7 @@ Future<List<VirtualSegment>> loadPreviewLibrarySegments() async {
       final f = node.maybeMap(file: (f) => f, orElse: () => null);
       if (f == null) continue;
       out.add(VirtualSegment(
-        mediaKey: canonicalKey(f.storageId, f.path.join('/')),
+        mediaKey: canonicalMediaKey(f.storageId, f.path, uri: f.uri),
         storageId: f.storageId,
         path: f.path,
         name: f.name,
@@ -341,12 +342,21 @@ Future<List<VirtualSegment>> loadPreviewLibrarySegments() async {
 Future<ResolvedRules> resolveEnabledRules() async {
   final all = await DbModule.virtualMediaRepo.loadRules();
   final lib = await loadPreviewLibrarySegments();
+  // 简播: a video with a sibling `.llc` never joins a group (same rule the
+  // playback derivation applies — see vm_fake_cut_exclusions.dart).
+  final Set<String> fakeCutExclusions =
+      await vmFakeCutExclusionKeys(lib);
   final map = <String, List<VirtualMediaItem>>{};
   for (final r in all.where((r) => r.enabled)) {
     // The preview reads the WHOLE library, but the boundary freeze is seeded
     // from one scenario's stream — applying it here would drop members outside
     // that scenario, so the preview always re-derives.
-    map[r.id] = resolveVirtualMedia(rules: [r], library: lib, applyPin: false);
+    map[r.id] = resolveVirtualMedia(
+      rules: [r],
+      library: lib,
+      applyPin: false,
+      excludedMediaKeys: fakeCutExclusions,
+    );
   }
   return ResolvedRules(all, map, libraryCount: lib.length);
 }

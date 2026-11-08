@@ -101,6 +101,43 @@ void main() {
       expect(decoded.scenarioId, 'scn-42');
       expect(decoded.isPlaybackRequest, isFalse);
     });
+
+    test('round-trips a mirror-neighbour request', () {
+      final decoded = NewWindowRequest.decode(
+        const NewWindowRequest(
+          mirrorScenarioId: 'scn-7',
+          mirrorTagViewId: 12,
+          mirrorForward: false,
+        ).encode(),
+      )!;
+      expect(decoded.mirrorScenarioId, 'scn-7');
+      expect(decoded.mirrorTagViewId, 12);
+      expect(decoded.mirrorForward, isFalse);
+
+      final plain = NewWindowRequest.decode(
+        const NewWindowRequest(mirrorScenarioId: 'scn-8').encode(),
+      )!;
+      expect(plain.mirrorScenarioId, 'scn-8');
+      expect(plain.mirrorTagViewId, isNull);
+      expect(plain.mirrorForward, isTrue,
+          reason: 'the default step direction is next');
+      expect(plain.mirrorTargetIndex, isNull,
+          reason: 'older payloads carry no resolved target');
+    });
+
+    test('round-trips the resolved neighbour target', () {
+      final decoded = NewWindowRequest.decode(
+        const NewWindowRequest(
+          mirrorScenarioId: 'scn-9',
+          mirrorTagViewId: 3,
+          mirrorForward: true,
+          mirrorTargetIndex: 42,
+          mirrorTargetFileKey: 'st1:/a/b.mp4',
+        ).encode(),
+      )!;
+      expect(decoded.mirrorTargetIndex, 42);
+      expect(decoded.mirrorTargetFileKey, 'st1:/a/b.mp4');
+    });
   });
 
   group('source-file rows', () {

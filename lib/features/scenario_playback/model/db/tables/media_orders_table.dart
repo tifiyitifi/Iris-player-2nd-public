@@ -31,6 +31,15 @@ class MediaOrdersTable extends Table {
   /// Packed int32 node ids, little-endian.
   BlobColumn get ids => blob()();
 
+  /// Last time a builder read this order (epoch ms), for the cache GC.
+  ///
+  /// Nothing used to evict these rows: one key per (storage, field, direction,
+  /// grouping, media-type set) grew to 16 × 4 B/item with no upper bound. The
+  /// scenario builder keeps only the most recently used few per storage, so a
+  /// library that keeps switching sorts cannot accumulate tens of MB per
+  /// storage forever.
+  IntColumn get lastUsedAt => integer().withDefault(const Constant(0))();
+
   @override
   Set<Column> get primaryKey => {orderKey};
 }

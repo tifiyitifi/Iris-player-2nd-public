@@ -5,11 +5,13 @@ import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/file_list_result.dart';
 import 'package:iris/models/storages/ftp.dart';
 import 'package:iris/models/storages/local.dart';
+import 'package:iris/models/storages/saf_document_uri_index.dart';
 import 'package:iris/models/storages/webdav.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/popup.dart';
 import 'package:iris/widgets/popups/storages/storages.dart';
+import 'package:iris/utils/path_conv.dart' show safDirectDocumentUri;
 import 'package:saf_util/saf_util.dart';
 
 part 'storage.freezed.dart';
@@ -52,7 +54,14 @@ abstract class _Storage {
   /// Like [getFiles], but reports WHY a listing failed instead of returning an
   /// empty list. Non-WebDAV storages keep throwing as before; only WebDAV
   /// classifies failures (its exceptions were previously swallowed).
-  Future<FileListResult> getFilesDetailed(List<String> path);
+  ///
+  /// [withEntryFacts] = false lets a SCAN skip the per-entry `stat()` of
+  /// entries it will discard (see [getLocalFilesResult]); the file browser
+  /// keeps the default because it renders size and date columns.
+  Future<FileListResult> getFilesDetailed(
+    List<String> path, {
+    bool withEntryFacts = true,
+  });
 
   String? getAuth();
 }
@@ -135,11 +144,17 @@ sealed class Storage with _$Storage implements _Storage {
         // there are no relative segments) and list THAT, so every returned
         // FileItem carries a real playable/probe content:// document URI and
         // a prefix-correct `path` list.
+        //
+        // Document-form bases (`.../tree/X/document/Y...`) already ARE a
+        // document URI once joined — resolving their `document`/`docId`
+        // segments via child() would miss and fall back to the tree root.
         if (isAndroid && path.isNotEmpty && path[0].startsWith('content://')) {
-          final containerUri = await _safContainerUri(
-            path[0],
-            path.sublist(1).where((s) => s.isNotEmpty).toList(),
-          );
+          final direct = safDirectDocumentUri(path);
+          final containerUri = direct ??
+              await _safContainerUri(
+                path[0],
+                path.sublist(1).where((s) => s.isNotEmpty).toList(),
+              );
           return await getContentFiles(containerUri, path);
         } else {
           return await getLocalFiles(this as LocalStorage, path);
@@ -167,7 +182,10 @@ sealed class Storage with _$Storage implements _Storage {
   }
 
   @override
-  Future<FileListResult> getFilesDetailed(List<String> path) async {
+  Future<FileListResult> getFilesDetailed(
+    List<String> path, {
+    bool withEntryFacts = true,
+  }) async {
     // Remote storages classify failures so an offline host is never mistaken
     // for an empty directory (and its DB snapshot is never purged). Local
     // storages keep the historical contract.
@@ -179,13 +197,16 @@ sealed class Storage with _$Storage implements _Storage {
       // SAF grant) is surfaced as an error with a grant entry, never as an
       // empty folder. [getFiles] keeps its legacy list-only contract.
       if (isAndroid && path.isNotEmpty && path[0].startsWith('content://')) {
-        final containerUri = await _safContainerUri(
-          path[0],
-          path.sublist(1).where((s) => s.isNotEmpty).toList(),
-        );
+        final direct = safDirectDocumentUri(path);
+        final containerUri = direct ??
+            await _safContainerUri(
+              path[0],
+              path.sublist(1).where((s) => s.isNotEmpty).toList(),
+            );
         return getContentFilesResult(containerUri, path);
       }
-      return getLocalFilesResult(this as LocalStorage, path);
+      return getLocalFilesResult(this as LocalStorage, path,
+          withEntryFacts: withEntryFacts);
     }
 
     final s = this as WebDAVStorage;
@@ -205,32 +226,23 @@ sealed class Storage with _$Storage implements _Storage {
 
   /// Resolves the document URI of an SAF subdirectory under [treeUri].
   ///
-  /// With no relative segments returns [treeUri] itself (root listing). Each
-  /// relative segment is located one level at a time via
-  /// `SafUtil().child` — the SAF provider equivalent of descending a
-  /// directory tree — so a deep browse/scan gets the exact container
-  /// document URI to list. A failed descent returns the nearest existing
-  /// ancestor (or [treeUri]) rather than throwing; the caller's listing then
-  /// simply reflects what is reachable.
+  /// With no relative segments returns [treeUri] itself (root listing). A
+  /// directory the scan just listed is answered from
+  /// [SafDocumentUriIndex] (the listing already carried its URI), so a deep
+  /// walk no longer re-queries every ancestor level. On a miss the whole chain
+  /// is resolved in ONE provider call; a renamed/removed segment still falls
+  /// back to the nearest existing ancestor rather than throwing, so the caller's
+  /// listing simply reflects what is reachable.
   Future<String> _safContainerUri(
     String treeUri,
     List<String> relativeSegments,
-  ) async {
-    if (relativeSegments.isEmpty) return treeUri;
-    var current = treeUri;
-    final found = <String>[];
-    for (final seg in relativeSegments) {
-      try {
-        final child = await SafUtil().child(current, [seg]);
-        if (child == null) break;
-        current = child.uri;
-        found.add(seg);
-      } catch (_) {
-        break;
-      }
-    }
-    return current;
-  }
+  ) =>
+      resolveSafContainerUri(
+        treeUri: treeUri,
+        relativeSegments: relativeSegments,
+        child: (uri, names) async => (await SafUtil().child(uri, names))?.uri,
+        index: SafDocumentUriIndex.instance,
+      );
 
   @override
   String? getAuth() {

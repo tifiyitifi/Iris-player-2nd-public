@@ -21,7 +21,7 @@ Future<AppLocalizations> loadZh(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('zh windows local shows fast per-file magnitudes',
+  testWidgets('zh windows local states the header-parse cost',
       (tester) async {
     final t = await loadZh(tester);
     final s = scanProbeEstimateText(
@@ -29,7 +29,7 @@ void main() {
         isWindows: true,
         isAndroid: false,
         storageType: StorageType.internal);
-    expect(s, contains('几十毫秒'));
+    expect(s, contains('1 毫秒'));
   });
 
   testWidgets('zh android local shows slower per-file range', (tester) async {
@@ -42,7 +42,7 @@ void main() {
     expect(s, contains('50–200ms'));
   });
 
-  testWidgets('zh network storages state that probing is skipped',
+  testWidgets('zh network storages state that probing stays in the background',
       (tester) async {
     final t = await loadZh(tester);
     for (final type in [
@@ -52,7 +52,7 @@ void main() {
     ]) {
       final s = scanProbeEstimateText(
           t: t, isWindows: true, isAndroid: false, storageType: type);
-      expect(s, contains('不支持'));
+      expect(s, contains('后台'));
     }
   });
 

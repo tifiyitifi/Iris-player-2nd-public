@@ -56,6 +56,8 @@ void main() {
       (tester) async {
     final handle = await openDialog(tester);
     expect(find.byType(RadioListTile<RescanFolderPolicy>), findsNWidgets(3));
+    expect(find.byType(CheckboxListTile), findsNothing,
+        reason: 'media info is always read; the probe toggle is hidden');
 
     await tester.tap(find.text(handle.startLabel));
     await tester.pumpAndSettle();

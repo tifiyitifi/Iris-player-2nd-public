@@ -1,8 +1,10 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_query.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
+import 'package:iris/features/media_library/model/enum/media_node.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_excludes_dao.dart';
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_explicit_items_dao.dart';
@@ -95,6 +97,58 @@ void main() {
             scenario, ScenarioSortField.sizeInBytes, SortDirection.asc),
         ['a.mp4', 'c.mp4', 'b.mp4', 'missing.mp4'],
       );
+    });
+
+    test('a stored 0 for size/duration is unknown: same order as the DAO',
+        () async {
+      await seed(file('D:/a.mp4', size: 999, durationMs: 999));
+      await seed(file('D:/b.mp4', size: 100, durationMs: 10));
+      await seed(file('D:/z.mp4', size: 999, durationMs: 999));
+      // A lane that cannot stat (SAF / WebDAV / FTP) stores a literal 0; the
+      // adapter refuses to write it, so own the value the way such rows carry it.
+      await db.customStatement(
+          "UPDATE media_nodes SET size_in_bytes = 0, duration_ms = 0 "
+          "WHERE storage_id = 'st1' AND path = 'D:/z.mp4'");
+
+      final scenario = await repo.createScenario(name: 'q');
+      for (final p in ['D:/a.mp4', 'D:/b.mp4', 'D:/z.mp4']) {
+        await repo.addExplicitItem(
+            scenarioId: scenario.id, storageId: 'st1', path: p);
+      }
+      // No node at all: the NULL spelling of the same "unknown" bucket.
+      await repo.addExplicitItem(
+          scenarioId: scenario.id, storageId: 'st1', path: 'D:/missing.mp4');
+
+      Future<List<String>> daoOrder(
+        ScenarioSortField field,
+        SortDirection direction,
+      ) async {
+        final result = await MediaNodesDao(db).getPagedNodes(MediaNodePageQuery(
+          page: 1,
+          pageSize: 100,
+          storageId: 'st1',
+          nodeKind: MediaNodeKind.file,
+          matchAllInStorage: true,
+          mediaTypes: const [MediaType.video],
+          sortField: field.toMediaSortField(),
+          sortDirection: direction,
+          pathGroupFirst: false,
+        ));
+        return [for (final n in result.items) n.name];
+      }
+
+      for (final field in [
+        ScenarioSortField.sizeInBytes,
+        ScenarioSortField.durationMs,
+      ]) {
+        for (final direction in SortDirection.values) {
+          final explicit = await orderFor(scenario, field, direction);
+          // The explicit queue must page in the folder-source order, and the
+          // unknown rows (0 and NULL) stay last in BOTH directions.
+          expect(explicit, [...await daoOrder(field, direction), 'missing.mp4'],
+              reason: '$field ${direction.name}');
+        }
+      }
     });
 
     test('sorts by duration and by name', () async {

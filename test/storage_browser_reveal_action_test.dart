@@ -56,8 +56,8 @@ void main() {
         storageId: 'reveal-action-test',
         storageType: StorageType.internal,
         name: 'v.mp4',
-        uri: 'E:\\yb\\v.mp4',
-        path: ['E:', 'yb', 'v.mp4'],
+        uri: 'E:\\vault\\v.mp4',
+        path: ['E:', 'vault', 'v.mp4'],
         type: ContentType.video,
       );
 

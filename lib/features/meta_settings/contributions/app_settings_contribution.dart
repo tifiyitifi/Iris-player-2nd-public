@@ -210,6 +210,23 @@ abstract final class AppSettingsContribution {
       platforms: ['android'],
       sortOrder: 27,
     ),
+    // Follow the playing item when an episode switch happens (scenario
+    // playback). Cross-platform: the queue exists on desktop and phone. ON by
+    // default; OFF only stops the automatic jump — opening the queue on the
+    // current item and the "Go to current" button keep working. Metadata-only
+    // `window.` AUX bool (JsonKey-excluded), so it renders as a custom switch.
+    SettingDef(
+      key: 'window.scenarioQueueAutoLocate',
+      section: SettingsSection.play,
+      valueType: SettingValueType.bool,
+      defaultValue: 'true', // == AppState @Default
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'scenario_queue_auto_locate',
+      titleKey: 'set_scenario_queue_auto_locate',
+      subtitleKey: 'set_scenario_queue_auto_locate_desc',
+      iconKey: 'playlist',
+      sortOrder: 28,
+    ),
     // Play-queue toolbar layout (scenario playback). Cross-platform: the queue
     // exists on desktop and phone, and the compact single-row bar is the only
     // one that fits a narrow phone. The queue's own trailing toggle is the
@@ -284,6 +301,24 @@ abstract final class AppSettingsContribution {
       platforms: ['windows', 'linux', 'macos'],
       sortOrder: 33,
     ),
+    // Desktop drop auto-scan: ON (default) starts the recursive scan of the
+    // dropped folders immediately — no "scan first?" gate and no pre-scan
+    // explainer, because the drop already IS the play request and a local scan
+    // is a few seconds. OFF keeps both prompts. Metadata-only `playback.` AUX
+    // row, hidden with the rest of the drop feature via DefVisibility.
+    SettingDef(
+      key: 'playback.dropAutoScan',
+      section: SettingsSection.play,
+      valueType: SettingValueType.bool,
+      defaultValue: 'true', // == AppState @Default
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'drop_auto_scan',
+      titleKey: 'set_drop_auto_scan',
+      subtitleKey: 'set_drop_auto_scan_desc',
+      iconKey: 'drop_auto_scan',
+      platforms: ['windows', 'linux', 'macos'],
+      sortOrder: 34,
+    ),
     SettingDef(
       key: 'app.showControlsOnPlayToPause',
       section: SettingsSection.play,
@@ -296,7 +331,7 @@ abstract final class AppSettingsContribution {
       // Legacy panel gates this row behind isMobilePlatform; android-only in
       // practice (no iOS target ships) — same rationale as popup_direction.
       platforms: ['android'],
-      sortOrder: 34,
+      sortOrder: 35,
     ),
     // media_kit (mpv) demuxer cache sizing preset. Metadata-only `playback.`
     // AUX row (JsonKey-excluded AppState field), so it renders as a custom
@@ -314,7 +349,7 @@ abstract final class AppSettingsContribution {
       titleKey: 'playback_cache_preset',
       subtitleKey: 'playback_cache_preset_desc',
       iconKey: 'playback_cache_preset',
-      sortOrder: 35,
+      sortOrder: 36,
     ),
     // Tail-step policy: what a FORWARD step press does once its target reaches
     // the media tail — finish the item (advance to the next queue entry) or keep
@@ -333,7 +368,7 @@ abstract final class AppSettingsContribution {
       titleKey: 'step_tail_finish',
       subtitleKey: 'step_tail_finish_desc',
       iconKey: 'playback_step_tail_finish',
-      sortOrder: 36,
+      sortOrder: 37,
     ),
     // ── 手机滑动与手势 ──
     SettingDef(

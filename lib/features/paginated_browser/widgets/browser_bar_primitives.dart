@@ -115,7 +115,14 @@ Widget buildBrowserPageCounter<T>(
   // rather than this toolbar's theme. On the dark docked panel that rendered
   // app-dark text on a black background — invisible. Pin the foreground to the
   // toolbar theme explicitly.
+  //
+  // This readout is deliberately NOT keyboard-focusable (`canRequestFocus`):
+  // it is status text, not a control. A focused readout turns Space/Enter
+  // (the framework's ActivateIntent) into a tap that opens the jump prompt —
+  // the "pressing Space in the list pops a Go dialog" defect. Keyboard users
+  // reach the prompt via Ctrl+G instead (see `PlaylistAction.jumpToPage`).
   return InkWell(
+    canRequestFocus: false,
     onTap: () => handleBrowserNumericJump(context, dataSource),
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4.0),
@@ -132,6 +139,9 @@ Widget buildBrowserPageCounter<T>(
 }
 
 /// `totalItems/pageSize` chip. Tapping it opens the items-per-page prompt.
+///
+/// Same focus rule as the page counter: status text, not a tab stop, so
+/// Space/Enter can never activate it by accident.
 Widget buildBrowserPerPageTotalChip<T>(
   BuildContext context,
   PaginatedBrowserDataSource<T> dataSource,
@@ -140,6 +150,7 @@ Widget buildBrowserPerPageTotalChip<T>(
     constraints:
         BoxConstraints.tightFor(width: kBrowserBarPerPageTextWidth),
     child: InkWell(
+      canRequestFocus: false,
       onTap: () => handleBrowserChangePageSize(context, dataSource),
       borderRadius: BorderRadius.circular(16),
       child: Padding(

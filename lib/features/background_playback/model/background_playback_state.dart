@@ -31,9 +31,10 @@ part 'background_playback_state.g.dart';
 ///
 /// Split persistence:
 /// - Session-only (excluded from JSON): [enabled], [controlTarget],
-///   [currentIndex], [bgAutoPlay], [bgPanelVisible] — the subsystem never
-///   auto-starts on a cold launch; the user starts it from the More menu, and
-///   its queue/preferences survive for the next session.
+///   [currentIndex], [bgAutoPlay], [bgPanelVisible], [bgOutOfScope],
+///   [bgQueueEnded] — the subsystem never auto-starts on a cold launch; the
+///   user starts it from the More menu, and its queue/preferences survive for
+///   the next session.
 /// - Persisted: queue + two volume-ratio tracks (fg/bg percent, each with an
 ///   independent mute) + rate/shuffle/repeat + show-video + video layout.
 @freezed
@@ -45,17 +46,35 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
   MediaRatio get globalRatio =>
       MediaRatio(fgPercent: fgVolumePercent, bgPercent: bgVolumePercent);
 
+  /// Whether the pair is actually IN EFFECT right now — the single predicate
+  /// every "副音 is in use" reader must share.
+  ///
+  /// Besides the subsystem flag and the open user gate, three SESSION states
+  /// make the pair inactive without touching the user's routing preference:
+  /// - [bgOutOfScope]: the current foreground media is outside the run's
+  ///   作用范围 (仅当前 left its anchor, 智能 met a media without a pairing, or
+  ///   the user closed 副音 for it). Written ONLY by the runtime scope observer.
+  /// - [bgExhausted]: the stopRestoreFg terminal state — 副音 is stopped for
+  ///   good and the foreground must play un-ducked.
+  /// - [bgQueueEnded]: the run walked off the end of its queue under
+  ///   `Repeat.none`; nothing is left to sound, so the controls belong to the
+  ///   video again until the queue is moved.
+  ///
+  /// They are session-only and never persisted: a relaunch starts clean.
+  bool get bgPairInEffect =>
+      enabled && gateOpen && !bgOutOfScope && !bgExhausted && !bgQueueEnded;
+
   /// Whether the shared controls may address the 副音 runtime right now: the
-  /// subsystem is on AND the user gate is open AND the target is bg. A closed
-  /// gate always reads as foreground — even against a stale target flag — so a
-  /// deactivation can never leave transport driving a dead bg.
+  /// pair is in effect AND the target is bg. A closed gate always reads as
+  /// foreground — even against a stale target flag — so a deactivation can
+  /// never leave transport driving a dead bg.
   bool get bgOwnsControls =>
-      enabled && gateOpen && controlTarget == ControlTarget.background;
+      bgPairInEffect && controlTarget == ControlTarget.background;
 
   /// Whether the video surface may show the 副音 picture right now (same rule
   /// as [bgOwnsControls], over the display target).
   bool get bgOwnsDisplay =>
-      enabled && gateOpen && displayTarget == ControlTarget.background;
+      bgPairInEffect && displayTarget == ControlTarget.background;
 
   const factory BackgroundPlaybackState({
     @JsonKey(includeToJson: false, includeFromJson: false)
@@ -264,6 +283,39 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(<String>{})
     Set<String> bgOffMediaKeys,
+
+    /// Whether the CURRENT suspension was caused by 简播 (fake cut) rather than
+    /// by the user.
+    ///
+    /// 简播 pauses 副音 for the duration of a cut (its virtual timeline has no
+    /// meaning on the cut picture) and must resume it when the foreground moves
+    /// on — but ONLY when 副音 was actually sounding when the cut began. The
+    /// flag is set by [BackgroundPlaybackStore.suspendForFakeCut] from the live
+    /// `bgAutoPlay`, and cleared by every explicit transport/gate/scope action,
+    /// so a user pause is never undone by the auto-resume. Session state.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(false)
+    bool bgSuspendedByFakeCut,
+
+    /// Routing (controls / picture) that [BackgroundPlaybackStore
+    /// .suspendForFakeCut] handed back to the video, remembered so
+    /// [BackgroundPlaybackStore.resumeAfterFakeCut] can restore it.
+    ///
+    /// Separate from [bgSuspendedByFakeCut] on purpose: that flag is about the
+    /// TRANSPORT ("was 副音 actually sounding"), while the routing can be lost
+    /// even by a run that was already paused but owned the controls — the old
+    /// code overwrote the targets unconditionally and never restored them, so
+    /// a bg-master run came back as foreground and could not be recovered.
+    /// Session state.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(false)
+    bool fakeCutHeldRouting,
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(ControlTarget.foreground)
+    ControlTarget controlTargetBeforeFakeCut,
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(ControlTarget.foreground)
+    ControlTarget displayTargetBeforeFakeCut,
 
     /// Whether starting 副音 hands the shared controls to it (第 3 轮追加需求).
     /// Turning this off leaves the controls on the foreground when 副音 starts.
@@ -628,6 +680,11 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// What happens when the current 副音 file finishes while the video keeps
     /// playing (see [BgExhaustedAction]). Persisted as the `bg.exhaustedAction`
     /// AUX row. Default [BgExhaustedAction.nextBg].
+    ///
+    /// This setting alone owns the 副音-file boundary: the 作用范围 decides WHICH
+    /// foreground media gets 副音 at all, never what happens when a 副音 file
+    /// runs out (there used to be a second, scope-driven decision table that no
+    /// production path ever consulted).
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(BgExhaustedAction.nextBg)
     BgExhaustedAction bgExhaustedAction,
@@ -640,6 +697,32 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @JsonKey(includeToJson: false, includeFromJson: false)
     @Default(false)
     bool bgExhausted,
+
+    /// Session: the current foreground media is OUTSIDE this run's 作用范围 —
+    /// 副音 is paused for it and the pair is not a pair. WRITTEN by the runtime
+    /// scope observer (`BackgroundRuntimeScope`); cleared by the paths that
+    /// re-establish the pair on purpose (`openGate` re-anchors under 仅当前, the
+    /// 简播 resume, `restartForCurrent`, and every teardown). A queue move
+    /// (`step` / `jumpTo`) deliberately does NOT clear it — the observer owns
+    /// the verdict, so a jump can never activate the pair on a media outside the
+    /// scope. Kept separate from [controlTarget] so returning to the anchored
+    /// media restores the user's routing preference instead of silently
+    /// rewriting it. Never persisted (a relaunch starts in scope).
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(false)
+    bool bgOutOfScope,
+
+    /// Session: the queue ran off its end under `Repeat.none` — there is
+    /// nothing left for 副音 to sound, so the controls/picture belong to the
+    /// video again. Distinguished from [bgExhausted] (the stopRestoreFg
+    /// terminal): that one is a user-chosen "stop and return the audio", while
+    /// this one only says the LIST is over. (The third stop, the 仅当前 + 高同步
+    /// window boundary that pauses BOTH runtimes, is a different event and keeps
+    /// its pair; see `shouldPauseBgPastWindow` in the runtime observer.)
+    /// Cleared by any play/step/jump/gate-open. Never persisted.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(false)
+    bool bgQueueEnded,
 
     /// Physical minimum length of an A–B mapping segment, in milliseconds
     /// (default 500; clamped to 100..5000). Persisted as the

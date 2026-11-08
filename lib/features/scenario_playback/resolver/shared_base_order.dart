@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:iris/features/scenario_playback/resolver/base_order_view.dart';
 import 'package:iris/features/scenario_playback/resolver/bit_vector.dart';
 
 /// One scenario source's selection, expressed as a membership bitmap over a
@@ -51,7 +52,7 @@ class SharedOrderSlice {
 /// reconstructed instead: accepted rank → virtual index ([accepted] select) →
 /// slice (cumulative offsets) → shared position (slice select) → node id. The
 /// per-scenario footprint is the slices' bitmaps + [accepted], not the sequence.
-class SharedBaseOrder {
+class SharedBaseOrder implements BaseOrderView {
   SharedBaseOrder({required this.slices, required this.accepted}) {
     var offset = 0;
     for (final s in slices) {
@@ -70,12 +71,15 @@ class SharedBaseOrder {
   final List<int> _offsets = [];
   late final int _virtualSize;
 
+  @override
   int get virtualSize => _virtualSize;
 
   /// Number of ACCEPTED base elements (the queue's index space).
+  @override
   int get count => accepted.count;
 
   /// Node id at [acceptedRank], or null when out of range.
+  @override
   int? nodeIdAt(int acceptedRank) {
     if (acceptedRank < 0 || acceptedRank >= count) return null;
     return _nodeIdAtVirtual(accepted.select(acceptedRank));
@@ -108,6 +112,23 @@ class SharedBaseOrder {
     final virtualIndex = _offsets[sliceIndex] + slice.bits.rank(position);
     if (virtualIndex >= accepted.length || !accepted[virtualIndex]) return null;
     return accepted.rank(virtualIndex);
+  }
+
+  @override
+  Iterable<int> acceptedRanksOfNode(int nodeId) sync* {
+    // Same lookup the v43 query did, expressed against the shared orders: find
+    // the node in a slice's order, then map that position to its accepted rank.
+    // A node can legitimately appear twice (overlapping sources with
+    // `allowDuplicate`), so every hit is visited — occurrence recovery needs all
+    // of them.
+    for (final slice in slices) {
+      final order = slice.order;
+      for (var position = 0; position < order.length; position++) {
+        if (order[position] != nodeId) continue;
+        final rank = acceptedRankAtPosition(slice, position);
+        if (rank != null) yield rank;
+      }
+    }
   }
 
   int _nodeIdAtVirtual(int virtualIndex) {

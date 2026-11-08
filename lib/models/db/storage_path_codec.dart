@@ -83,8 +83,8 @@ abstract final class StoragePathCodec {
 
   /// Case-folded comparison key for [raw] under [storageId].
   ///
-  /// Two spellings of the same NTFS file (`E:/YB/a.mp4`, `E:\yb\a.mp4`,
-  /// `yb/a.mp4`) collapse to one key; POSIX and SAF stay case-sensitive.
+  /// Two spellings of the same NTFS file (`E:/VAULT/a.mp4`, `E:\vault\a.mp4`,
+  /// `vault/a.mp4`) collapse to one key; POSIX and SAF stay case-sensitive.
   static String relativeKey(String storageId, String raw) =>
       relativeKeyForBase(_baseSegments(storageId), raw);
 
@@ -97,15 +97,41 @@ abstract final class StoragePathCodec {
   }
 
 
+  /// Probe / playback target for a path read STRAIGHT from `media_nodes`.
+  ///
+  /// Rows store their path relative to the storage base, so a caller that did
+  /// not go through `MediaNodeDriftAdapter.fromDb` MUST restore the base first:
+  /// a probe target of `/vault/a3/x.mp4` instead of `E:/vault/a3/x.mp4` is a
+  /// nonexistent file on Windows, and every probe then "succeeds" with an empty
+  /// result — the folder sorts by unknown duration forever and the wait before
+  /// playback burns its whole budget for nothing. SAF rows keep their persisted
+  /// document URI (the base never applies to a `content://` tree).
+  static String playableUriForStored(
+    String storageId,
+    String storedPath, {
+    String? uri,
+  }) {
+    if (uri != null && uri.isNotEmpty) return uri;
+    return nodePlayableUri(pathConv(absolutize(storageId, storedPath)));
+  }
+
   /// DB (relative) → DOMAIN (absolute) canonical string.
   static String absolutize(String storageId, String storedCanonical) {
     final base = _baseSegments(storageId);
     if (base == null) return storedCanonical;
     final segments = pathConv(storedCanonical);
     if (segments.length >= base.length) {
+      // "Already absolute" is a filesystem question, so it folds exactly like
+      // [relativizeForBase] does: NTFS/UNC ignore case, POSIX and SAF do not.
+      // Comparing exactly re-prepended the base for a base-inclusive path whose
+      // drive-letter case differed (`D:` base + `d:/Movies/a.mp4` →
+      // `D:/d:/Movies/a.mp4`), which is a nonexistent scan / probe target.
+      final fold = baseRidesCaseInsensitiveFs(base);
       var alreadyAbsolute = true;
       for (var i = 0; i < base.length; i++) {
-        if (segments[i] != base[i]) {
+        final a = fold ? segments[i].toLowerCase() : segments[i];
+        final b = fold ? base[i].toLowerCase() : base[i];
+        if (a != b) {
           alreadyAbsolute = false;
           break;
         }

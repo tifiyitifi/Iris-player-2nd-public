@@ -1,5 +1,7 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/shortcut_hints.dart';
+import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/store/app_state.dart';
 
 void main() {
@@ -57,6 +59,16 @@ void main() {
         shortcutHintLabelFor(ShortcutHintKind.alwaysOnTop, KeyboardShortcutScheme.legacy),
         'F10',
       );
+      // The 副音 T0 shortcuts are potplayer-table bindings only.
+      expect(
+        shortcutHintLabelFor(ShortcutHintKind.bgGate, KeyboardShortcutScheme.legacy),
+        isNull,
+      );
+      expect(
+        shortcutHintLabelFor(
+            ShortcutHintKind.bgControlTarget, KeyboardShortcutScheme.legacy),
+        isNull,
+      );
     });
 
     test('potplayer scheme matches the live potplayer bindings (P-key fix)', () {
@@ -111,6 +123,36 @@ void main() {
       expect(
         shortcutHintLabelFor(ShortcutHintKind.alwaysOnTop, KeyboardShortcutScheme.potplayer),
         'Ctrl + T',
+      );
+      // 副音 T0 buttons: the gate and the fg/bg control toggle.
+      expect(
+        shortcutHintLabelFor(ShortcutHintKind.bgGate, KeyboardShortcutScheme.potplayer),
+        "Alt + '",
+      );
+      expect(
+        shortcutHintLabelFor(
+            ShortcutHintKind.bgControlTarget, KeyboardShortcutScheme.potplayer),
+        'Alt + ;',
+      );
+    });
+  });
+
+  group('withShortcutHint', () {
+    test('keeps the label when the action has no live binding', () async {
+      final t = await lookupAppLocalizations(const Locale('en'));
+
+      expect(
+        withShortcutHint('Control Sub Audio', null, t),
+        'Control Sub Audio',
+      );
+    });
+
+    test('appends the live shortcut in the ARB wrapper', () async {
+      final t = await lookupAppLocalizations(const Locale('en'));
+
+      expect(
+        withShortcutHint('Control Sub Audio', 'Alt + ;', t),
+        'Control Sub Audio (Alt + ;)',
       );
     });
   });

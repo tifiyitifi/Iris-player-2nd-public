@@ -25,7 +25,7 @@ VirtualSegment vseg(String storage, List<String> path, String parent) {
 
 void main() {
   test('no-match report carries per-rule counts and first-item hint', () {
-    final rules = [recursiveRule('r1', ['yb/20260614/ani'])];
+    final rules = [recursiveRule('r1', ['vault/003/ani'])];
     final stream = [
       vseg('st1', ['E:', 'other', 'dir', 'a.mp4'], 'E:/other/dir'),
     ];
@@ -37,10 +37,10 @@ void main() {
   });
 
   test('no-match report counts hits when a rule covers the stream', () {
-    final rules = [recursiveRule('r1', ['yb/20260614/ani'])];
+    final rules = [recursiveRule('r1', ['vault/003/ani'])];
     final stream = [
-      vseg('st1', ['E:', 'yb', '20260614', 'ani', 'a.mp4'],
-          'E:/yb/20260614/ani'),
+      vseg('st1', ['E:', 'vault', '003', 'ani', 'a.mp4'],
+          'E:/vault/003/ani'),
     ];
     final report = vmNoMatchReport(rules: rules, streamOrdered: stream);
     expect(report, contains('r1'));
@@ -48,7 +48,7 @@ void main() {
   });
 
   test('no-match report handles empty stream', () {
-    final rules = [recursiveRule('r1', ['yb/20260614/ani'])];
+    final rules = [recursiveRule('r1', ['vault/003/ani'])];
     final report = vmNoMatchReport(rules: rules, streamOrdered: const []);
     expect(report, contains('empty stream'));
   });

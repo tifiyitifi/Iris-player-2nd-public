@@ -30,9 +30,9 @@ import 'package:path/path.dart' as p;
 
 /// Regression suite for the desktop drop → scan-gate → playback leg.
 ///
-/// A dropped folder that is not fully scanned goes through the scan gate. The
-/// scan runs asynchronously, and the original play must survive it. Two real
-/// defects made that fail in the field:
+/// A dropped folder that is not fully scanned is incremented on the spot: the
+/// scan runs asynchronously, and the original play must survive it. Three real
+/// defects shaped this contract:
 ///
 /// 1. the resume was looked up in ONE global single-slot holder when a scan
 ///    settled, so a concurrent (or superseded) run settling first consumed or
@@ -40,10 +40,15 @@ import 'package:path/path.dart' as p;
 ///    played, and only a second drop (folder now `scanDone`) worked;
 /// 2. when the dropped root was already covered by a live scan but its DB stamp
 ///    had not landed yet, the gate offered 立即完整扫描 and then started nothing,
-///    silently dropping the play.
+///    silently dropping the play;
+/// 3. every newly-dropped path of an already-known storage opened the gate
+///    dialog ("是否立即完整扫描？") plus the scan-options dialog, although that
+///    scan only covers the dropped root — dropping different folders of one
+///    storage therefore meant answering two dialogs each time.
 ///
-/// The drop path now auto-plays when its OWN scan settles (no confirmation
-/// step), and an already-live run is awaited instead of discarded.
+/// The drop path now increments silently (no dialogs for a never-scanned root),
+/// auto-plays when its OWN scan settles (no confirmation step), and awaits an
+/// already-live run instead of discarding the play.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -171,7 +176,6 @@ void main() {
         final t = getLocalizations(context);
         labels['scanNow'] = t.gate_scan_now;
         labels['scanStart'] = t.scan_start;
-        labels['resumeTitle'] = t.gate_resume_title;
         return Scaffold(
           body: Center(
             child: Column(
@@ -194,7 +198,7 @@ void main() {
   }
 
   testWidgets(
-      'a scan-gated drop auto-plays the dropped folder once its scan settles',
+      'an unscanned drop increments silently and plays once the scan settles',
       (tester) async {
     final dropDir = Directory(p.join(tempRoot.path, 'dropA'))..createSync();
     final storage = await addStorageFor(tempRoot);
@@ -203,7 +207,9 @@ void main() {
 
     // Fake scan: flip the shared store through its real lifecycle so the gate's
     // settle anchor is exercised, without walking the filesystem.
+    var scans = 0;
     debugScanRunner = (service, roots, context) async {
+      scans++;
       final scanStore = useRecursiveScanStore();
       await scanStore.startScan(
         storageId: storage.id,
@@ -219,14 +225,14 @@ void main() {
 
     await tester.tap(find.text('drop'));
     await settle(tester);
-    expect(find.text(labels['scanNow']!), findsOneWidget,
-        reason: 'an unscanned folder must gate the drop');
-    await tester.tap(find.text(labels['scanNow']!));
-    await settle(tester);
-    expect(find.text(labels['scanStart']!), findsOneWidget,
-        reason: 'scan-now asks for scan options');
-    await tester.tap(find.text(labels['scanStart']!));
-    await settle(tester);
+
+    // A folder that was merely never indexed is not a decision: the drop is the
+    // play request and the scan covers exactly that root, so it increments
+    // without the gate dialog OR the scan-options dialog.
+    expect(find.text(labels['scanNow']!), findsNothing);
+    expect(find.text(labels['scanStart']!), findsNothing);
+    expect(scans, 1,
+        reason: 'the silent increment must still scan the dropped root');
 
     final current = await usePlaybackScenarioStore().getCurrentItem();
     expect(current, isNotNull,
@@ -234,7 +240,6 @@ void main() {
     expect(current!.media.path.join('/'), contains('dropA/a.mp4'));
     // A drop is an explicit play request: no confirmation step may stand
     // between the finished scan and playback.
-    expect(find.text(labels['resumeTitle']!), findsNothing);
   });
 
   testWidgets(
@@ -245,7 +250,7 @@ void main() {
     await seedVideo(storage, dropDir, 'a.mp4');
 
     // A run is already scanning this exact root, but the DB stamp has not landed
-    // yet (the gate therefore reports "unscanned" and offers scan-now).
+    // yet (the gate therefore reports "unscanned").
     final scanStore = useRecursiveScanStore();
     final rootPath = '${storage.basePath.join('/')}/dropB';
     await scanStore.startScan(storageId: storage.id, depthPaths: {
@@ -262,10 +267,9 @@ void main() {
 
     await tester.tap(find.text('drop'));
     await settle(tester);
-    await tester.tap(find.text(labels['scanNow']!));
-    await settle(tester);
-    // Nothing new is started (the live run already covers the root) and the
-    // user is not asked for scan options again.
+    // Nothing new is started (the live run already covers the root), and no
+    // dialog stands in the way of the silent increment.
+    expect(find.text(labels['scanNow']!), findsNothing);
     expect(find.text(labels['scanStart']!), findsNothing);
     expect(runnerCalls, 0,
         reason: 'a covering live run must not be duplicated');
@@ -320,17 +324,14 @@ void main() {
           ),
     });
 
-    Future<void> startAction(String button) async {
-      await tester.tap(find.text(button));
-      await settle(tester);
-      await tester.tap(find.text(labels['scanNow']!));
-      await settle(tester);
-      await tester.tap(find.text(labels['scanStart']!));
-      await settle(tester);
-    }
-
-    await startAction('actionA');
-    await startAction('actionB');
+    // Both actions increment silently: two scans are now in flight, each with
+    // its own settle anchor.
+    await tester.tap(find.text('actionA'));
+    await settle(tester);
+    await tester.tap(find.text('actionB'));
+    await settle(tester);
+    expect(find.text(labels['scanNow']!), findsNothing);
+    expect(find.text(labels['scanStart']!), findsNothing);
     expect(resumedA, 0);
     expect(resumedB, 0);
 
@@ -345,5 +346,75 @@ void main() {
     await settle(tester);
     expect(resumedB, 1,
         reason: 'B must still resume after A settled first (no cross-talk)');
+  });
+
+  testWidgets(
+      'one action waits for every root of its batch, not just the first',
+      (tester) async {
+    final storage = await addStorageFor(tempRoot);
+    // Sibling folders: `collapseGateDirs` cannot merge them, so this action
+    // starts two chained runs.
+    for (final name in ['multiA', 'multiB']) {
+      Directory(p.join(tempRoot.path, name)).createSync();
+    }
+
+    final gateA = Completer<void>();
+    final gateB = Completer<void>();
+    final started = <String>[];
+    debugScanRunner = (service, roots, context) async {
+      final root = roots.single;
+      started.add(root);
+      final scanStore = useRecursiveScanStore();
+      await scanStore.startScan(
+        storageId: storage.id,
+        depthPaths: {0: roots},
+      );
+      // Production fires this right after registering the run; it is what
+      // anchors the resume to THIS root's playable point.
+      service.onScanStarted?.call();
+      if (root.endsWith('/multiA')) {
+        await gateA.future;
+      } else {
+        await gateB.future;
+      }
+      await scanStore.completeScan();
+    };
+
+    var resumed = 0;
+    ScenarioSourceSpec specFor(String name) => (
+          storageId: storage.id,
+          path: '${storage.basePath.join('/')}/$name',
+          recursive: true,
+          kind: ScenarioSourceKind.folder,
+        );
+
+    await pumpHost(tester, {
+      'action': (context) => ensureDirsScannedWithAutoPlay(
+            context,
+            [specFor('multiA'), specFor('multiB')],
+            playOnScanNow: () async => resumed++,
+          ),
+    });
+
+    await tester.tap(find.text('action'));
+    await settle(tester);
+    // The batch is chained: only the first root is scanning so far.
+    expect(started, [endsWith('/multiA')]);
+    expect(resumed, 0);
+
+    // The FIRST root reaching its playable point must not resume: the queue
+    // would be built from that folder alone (and an empty first folder used to
+    // report "no playable content" even though the second one had files).
+    gateA.complete();
+    await settle(tester);
+    expect(started, hasLength(2),
+        reason: 'the chained batch must go on to the second root');
+    expect(resumed, 0,
+        reason: 'resuming on the first root plays a partial queue');
+
+    gateB.complete();
+    await settle(tester);
+    expect(resumed, 1,
+        reason: 'the action resumes once EVERY root is playable');
   });
 }

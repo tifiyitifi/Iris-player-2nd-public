@@ -38,6 +38,16 @@ void main() {
           'D:/Movies/a.mp4');
     });
 
+    test('absolutize folds the base case like the filesystem does', () {
+      // NTFS is case-insensitive and every other base comparison folds
+      // (`relativize`, `sameBasePath`). A base-inclusive path handed in by
+      // drag-drop or a node selection may carry a different drive-letter case;
+      // comparing exactly prepended the base a SECOND time
+      // (`D:/d:/Movies/a.mp4`), which is a nonexistent scan/probe target.
+      expect(StoragePathCodec.absolutize('sid', 'd:/Movies/a.mp4'),
+          'd:/Movies/a.mp4');
+    });
+
     test('unknown storage is a no-op', () {
       expect(StoragePathCodec.relativize('other', 'D:/Movies/a.mp4'),
           'D:/Movies/a.mp4');
@@ -50,6 +60,15 @@ void main() {
     setUp(() {
       StoragePathCodec.baseResolver =
           (id) => id == 'a' ? const ['/storage/emulated/0'] : null;
+    });
+
+    test('absolutize stays case-sensitive on a POSIX base', () {
+      // Linux/Android really are case-sensitive: folding here would hand back a
+      // path the filesystem does not have.
+      expect(
+        StoragePathCodec.absolutize('a', 'Storage/emulated/0/Movies/a.mp4'),
+        'storage/emulated/0/Storage/emulated/0/Movies/a.mp4',
+      );
     });
 
     test('round-trips a nested path', () {

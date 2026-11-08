@@ -47,8 +47,8 @@ void main() {
     test('a segment prefix covers descendants', () {
       expect(
         pathInsideRoot(
-          filePath: '/mnt/media/20260610/001/[X] a.mp4',
-          rootPath: '/mnt/media/20260610/001',
+          filePath: '/mnt/media/002/001/[X] a.mp4',
+          rootPath: '/mnt/media/002/001',
         ),
         isTrue,
       );
@@ -58,15 +58,15 @@ void main() {
       // …/001 must not swallow …/0010 or …/001-backup.
       expect(
         pathInsideRoot(
-          filePath: '/mnt/media/20260610/0010/a.mp4',
-          rootPath: '/mnt/media/20260610/001',
+          filePath: '/mnt/media/002/0010/a.mp4',
+          rootPath: '/mnt/media/002/001',
         ),
         isFalse,
       );
       expect(
         pathInsideRoot(
-          filePath: '/mnt/media/20260610/001-backup/a.mp4',
-          rootPath: '/mnt/media/20260610/001',
+          filePath: '/mnt/media/002/001-backup/a.mp4',
+          rootPath: '/mnt/media/002/001',
         ),
         isFalse,
       );
@@ -74,7 +74,7 @@ void main() {
 
     test('the root itself and an empty root', () {
       expect(
-        pathInsideRoot(filePath: '/mnt/media/20260610', rootPath: '/mnt/media/20260610'),
+        pathInsideRoot(filePath: '/mnt/media/002', rootPath: '/mnt/media/002'),
         isTrue,
       );
       expect(pathInsideRoot(filePath: '/mnt/media/a.mp4', rootPath: ''), isTrue);
@@ -83,15 +83,15 @@ void main() {
     test('foldCase compares case-insensitively (Windows/SMB)', () {
       expect(
         pathInsideRoot(
-          filePath: r'E:\YB\20260610\a.mp4',
-          rootPath: r'e:\yb\20260610',
+          filePath: r'E:\VAULT\002\a.mp4',
+          rootPath: r'e:\vault\002',
         ),
         isFalse,
       );
       expect(
         pathInsideRoot(
-          filePath: r'E:\YB\20260610\a.mp4',
-          rootPath: r'e:\yb\20260610',
+          filePath: r'E:\VAULT\002\a.mp4',
+          rootPath: r'e:\vault\002',
           foldCase: true,
         ),
         isTrue,
@@ -102,8 +102,8 @@ void main() {
   group('planSourceRefresh — explicit probe targets', () {
     test('explicit items INSIDE a scanned root are not probed twice', () {
       final plan = planSourceRefresh(
-        sources: [folder('/mnt/media/20260610')],
-        explicitItems: [explicit('/mnt/media/20260610/a.mp4')],
+        sources: [folder('/mnt/media/002')],
+        explicitItems: [explicit('/mnt/media/002/a.mp4')],
         storageById: {'st1': storage()},
         nodeWeightByStorage: const {},
       );
@@ -115,17 +115,17 @@ void main() {
 
     test('explicit items OUTSIDE every root become probe targets', () {
       final plan = planSourceRefresh(
-        sources: [folder('/mnt/media/20260610/001')],
+        sources: [folder('/mnt/media/002/001')],
         explicitItems: [
-          explicit('/mnt/media/20260610/001/covered.mp4'),
-          explicit('/mnt/media/20260610/outside.mp4'),
+          explicit('/mnt/media/002/001/covered.mp4'),
+          explicit('/mnt/media/002/outside.mp4'),
         ],
         storageById: {'st1': storage()},
         nodeWeightByStorage: const {},
       );
 
       final targets = plan.units.single.explicitProbeTargets;
-      expect(targets.map((e) => e.path), ['/mnt/media/20260610/outside.mp4']);
+      expect(targets.map((e) => e.path), ['/mnt/media/002/outside.mp4']);
     });
 
     test('an explicit-only storage probes all of its items (no roots)',
@@ -162,7 +162,7 @@ void main() {
     }) =>
         ScenarioSourceRefreshUnitSpec(
           storage: storage(),
-          rootPaths: const ['/mnt/media/20260610/001'],
+          rootPaths: const ['/mnt/media/002/001'],
           directories: const [],
           explicitItems: targets,
           explicitProbeTargets: targets,
@@ -170,7 +170,7 @@ void main() {
         );
 
     test('probes exactly the uncovered, still-present items', () async {
-      final outside = explicit('/mnt/media/20260610/outside.mp4');
+      final outside = explicit('/mnt/media/002/outside.mp4');
       final probedBatches = <List<ExplicitFileProbeTarget>>[];
 
       final service = ScenarioSourceRefreshService(
@@ -182,7 +182,7 @@ void main() {
 
       final written = await service.probeUncoveredExplicitFiles(
         unit(targets: [outside]),
-        presentPaths: {'/mnt/media/20260610/outside.mp4'},
+        presentPaths: {'/mnt/media/002/outside.mp4'},
       );
 
       expect(written, 1);
@@ -190,7 +190,7 @@ void main() {
       // The write-back path is the canonical DB form (no leading slash), the
       // same shape `rescanFile` uses.
       expect(probedBatches.single.map((t) => t.path),
-          ['mnt/media/20260610/outside.mp4']);
+          ['mnt/media/002/outside.mp4']);
       expect(probedBatches.single.single.storageId, 'st1');
     });
 
@@ -205,7 +205,7 @@ void main() {
       );
 
       final written = await service.probeUncoveredExplicitFiles(
-        unit(targets: [explicit('/mnt/media/20260610/gone.mp4')]),
+        unit(targets: [explicit('/mnt/media/002/gone.mp4')]),
         // Parent listing failed / file absent → not in the present set.
         presentPaths: const <String>{},
       );

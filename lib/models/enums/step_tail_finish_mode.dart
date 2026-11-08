@@ -4,12 +4,11 @@
 /// A tail step cannot land where it asks: the container duration overshoots the
 /// last decodable frame and the last key frame sits up to a whole GOP earlier,
 /// so a relative `keyframes` seek has no key frame at/after the target and
-/// parks the decoder back inside that GOP. mpv solves this in its playloop, not
-/// in the seek itself (`player/playloop.c:1240-1243`: "Continuous seeks past
-/// EOF => treat as EOF instead of repeating seek"; `1247-1250`: EOF is not
-/// decided while a seek is queued). IRIS ports exactly that pair — see
-/// `MpvSeekTailState` — instead of converting the press into an absolute
-/// `seek <duration>` (which re-queued a seek on every repeat and starved EOF).
+/// parks the decoder back inside that GOP. MPV's own playlist hides that by
+/// advancing at EOF; media_kit's single-entry playlist only pauses, so IRIS
+/// decides in Dart (`decideStepTail`): a target inside the final GOP takes the
+/// EXACT seek (`stepNeedsExactSeek`) instead of rolling back, and a target that
+/// reaches the end advances the queue immediately.
 ///
 /// This enum only decides WHEN a press counts as the tail:
 ///

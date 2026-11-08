@@ -10,10 +10,10 @@ import 'package:provider/provider.dart';
 /// (`MediaPlayer.forward` / `backward` → each hook's `seekRelative`).
 ///
 /// Deciding the tail locally and calling `finishSeek` bypassed the shared
-/// `decideStepTail` policy, the mpv-parity tail arm (`MpvSeekTailState`), the
-/// EOF collapse and the media-switch gate (`gateStepPress`). A second tap
-/// inside the queue-advance window then resolved against the PREVIOUS file's
-/// duration and finished the entry that had just opened — one episode skipped.
+/// `decideStepTail` policy (exact tail step / immediate finish / paused hold)
+/// and the media-switch gate (`gateStepPress`). A second tap inside the
+/// queue-advance window then resolved against the PREVIOUS file's duration and
+/// finished the entry that had just opened — one episode skipped.
 ///
 /// These tests pin the delegation: the widget never seeks or finishes on its
 /// own, whatever the position is.

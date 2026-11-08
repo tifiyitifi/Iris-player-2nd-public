@@ -20,6 +20,7 @@ import 'package:iris/hooks/player/live_progress_attribution.dart';
 import 'package:iris/hooks/player/media_info_writeback.dart';
 import 'package:iris/hooks/player/seek_clamp.dart';
 import 'package:iris/hooks/player/seek_tuning.dart';
+import 'package:iris/hooks/player/tail_finish_latch.dart';
 import 'package:iris/hooks/player/use_playback_progress_claim.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
@@ -104,42 +105,11 @@ int fvpPersistedSeekMs({
 }) =>
     fvpStepUsesKeyframeSeek(src) ? observedMs : targetMs;
 
-/// Floor for the fvp step tail window (see [fvpStepNeedsExactSeek]).
-///
-/// 2 s: long enough to cover an ordinary short step and the final GOP of a
-/// typical encode, short enough that the exact (slower) seek only applies where
-/// a key-frame landing could actually be wrong.
-const int kFvpStepTailExactWindowMs = 2000;
-
-/// Whether a STEP seek must take the EXACT (`seekTo`) path because its target
-/// sits in the media tail.
-///
-/// mdk keeps mpv's forward-only contract for an IN-RANGE target — the first
-/// frame is "a key frame whose timestamp >= startPosition" (`generated_bindings`
-/// `prepare` doc) — but a target PAST the media end is served with "the last key
-/// frame of media" (`seek` doc). The last key frame of a file can sit a whole GOP
-/// before its end, so that substitution is the tail rollback: the picture jumps
-/// back to the final GOP and every further press lands there again, because the
-/// next press re-anchors on the rolled-back position.
-///
-/// A step whose target falls inside the tail window therefore goes through the
-/// exact seek: it decodes to the requested point and reports the frame it really
-/// shows. The window is `max(one step, kFvpStepTailExactWindowMs)` — one step
-/// covers "this press would reach the end", the floor covers short steps next to
-/// a long final GOP.
-///
-/// Pure so the src → landing-mode decision stays unit-testable.
-bool fvpStepNeedsExactSeek({
-  required int targetMs,
-  required int durationMs,
-  required int deltaMs,
-}) {
-  if (durationMs <= 0) return false;
-  final int step = deltaMs < 0 ? -deltaMs : deltaMs;
-  final int window =
-      step > kFvpStepTailExactWindowMs ? step : kFvpStepTailExactWindowMs;
-  return targetMs >= durationMs - window;
-}
+// The tail exact-seek window is shared with the media_kit hook
+// (`stepNeedsExactSeek` in `seek_tuning.dart`): fvp's mdk seek answers a
+// target inside the final GOP with "the last key frame of media", which is the
+// same rollback mpv's `relative+keyframes` shows, so both backends switch to
+// the exact path over the same window.
 
 FvpPlayer useFvpPlayer(BuildContext context) {
   final appStore = useAppStore();
@@ -238,15 +208,32 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   /// samples are trustworthy (see shouldAttributeLiveProgress).
   final openedMediaUri = useRef<String?>(null);
 
-  /// mpv-parity tail state for the current media (see [MpvSeekTailState]) and
-  /// the EOF window it arms.
-  final stepTail = useRef(MpvSeekTailState());
-  final tailCollapseTimer = useRef<Timer?>(null);
-
-  /// One item-finished dispatch at a time: the engine's completion flag and the
-  /// tail collapse are two doors to the SAME advance (`playloop.c:1240-1243`)
-  /// and must never advance the queue twice.
+  /// One item-finished dispatch at a time: the engine's completion flag and a
+  /// tail press are two doors to the SAME advance (`playloop.c:1240-1243`) and
+  /// must never advance the queue twice.
   final finishedDispatchInFlight = useRef<bool>(false);
+
+  /// Media a tail press already finished (mirror of the media_kit hook):
+  /// `finishedDispatchInFlight` only spans the dispatch, while the hook keeps
+  /// the OLD media until the queue rebinds it — a held key in that window
+  /// dispatched a SECOND finish and advanced twice (one entry skipped).
+  ///
+  /// Shared implementation ([TailFinishLatch]): armed on uri + VM segment, used
+  /// by BOTH advance doors and released on the caller axis.
+  final tailFinish = useRef<TailFinishLatch>(TailFinishLatch());
+
+  /// The Virtual-Media segment the hook is playing right now (null outside a
+  /// session) — the second half of the item identity.
+  int? currentVmSegmentIndex() {
+    final vm = VirtualMediaController.instance;
+    return vm.isActive ? vm.state.segmentIndex : null;
+  }
+
+  /// Whether THIS item was already finished by a tail press.
+  bool tailFinishedForCurrent() => tailFinish.value.covers(
+        uri: file?.uri,
+        segmentIndex: currentVmSegmentIndex(),
+      );
 
   /// Lock-independent step accumulation (mirror of the media_kit hook; see
   /// [StepIntent]): the position lock unlocks on its ±2s landing tolerance,
@@ -275,9 +262,10 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   final externalSubtitleFileKey = useRef<String?>(null);
 
   /// Records a step target and arms the idle window that drops it (see
-  /// [stepBurstTimer]).
-  void noteStepIntent(int targetMs) {
-    stepIntent.value.note(targetMs);
+  /// [stepBurstTimer]). [deltaMs] is the signed press that produced the target
+  /// ([StepIntent] needs it to detect a direction reversal).
+  void noteStepIntent(int targetMs, {int? deltaMs}) {
+    stepIntent.value.note(targetMs, deltaMs: deltaMs);
     stepBurstTimer.value?.cancel();
     stepBurstTimer.value = Timer(kStepBurstWindow, () {
       stepBurstTimer.value = null;
@@ -302,6 +290,36 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       controller.value, () => controller.value.value.size.width);
   final height = useListenableSelector(
       controller.value, () => controller.value.value.size.height);
+
+  /// Releases the latch once the current item shows a position outside its own
+  /// tail again (repeat-one restart, scrub/jump back, VM segment loop).
+  ///
+  /// Caller axis only (merged timeline under a session) — see the media_kit
+  /// hook's identical helper. Declared after [position]/[duration] because it
+  /// reads them.
+  void releaseTailFinishIfSpent() {
+    if (!tailFinish.value.isArmed) return;
+    final vm = VirtualMediaController.instance;
+    final item = vm.state.item;
+    final int? seg = vm.isActive ? vm.state.segmentIndex : null;
+    if (item != null && seg != null && seg < item.segments.length) {
+      final int segDur = item.segments[seg].durationMs ?? 0;
+      tailFinish.value.releaseIfSpent(
+        uri: file?.uri,
+        segmentIndex: seg,
+        positionMs:
+            item.offsetOf(seg) + position.inMilliseconds.clamp(0, segDur),
+        durationMs: item.totalDurationMs,
+      );
+      return;
+    }
+    tailFinish.value.releaseIfSpent(
+      uri: file?.uri,
+      segmentIndex: null,
+      positionMs: position.inMilliseconds,
+      durationMs: duration.inMilliseconds,
+    );
+  }
 
   useEffect(() {
     if (file?.type != ContentType.video) {
@@ -455,8 +473,12 @@ FvpPlayer useFvpPlayer(BuildContext context) {
             !VirtualMediaController.instance.isActive) {
           // Position-intent lock: the player reports pre-land samples until
           // the resume seek has been OBSERVED at its target — skip the write
-          // entirely (not a 0 write).
-          if (positionLock.value.blocksWrites) {
+          // entirely (not a 0 write). The lock belongs to the media being LEFT
+          // only while it is still the current one: once `latestMediaUri` moved
+          // on, the incoming file's `pending` lock must not drop this file's
+          // final save (it lost the last seconds of every switched episode).
+          if (positionLock.value.blocksWrites &&
+              latestMediaUri.value == file.uri) {
             diagLog.d(
                 'persist skipped (locked phase=${positionLock.value.phase.name} target=${positionLock.value.targetMs}) file=${file.name} pos=${controller.value.value.position.inMilliseconds}ms');
             return;
@@ -468,9 +490,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         rawPosMs,
         durMs,
         userSeeked: false,
-        inFlightTargetMs: positionLock.value.blocksWrites
-            ? positionLock.value.targetMs
-            : null,
+        inFlightTargetMs: positionLock.value.intentTargetMs,
       );
           final sanePosition = Duration(milliseconds: posMs);
           areaKeyLog.i('Save progress: ${file.name}, position: $sanePosition, duration: ${controller.value.value.duration}');
@@ -557,12 +577,27 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   useEffect(() {
     final c = controller.value;
     void listener() {
-      if (positionLock.value.checkLanding(
-          c.value.position.inMilliseconds, c.value.duration.inMilliseconds)) {
+      final int posMs = c.value.position.inMilliseconds;
+      final int durMs = c.value.duration.inMilliseconds;
+      if (positionLock.value.checkLanding(posMs, durMs,
+          playing: c.value.isPlaying)) {
         // CLOSE_DEBUG_LOG (no file here: the listener's closure can lag the
         // current file — pos/target identify the landing).
         diagLog.d(
-            'lock landed pos=${c.value.position.inMilliseconds}ms target-reached phase=unlocked');
+            'lock landed pos=${posMs}ms target-reached phase=unlocked');
+        return;
+      }
+      if (positionLock.value.takeRestartSeek()) {
+        // Mirror of the media_kit hook: the seek was answered but the media
+        // restarted from the head; re-issue the intent instead of leaving the
+        // picture at the beginning. [restartSeekTargetMs] survives the
+        // write-lock release (the paused restart is detected after it).
+        final int? target = positionLock.value.restartSeekTargetMs;
+        if (target != null) {
+          diagLog.w('lock restart detected pos=${posMs}ms '
+              'target=$target — re-seek');
+          unawaited(c.seekTo(Duration(milliseconds: target)));
+        }
       }
     }
 
@@ -629,8 +664,8 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   }, [externalSubtitles, externalSubtitle.value]);
 
   /// Finishes the CURRENT item: the single advance path shared by the backend's
-  /// completion flag and the mpv-parity tail collapse (mirror of the media_kit
-  /// hook — see `dispatchItemFinished` there for the playloop rationale).
+  /// completion flag and a tail press (mirror of the media_kit hook — see
+  /// `dispatchItemFinished` there for the playloop rationale).
   ///
   /// [expectedUri] binds a caller to the media it decided about; a finish that
   /// arrives after the queue moved on must die here.
@@ -646,6 +681,15 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       diagLog.d('completed dropped (stale finish) src=$src file=${f.name}');
       return;
     }
+    // Already finished by a tail press of this item (see [TailFinishLatch]):
+    // a second advance in the same window skips an entry. Applies to the
+    // ENGINE door too — the tail press does not seek, so the real end still
+    // arrives and would otherwise be treated as a fresh completion.
+    if (tailFinishedForCurrent()) {
+      diagLog.d(
+          'completed dropped (tail already finished) src=$src file=${f.name}');
+      return;
+    }
     if (fromEngine && useScrubDragStore().state.any) {
       diagLog.d('completed suppressed hold/seek');
       usePlayerUiStore().updatePendingCompleted(true);
@@ -658,13 +702,23 @@ FvpPlayer useFvpPlayer(BuildContext context) {
       return;
     }
     finishedDispatchInFlight.value = true;
+    // Registered BEFORE the first await so the rest of the burst is dropped.
+    if (!fromEngine) {
+      tailFinish.value.arm(
+        uri: f.uri,
+        segmentIndex: currentVmSegmentIndex(),
+      );
+    }
     try {
-      // The item is finished from here on: drop the tail arm so a repeat-one
-      // loop of the SAME media can arm again.
-      stepTail.value.reset();
-      tailCollapseTimer.value?.cancel();
-      tailCollapseTimer.value = null;
-      if (await VirtualMediaController.instance.maybeHandleCompleted()) return;
+      final int? vmSegmentBefore = currentVmSegmentIndex();
+      if (await VirtualMediaController.instance.maybeHandleCompleted()) {
+        // Handled within the SAME segment = nothing advanced; the latch must not
+        // outlive a no-op advance (see the media_kit hook).
+        if (currentVmSegmentIndex() == vmSegmentBefore) {
+          tailFinish.value.clear();
+        }
+        return;
+      }
       // CLOSE_DEBUG_LOG
       diagLog.d(
           'completed fired src=$src pos=${v.position.inMilliseconds}ms dur=${v.duration.inMilliseconds}ms file=${f.name} repeat=$repeat curIdx=$currentPlayIndex total=${playQueue.length}');
@@ -679,12 +733,24 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         lastProgressWrite.value = DateTime.now();
         lastWrittenPosMs.value = v.position.inMilliseconds;
       }
-      if (repeat == Repeat.one) return;
+      // Repeat-one restarts the SAME file: the latch must not outlive the loop.
+      if (repeat == Repeat.one) {
+        tailFinish.value.clear();
+        return;
+      }
       final handled = await PlaybackProviderRegistry.advanceOnComplete(repeat);
       // CLOSE_DEBUG_LOG
-      diagLog.d('completed advance handled=$handled src=$src');
-      if (handled) return;
-      await advancePlayQueueOnCompleted(repeat);
+      diagLog.d('completed advance handled=${handled.handled} '
+          'advanced=${handled.advanced} src=$src');
+      if (handled.handled) {
+        // Handled without advancing (A-B freeze, last scenario entry with repeat
+        // off): no rebind is coming, so release the per-item tail latch.
+        if (!handled.advanced) tailFinish.value.clear();
+        return;
+      }
+      if (!await advancePlayQueueOnCompleted(repeat)) {
+        tailFinish.value.clear();
+      }
     } finally {
       finishedDispatchInFlight.value = false;
     }
@@ -726,6 +792,9 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     usePlayerUiStore().updatePendingCompleted(false);
     () async {
       if (repeat == Repeat.one) return;
+      // Finished by a tail press while the drag latch was up: do not advance
+      // the same item a second time.
+      if (tailFinishedForCurrent()) return;
       if (SegmentEditGuard.transportFrozen) {
         controller.value.pause();
         return;
@@ -734,7 +803,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         return;
       }
       final handled = await PlaybackProviderRegistry.advanceOnComplete(repeat);
-      if (handled) return;
+      if (handled.handled) return;
       await advancePlayQueueOnCompleted(repeat);
     }();
     return;
@@ -1065,9 +1134,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         rawPosMs,
         durMs,
         userSeeked: userSeeked,
-        inFlightTargetMs: positionLock.value.blocksWrites
-            ? positionLock.value.targetMs
-            : null,
+        inFlightTargetMs: positionLock.value.intentTargetMs,
       );
       if (rawPosMs != posMs) {
         areaKeyLog.d(
@@ -1127,9 +1194,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
             raw,
             dur,
             userSeeked: false,
-            inFlightTargetMs: positionLock.value.blocksWrites
-                ? positionLock.value.targetMs
-                : null,
+            inFlightTargetMs: positionLock.value.intentTargetMs,
           ),
           dur,
         );
@@ -1227,21 +1292,19 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   }
 
   /// Drops the step bookkeeping (media change / unmount / absolute seek /
-  /// rewind): the burst accumulator, the OSD target and any pending tail arm.
+  /// rewind): the burst accumulator and the OSD target.
   ///
   /// An ABSOLUTE seek must call this, not just clear the OSD (media_kit's
-  /// [seek] calls its own `resetStepBurst` for exactly this reason): the tail
-  /// arm stays media-bound for [kMpvSeekEofWindow], so a press that armed a
-  /// finish and a seek away from the end inside that window would otherwise
-  /// collapse the arm and advance away from the position the user just chose.
+  /// [seek] calls its own `resetStepBurst` for exactly this reason): a stale
+  /// accumulator would otherwise anchor the next press on a position the user
+  /// already left.
   void resetStepBurst() {
     stepBurstTimer.value?.cancel();
     stepBurstTimer.value = null;
     stepIntent.value.reset();
     stepOsdTargetMs.value = null;
-    stepTail.value.reset();
-    tailCollapseTimer.value?.cancel();
-    tailCollapseTimer.value = null;
+    // A new media (or a plan switch on the same uri) owns its own finish.
+    tailFinish.value.clear();
   }
 
   // Attribution-only [src]: see the media_kit hook — log only, the
@@ -1257,16 +1320,12 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   ]) async {
     // An absolute jump re-anchors the NEXT relative step on the fresh
     // position; a cross-segment step re-anchors below (its local axis
-    // changes). Only 'step' keeps the accumulation alive. Everything else
-    // ALSO drops a pending tail arm: the arm outlives the seek by its 300ms
-    // EOF window, so a press at the tail followed by a seek back to the middle
-    // would otherwise collapse the arm and advance the queue from a position
-    // the user never finished (media_kit parity — its seek calls the same
-    // `resetStepBurst`).
+    // changes). Only 'step' keeps the accumulation alive (media_kit parity —
+    // its seek calls the same `resetStepBurst`).
     if (src != 'step') resetStepBurst();
     // Step seeks land on a KEYFRAME (mpv-native parity, see
     // [fvpStepUsesKeyframeSeek]) unless the target is in the media tail, where a
-    // key-frame landing can only be wrong (see [fvpStepNeedsExactSeek]);
+    // key-frame landing can only be wrong (see [stepNeedsExactSeek]);
     // everything else needs the exact landing.
     final bool stepSeek = fvpStepUsesKeyframeSeek(src);
     // Virtual Media: cross-segment targets open WITH the intra-segment
@@ -1316,6 +1375,12 @@ FvpPlayer useFvpPlayer(BuildContext context) {
           // would trip the lock's miss path (see [fvpShouldArmPositionLock]).
           if (fvpShouldArmPositionLock(src)) {
             positionLock.value.armTarget(clamped);
+          } else {
+            // No write lock for a step, so it takes over the intent: the
+            // resume lock is released and the restart watch is dropped — else a
+            // rewind larger than the restart threshold would be answered with a
+            // re-seek back to the resume target.
+            positionLock.value.noteUserSeek();
           }
           if (file != null) {
             // Leading + trailing burst writes, exactly like the non-VM path
@@ -1337,9 +1402,9 @@ FvpPlayer useFvpPlayer(BuildContext context) {
           final Duration seekTarget = Duration(milliseconds: clamped);
           // A step landing in the segment tail must be EXACT: mdk's key-frame
           // seek answers a target it cannot reach with the media's LAST key
-          // frame (see [fvpStepNeedsExactSeek]).
+          // frame (see [stepNeedsExactSeek]).
           final bool useKeyframe = stepSeek &&
-              !fvpStepNeedsExactSeek(
+              !stepNeedsExactSeek(
                 targetMs: clamped,
                 durationMs: item.segments[segIdx].durationMs ?? 0,
                 deltaMs: clamped -
@@ -1398,6 +1463,11 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     // the target ([fvpPersistedSeekMs]).
     if (fvpShouldArmPositionLock(src)) {
       positionLock.value.armTarget(target.inMilliseconds);
+    } else {
+      // A step arms no write lock (its keyframe landing is off-target), so it
+      // takes over the intent: release the resume lock and drop its restart
+      // watch (see [PlaybackPositionLock.noteUserSeek]).
+      positionLock.value.noteUserSeek();
     }
     persistUserSeekBurst(Duration(
       milliseconds: fvpPersistedSeekMs(
@@ -1408,9 +1478,9 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     ));
     // A step landing in the media tail must be EXACT: mdk answers a key-frame
     // target it cannot reach with the media's LAST key frame, which is the tail
-    // rollback (see [fvpStepNeedsExactSeek]).
+    // rollback (see [stepNeedsExactSeek]).
     final bool useKeyframe = stepSeek &&
-        !fvpStepNeedsExactSeek(
+        !stepNeedsExactSeek(
           targetMs: target.inMilliseconds,
           durationMs: totalMs.inMilliseconds,
           deltaMs: target.inMilliseconds - observedMs,
@@ -1420,48 +1490,20 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         : controller.value.seekTo(target));
   }
 
-  /// Applies mpv's EOF collapse to the tail press currently armed for [uri].
+  /// Applies the tail-step policy ([decideStepTail]) for one press.
   ///
-  /// Two independent guards keep a finish from touching the entry that replaced
-  /// it: the arm itself carries [uri] ([MpvSeekTailState]), and this media's
-  /// open must still be the completed one (see [shouldAcceptStepPress]).
-  Future<void> collapseTailStepToEof(String uri) async {
-    tailCollapseTimer.value?.cancel();
-    tailCollapseTimer.value = null;
-    if (latestMediaUri.value != uri) return;
-    if (openedMediaUri.value != uri) return;
-    if (!stepTail.value.consumeCollapse(mediaUri: uri)) return;
-    await dispatchItemFinished(fromEngine: false, expectedUri: uri);
-  }
-
-  /// Arms mpv's EOF window for the tail press just issued (mirror of the
-  /// media_kit hook: the playloop's own "continuous seeks past EOF are EOF").
-  void armTailEofWindow() {
-    tailCollapseTimer.value?.cancel();
-    final String? uri = file?.uri;
-    if (uri == null) return;
-    tailCollapseTimer.value = Timer(kMpvSeekEofWindow, () {
-      if (latestMediaUri.value != uri) return;
-      if (controller.value.value.isCompleted) return;
-      unawaited(collapseTailStepToEof(uri));
-    });
-  }
-
-  /// Applies the tail-step policy ([decideStepTail]) for a press whose target
-  /// reaches the caller axis end. [end] is the CALLER axis end (the file
-  /// duration, or the merged Virtual-Media total), [stepTargetMs] the landing
-  /// the ordinary step would use, ON THAT SAME CALLER AXIS — the non-VM path
-  /// passes accumulated file ms, the VM path [vmTailStepTargetMs] (local ms +
-  /// segment offset), because the argument ends up in `seek()`, which resolves
-  /// VM targets against the merged timeline.
+  /// [end] is the CALLER axis end (the file duration, or the merged Virtual
+  /// Media total); [stepTargetMs] is where the press asked to land on that same
+  /// caller axis — the non-VM path passes accumulated file ms, the VM path
+  /// [vmTailStepTargetMs] (local ms + segment offset), because the argument
+  /// ends up in `seek()`, which resolves VM targets against the merged timeline.
   ///
-  /// mpv parity (see the media_kit hook's identical block): the press stays a
-  /// normal forward step and must NOT become a per-repeat absolute
-  /// `seek <duration>` — that is what starves EOF, because `handle_eof()`
-  /// returns while a seek is queued (`player/playloop.c:1247-1250`).
-  /// [MpvSeekTailState] swallows the repeats (mpv drops the queued seek,
-  /// `playloop.c:1240-1243`) and [armTailEofWindow] collapses the press to EOF
-  /// when the engine does not report the end within [kMpvSeekEofWindow].
+  /// [StepTailAction.exactStep] hands the target to `seek()`, which already
+  /// picks the exact (`seekTo`) path inside the shared tail window
+  /// ([stepNeedsExactSeek]). [StepTailAction.finishItem] advances the queue
+  /// immediately, without a seek: mdk cannot reach the end through a keyframe
+  /// seek, and a seek queued on every repeat is what once parked the picture at
+  /// the tail.
   ///
   /// `hold` (paused) swallows the press: nothing is sought and nothing is
   /// written, so the progress cannot roll backwards (「暂停时保留」). The step
@@ -1472,39 +1514,32 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     diagLog.d('[step-tail] action=${action.name} end=${end.inMilliseconds}ms '
         'pos=${controller.value.value.position.inMilliseconds}ms '
         'playing=$isPlaying mode=${stepTailFinishMode.name} '
-        'target=$stepTargetMs armed=${stepTail.value.armed}');
+        'target=$stepTargetMs');
     switch (action) {
       case StepTailAction.step:
         return;
       case StepTailAction.hold:
-        // A paused press must not arm a finish (it returns before
-        // `armFirstPress`), and it must NOT drop an arm the playing press
-        // already raised: that pending collapse is the item's real finish.
         stepOsdTargetMs.value = null;
         stepBurstTimer.value?.cancel();
         stepBurstTimer.value = null;
         stepIntent.value.reset();
         return;
+      case StepTailAction.exactStep:
+        stepOsdTargetMs.value = stepTargetMs;
+        diagLog.d(
+            '[step-exact] target=${stepTargetMs}ms end=${end.inMilliseconds}ms');
+        await seek(Duration(milliseconds: stepTargetMs), 'step');
+        return;
       case StepTailAction.finishItem:
-        // Already armed for this media: swallow the press (see media_kit) and
-        // keep the OSD parked on the caller-axis end.
+        stepOsdTargetMs.value = end.inMilliseconds;
         final String? tailUri = file?.uri;
         if (tailUri == null) return;
-        if (!stepTail.value.armFirstPress(tailUri, end.inMilliseconds)) {
-          stepOsdTargetMs.value = end.inMilliseconds;
-          return;
-        }
-        // The ordinary forward step. It cannot reach EOF on its own (mdk
-        // serves an unreachable key-frame target with the media's last key
-        // frame), which is precisely why the EOF window below is the finish
-        // path on this backend.
-        userSeekPending.value = true;
-        lastSanePosMs.value = null;
-        await seek(Duration(milliseconds: stepTargetMs), 'step');
-        // `seek` republishes its own (clamped) step target for the OSD; the
-        // tail finish is the CALLER-axis end the user asked for.
-        stepOsdTargetMs.value = end.inMilliseconds;
-        armTailEofWindow();
+        diagLog.d('[step-tail] finish now file=${file?.name} '
+            'pos=${controller.value.value.position.inMilliseconds}ms '
+            'dur=${end.inMilliseconds}ms');
+        // `finishedDispatchInFlight` and the media-switch gate swallow the
+        // rest of the burst (see the media_kit hook).
+        unawaited(dispatchItemFinished(fromEngine: false, expectedUri: tailUri));
         return;
     }
   }
@@ -1512,27 +1547,40 @@ FvpPlayer useFvpPlayer(BuildContext context) {
   /// Relative skip on the VIRTUAL timeline (ms precision, clamped).
   /// See the media_kit hook for the coordinate rationale.
   Future<void> seekRelative(int deltaMs) async {
+    // A REWIND leaves the tail by definition, so it drops the burst (including
+    // the tail-finish latch) BEFORE the gate — see the media_kit hook: a latch
+    // that the gate alone can release makes a no-op finish un-steppable.
+    if (deltaMs < 0) resetStepBurst();
+    // Release a tail-finish latch once the picture is back outside the tail
+    // (repeat-one restart, scrub/jump back, VM segment loop).
+    releaseTailFinishIfSpent();
     // mpv parity: see the media_kit hook's identical gate — a seek only applies
     // to the entry whose demuxer is loaded (`player/playloop.c:311`), and the
     // switch clears whatever was queued (`loadfile.c:1825-1826`). Presses that
     // land while a media is switching are dropped instead of being resolved
-    // against the previous file's duration/position.
-    if (gateStepPress(
-          mediaUri: file?.uri,
-          openedUri: openedMediaUri.value,
-          dispatchInFlight: finishedDispatchInFlight.value,
-        ) ==
-        StepPressGate.dropMediaSwitching) {
-      diagLog.d('[step] dropped (media switching) file=${file?.name} '
-          'opened=${openedMediaUri.value != null} advancing=${finishedDispatchInFlight.value}');
+    // against the previous file's duration/position; a media this burst already
+    // finished is dropped for the same reason.
+    final StepPressGate gate = gateStepPress(
+      mediaUri: file?.uri,
+      openedUri: openedMediaUri.value,
+      dispatchInFlight: finishedDispatchInFlight.value,
+      finishedUri: tailFinish.value.uriFor(
+        uri: file?.uri,
+        segmentIndex: currentVmSegmentIndex(),
+      ),
+    );
+    if (gate != StepPressGate.accept) {
+      diagLog.d('[step] dropped (${gate.name}) file=${file?.name} '
+          'opened=${openedMediaUri.value != null} '
+          'advancing=${finishedDispatchInFlight.value} '
+          'finished=${tailFinish.value.isArmed}');
       return;
     }
     final vm = VirtualMediaController.instance;
     final item = vm.state.item;
     final rawPosMs = controller.value.value.position.inMilliseconds;
-    // A rewind leaves the tail: the next forward tail press must be able to
-    // arm its own finish (mpv re-evaluates EOF on every seek).
-    if (deltaMs < 0) resetStepBurst();
+    // (The `deltaMs < 0` burst/latch reset already ran before the gate: a
+    // rewind must be able to RELEASE the latch, not be dropped by it.)
     // Same accumulation contract as the media_kit hook: step intent → lock
     // intent → reported. The lock unlocks early (landing tolerance) and the
     // reported position can sit still, so neither is a sound base alone.
@@ -1540,10 +1588,14 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         positionLock.value.blocksWrites ? positionLock.value.targetMs : null;
     // Burst-gated: an expired burst leaves a stale target that must not anchor
     // the press (see [stepBurstTimer]); the lock intent still covers an
-    // in-flight seek.
+    // in-flight seek. [deltaMs] keeps a forward press on the FURTHEST forward
+    // anchor (never behind the picture — a keyframe landing runs ahead of the
+    // nominal sum, and judging by the sum alone made the exact tail step seek
+    // backwards).
     final int baseMs = stepIntent.value.baseFor(
         reportedMs: rawPosMs,
         lockIntentMs: pendingIntent,
+        deltaMs: deltaMs,
         active: stepBurstTimer.value != null);
     if (vm.isActive && item != null) {
       const handler = VirtualSeekHandler();
@@ -1633,9 +1685,13 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     // doc) — a straight jump back to the final GOP, i.e. the very rollback the mpv
     // backend avoids by forwarding an unclamped delta. Bounding the target here
     // and letting `seek()` take the EXACT path inside the tail window (see
-    // [fvpStepNeedsExactSeek]) keeps the landing forward and honest.
+    // [stepNeedsExactSeek]) keeps the landing forward and honest.
     final int lastMs = lastSeekableMs(totalMs);
     final target = (baseMs + deltaMs).clamp(0, lastMs);
+    // Direction-aware accumulation: `seek()` records the absolute landing with
+    // `deltaMs: null` (direction preserved), so the press direction is handed
+    // over here (see [StepIntent.baseFor]).
+    noteStepIntent(target, deltaMs: deltaMs);
     await seek(Duration(milliseconds: target), 'step');
   }
 
@@ -1688,9 +1744,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         rawPosMs,
         durMs,
         userSeeked: userSeekPending.value,
-        inFlightTargetMs: positionLock.value.blocksWrites
-            ? positionLock.value.targetMs
-            : null,
+        inFlightTargetMs: positionLock.value.intentTargetMs,
       );
       final sanePosition = Duration(milliseconds: posMs);
       areaKeyLog.i('Save progress: ${file.name}, position: $sanePosition, duration: ${controller.value.value.duration}');

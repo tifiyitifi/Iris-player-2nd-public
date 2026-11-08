@@ -14,6 +14,9 @@ import 'package:iris/features/background_playback/view/background_scope_dialog.d
 import 'package:iris/features/background_playback/view/bg_alignment_panel.dart';
 import 'package:iris/features/background_playback/view/control_target_indicator.dart';
 import 'package:iris/features/background_playback/view/media_ratio_dialog.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
+import 'package:iris/features/windows/desktop_keyboard/view/shortcut_hints.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/control_bar_constants.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -103,7 +106,9 @@ class BackgroundQuickBar extends HookWidget {
     final t = getLocalizations(context);
     final bg = useBackgroundPlaybackStore();
     final enabled = bg.select(context, (s) => s.enabled);
-    final gateOpen = bg.select(context, (s) => s.gateOpen);
+    final applyScope = bg.select(context, (s) => s.applyScope);
+    final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
+    final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
     final visible = bg.select(context, (s) => s.quickBarEnabled);
     final displayTarget = bg.select(context, (s) => s.displayTarget);
     final controlTarget = bg.select(context, (s) => s.controlTarget);
@@ -111,40 +116,71 @@ class BackgroundQuickBar extends HookWidget {
     final lockLevel = bg.select(context, (s) => s.lockLevel);
     final stepMode = bg.select(context, (s) => s.stepMode);
     final mappingEnabled = bg.select(context, (s) => s.mappingEnabled);
-    final applyScope = bg.select(context, (s) => s.applyScope);
-    final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
-    final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
+    // Read ONCE, before any early return: it resolves a hook internally
+    // (`useForegroundRatioKey`), so the call count must not depend on whether
+    // the bar is visible.
+    final String? fgScopeKey = useForegroundScopeKey(context);
+    // 简播: this media is playing a fake cut → 副音 is temporarily unavailable
+    // HERE only (the run, its queue and every other media are untouched).
+    final fakeCutActive = fakeCutBlocksBackground(
+      fgScopeKey,
+      useFakeCutStore().select(context, (FakeCutStoreState s) => s.playingKey),
+    );
 
     if (!visible && !forceVisible) return const SizedBox.shrink();
 
-    // bg 未激活不提供 apb 功能 — but only for the rows that address the runtime:
+    // bg 未激活不提供运行期功能 — but only for the rows that address the runtime:
     // control/picture routing, and the timeline editor (which must see bg on the
     // air). Saved preferences (作用范围/对齐方式/同步方式/联动等级/换集行为/音量
     // 比例) stay reachable so they can be pre-configured and applied by the next
     // activation.
     //
-    // 「作用于当前视频」 belongs to that definition: under 仅当前 the run is
-    // anchored to ONE media, so on any other media 副音 is simply not in play —
-    // the runtime rows grey out and the gate reads as inactive (its press then
-    // ACTIVATES here, see `toggleGateForCurrent`) rather than offering to latch
-    // the whole run closed over a media switch the user never touched.
+    // 「在播」有两个必要条件，两个都要：
+    // 1. [BackgroundPlaybackState.bgPairInEffect] —— enabled + gateOpen + 没有被交接
+    //    (bgExhausted / bgQueueEnded / bgOutOfScope). It deliberately EXCLUDES the
+    //    transport (`bgAutoPlay`): a user pause never cancels the activation, so
+    //    the gate keeps its stop glyph while bg sits paused and the next press
+    //    deactivates (resuming is the transport's job).
+    // 2. 这个媒体在作用范围内（`resolveApplyToCurrent` 的纯判定）。`bgOutOfScope` 是
+    //    观察者对同一件事的缓存，但只在换媒体时写；纯判定不依赖缓存是否已经落地，
+    //    所以在「锚定在 A、正在播 B」的第一帧也不会误报「在播」。
+    //
+    // 只看作用范围的老写法少了第 1 条，于是在三种「已经交接」的终态下宣称 pair 仍在
+    // 播：副音播完(stopRestoreFg)、Repeat.none 走到队列头、智能范围落到没有配对的
+    // 媒体。图标显示"停止"，而那一按走 `stopGate()`（把整个副音锁死），要按两次才
+    // 能重新启用。标题后缀/压低/控制权/副音菜单都用同一个 `bgPairInEffect`。
     final bool scopeApplied = resolveApplyToCurrent(
       enabled: enabled,
       applyScope: applyScope,
       anchorKey: anchorKey,
       offMediaKeys: offMediaKeys,
-      fgKey: useForegroundScopeKey(context),
+      fgKey: fgScopeKey,
+      fakeCutActive: fakeCutActive,
     );
-    final bool live = enabled && gateOpen && scopeApplied;
+    final bool live =
+        bg.select(context, (s) => s.bgPairInEffect) && scopeApplied;
     final bool bgIsControl =
         live && controlTarget == ControlTarget.background;
     final bool bgIsDisplayed =
         live && displayTarget == ControlTarget.background;
-    // The gate reads the ACTIVATION (gateOpen + this media being in scope),
-    // never the transport: a user pause does not cancel it, so the button
-    // keeps its active/stop state while bg sits paused — and the next press
-    // deactivates (it never resumes; resuming is the transport's job).
+    // The gate reads the ACTIVATION, never the transport: a user pause does not
+    // cancel it, so the button keeps its active/stop state while bg sits paused.
     final bool gateActive = live;
+
+    // Keyboard hints for the two T0 routing buttons. `effectiveShortcutHintLabelFor`
+    // resolves the LIVE binding (user override, unbind, legacy scheme) but reads
+    // the override JSON without subscribing — the select below makes a freshly
+    // edited shortcut show up in the tooltip without a restart.
+    useAppStore().select(context, (s) => s.keybindOverridesJson);
+    final String? gateHint =
+        effectiveShortcutHintLabelFor(context, ShortcutHintKind.bgGate);
+    final String? controlHint =
+        effectiveShortcutHintLabelFor(context, ShortcutHintKind.bgControlTarget);
+    final String gateLabel = fakeCutActive
+        ? t.bg_gate_fake_cut
+        : gateActive
+            ? t.bg_gate_stop
+            : t.bg_gate_play;
 
     // Frequency order: T0 (master switch, control/picture routing) → T1 (live
     // tuning) → T2 (one-off preferences / advanced). See the class doc.
@@ -155,18 +191,24 @@ class BackgroundQuickBar extends HookWidget {
       // the feature on demand). Enabling/disabling the FEATURE and releasing
       // the warm engine live in the 副音 menu — never here.
       _QuickButton(
-        tooltip: gateActive ? t.bg_gate_stop : t.bg_gate_play,
+        tooltip: withShortcutHint(gateLabel, gateHint, t),
         icon: gateActive
             ? Icons.stop_circle_rounded
             : Icons.play_circle_rounded,
         active: gateActive,
+        // 简播 owns the pair's timeline: the gate cannot be opened here.
+        enabled: !fakeCutActive,
         color: color,
         overlayColor: overlayColor,
         onPressed: () => BackgroundPlaybackActions.toggleGateForCurrent(context),
       ),
       // T0 — Control target fg/bg: the reason this bar exists at all.
       _QuickButton(
-        tooltip: bgIsControl ? t.bg_control_to_fg : t.bg_control_to_bg,
+        tooltip: withShortcutHint(
+          bgIsControl ? t.bg_control_to_fg : t.bg_control_to_bg,
+          controlHint,
+          t,
+        ),
         icon: bgIsControl
             ? Icons.settings_remote_rounded
             : Icons.settings_input_component_rounded,

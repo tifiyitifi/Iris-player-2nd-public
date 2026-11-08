@@ -107,6 +107,28 @@ void main() {
         isFalse,
       );
     });
+
+    test('an out-of-scope media or an ended queue is NOT ducking', () {
+      // 仅当前 left its anchor / 智能 met an unpaired media / user opt-out: the
+      // pair is not a pair, so the foreground must play at master (it used to
+      // stay ducked to 30% while 副音 was already silent).
+      expect(
+        BackgroundVolumePolicy.active(
+            enabled: true, gateOpen: true, outOfScope: true),
+        isFalse,
+      );
+      // The queue ran off its end under Repeat.none: nothing to sound.
+      expect(
+        BackgroundVolumePolicy.active(
+            enabled: true, gateOpen: true, queueEnded: true),
+        isFalse,
+      );
+      expect(
+        BackgroundVolumePolicy.active(
+            enabled: true, gateOpen: true, outOfScope: false, queueEnded: false),
+        isTrue,
+      );
+    });
   });
 
   group('BackgroundVolumePolicy (bg engine)', () {

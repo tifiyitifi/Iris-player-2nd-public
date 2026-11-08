@@ -42,6 +42,8 @@ void main() {
         'window.playlistPopupTheme',
         'window.playlistDockTheme',
         'video.desktopDisplayMode',
+        // Follow the playing item when playback switches (cross-platform).
+        'window.scenarioQueueAutoLocate',
         // Play-queue toolbar layout (cross-platform; the queue's own trailing
         // toggle is the runtime control).
         'window.scenarioQueueLayout',
@@ -52,6 +54,8 @@ void main() {
         // Desktop drag-drop append/override split (metadata-only `playback.`
         // AUX row, desktop platforms, hidden when the drop feature is absent).
         'playback.dropAppendPercent',
+        // Drop auto-scan switch: ON starts the scan with no gate dialog.
+        'playback.dropAutoScan',
         // media_kit demuxer cache preset (metadata-only `playback.` AUX row;
         // hidden while the fvp backend is active).
         'playback.videoCachePreset',
@@ -167,6 +171,7 @@ void main() {
         // Media-library scan preferences (own group, ahead of Advanced).
         // Custom desktop entries are Android-only (features/app_identity,
         // meta-driven only) — the Windows desktop has no such row.
+        'scan.autoClosePrompt',
         'scan.autoCloseDelay',
         'scan.rescanReminderMinutes',
         // tag_play block (tagplay.* AUX rows): numeric command bar + hint
@@ -194,6 +199,8 @@ void main() {
       expect(keys('play', 'android'), [
         'app.playerBackend',
         'video.mobileDisplayMode',
+        // Follow the playing item when playback switches (cross-platform).
+        'window.scenarioQueueAutoLocate',
         // Play-queue toolbar layout (cross-platform; the queue's own trailing
         // toggle is the runtime control).
         'window.scenarioQueueLayout',
@@ -317,6 +324,14 @@ void main() {
       expect(
         d.defaultValue,
         jsonEncode(const RecursiveScanState().toJson()['autoCloseDelay']),
+      );
+    });
+
+    test('autoClosePrompt default matches scan state', () {
+      final d = defs.singleWhere((d) => d.key == 'scan.autoClosePrompt');
+      expect(
+        d.defaultValue,
+        jsonEncode(const RecursiveScanState().toJson()['autoClosePrompt']),
       );
     });
   });

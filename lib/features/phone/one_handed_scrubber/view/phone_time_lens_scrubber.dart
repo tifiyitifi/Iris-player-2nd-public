@@ -67,13 +67,13 @@ class PhoneTimeLensScrubber extends HookWidget {
       if (progress.duration <= Duration.zero) return;
       // Route through the player's OWN step path (`seekRelative`) instead of
       // deciding the tail here: the hooks own the shared `decideStepTail`
-      // policy, the mpv-parity tail arm (`MpvSeekTailState`), the EOF collapse
-      // and the media-switch gate (`gateStepPress`). A local `finishSeek`
-      // bypassed all four, so a second tap inside the queue-advance window
-      // resolved against the previous file's duration and finished the entry
-      // that had just opened — one episode skipped. The side effect is the
-      // same landing the region-gesture double tap produces, which is what
-      // this button already documents as its reference.
+      // policy (exact tail step / immediate finish / paused hold) and the
+      // media-switch gate (`gateStepPress`). A local `finishSeek` bypassed both,
+      // so a second tap inside the queue-advance window resolved against the
+      // previous file's duration and finished the entry that had just opened —
+      // one episode skipped. The side effect is the same landing the
+      // region-gesture double tap produces, which is what this button already
+      // documents as its reference.
       if (seconds >= 0) {
         await player.forward(seconds);
       } else {

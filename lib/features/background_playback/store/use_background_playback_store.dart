@@ -294,6 +294,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(
       enabled: true,
       gateOpen: true,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       controlTarget:
           focus ? ControlTarget.background : ControlTarget.foreground,
       displayTarget: ControlTarget.foreground,
@@ -301,6 +303,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       scopeAnchorKey:
           scope == BgApplyScope.all ? null : (anchorKey ?? currentScopeKey()),
       bgOffMediaKeys: const <String>{},
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
       queue: ordered,
       queueWindowStart: w.start,
       queueTotal: w.total,
@@ -347,9 +351,13 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(
       enabled: false,
       gateOpen: false,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       controlTarget: ControlTarget.foreground,
       displayTarget: ControlTarget.foreground,
       bgAutoPlay: false,
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
       bgExhausted: false,
       currentIndex: -1,
       scopeAnchorKey: null,
@@ -384,7 +392,11 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(
       enabled: true,
       gateOpen: false,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       bgAutoPlay: false,
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
       currentIndex: -1,
       controlTarget: ControlTarget.foreground,
       displayTarget: ControlTarget.foreground,
@@ -423,7 +435,11 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     if (!state.enabled) return;
     set(state.copyWith(
       gateOpen: false,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       bgAutoPlay: false,
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
       controlTarget: ControlTarget.foreground,
       displayTarget: ControlTarget.foreground,
       alignOffsetMs: null,
@@ -471,6 +487,14 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     BgQueueWindow? slid;
     // True when a [stepForward] re-activation ran out of eligible entries.
     bool advanceBlocked = false;
+    // True when the block came from the LIST being over (Repeat.none walked off
+    // the end) rather than from the double-play guard rejecting every candidate.
+    bool listOver = false;
+    // The pair is ALREADY handed back (`bgQueueEnded`): there is nothing on the
+    // air, so this open is a re-activation of a stopped run rather than an
+    // advance of a live one. A blocked 下一首 then means "nowhere to go",
+    // not "keep what you were hearing".
+    final bool wasHandedBack = state.bgQueueEnded;
     if (state.queue.isEmpty) {
       nextIndex = -1;
     } else if (state.currentIndex < 0) {
@@ -496,6 +520,10 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       // In-window fast path: no await is taken, so a plain re-activation lands
       // synchronously (callers assert the state right after the call).
       final candidates = _stepCandidates(forward: true, repeat: repeat);
+      // Same discriminator as [step]: an empty candidate list is the list's end,
+      // while entries the guard rejects below are a double-play collision (the
+      // queue still has tracks, so it must keep the pair).
+      listOver = candidates.isEmpty;
       final int n = state.queue.length;
       final int start = state.queueWindowStart;
       int? fastOffset;
@@ -541,10 +569,30 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           advanceBlocked = false;
         }
       }
+      // A 下一首 press on a pair that has ALREADY run off the end of its queue is
+      // not an advance — there is nothing playing to advance. The quick bar draws
+      // its "play" glyph from `bgPairInEffect` (false here), so the press means
+      // 「在这片开启副音」 and must sound something: the loaded track is the last
+      // one it played, so re-opening THAT is the honest answer. Without this the
+      // press wrote `bgQueueEnded` straight back and stayed paused, and under
+      // 仅当前 + 「下一首」 (both defaults in a `Repeat.none` run) the gate did
+      // nothing no matter how often it was pressed.
+      //
+      // Deliberately limited to the handed-back state: a LIVE advance that finds
+      // nowhere to go still keeps the track PAUSED and must not replay it (the
+      // `bgQueueEnded` latch stays), which is the documented verdict of [step].
+      if (advanceBlocked && listOver && wasHandedBack) {
+        advanceBlocked = false;
+      }
     }
     final bool hasKey = mediaKey != null && mediaKey.isNotEmpty;
     set(state.copyWith(
       gateOpen: true,
+      bgOutOfScope: false,
+      // A 「下一首」 re-activation that ran out of eligible entries leaves
+      // nothing to sound: hand the controls back just like [step] does. Only a
+      // real list end qualifies — a collision still has tracks to play.
+      bgQueueEnded: advanceBlocked && listOver,
       // An advance that found nothing keeps the loaded track and stays PAUSED
       // (mirrors [step]'s verdict) instead of replaying it.
       bgAutoPlay: advanceBlocked ? false : autoplay,
@@ -629,7 +677,17 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   void setPlaying(bool playing) {
     if (!state.enabled || !state.gateOpen) return;
-    set(state.copyWith(bgAutoPlay: playing));
+    // Only a REAL transport change clears the 简播 suspension. A redundant
+    // `setPlaying(false)` arrives from mirrors that still re-assert the paused
+    // state, and clearing the flag there would silently lose the auto-resume
+    // when the foreground leaves the cut.
+    final bool changed = playing != state.bgAutoPlay;
+    set(state.copyWith(
+      bgAutoPlay: playing,
+      // A real play resumes the run: it is no longer "ended".
+      bgQueueEnded: playing ? false : state.bgQueueEnded,
+      bgSuspendedByFakeCut: changed ? false : state.bgSuspendedByFakeCut,
+    ));
   }
 
   /// Walks the queue by GLOBAL scenario index, sliding the window when the
@@ -668,8 +726,13 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     // two presses that arrive before a slide resolve lands still advance two
     // tracks instead of both resolving the same target (see [_serializedMove]).
     return _serializedMove(() async {
-      for (final g
-          in _stepCandidates(forward: forward, repeat: effectiveRepeat)) {
+      final List<int> candidates =
+          _stepCandidates(forward: forward, repeat: effectiveRepeat);
+      // Empty candidates = `Repeat.none` walked off the list. A non-empty list
+      // whose entries were all rejected below is a double-play COLLISION, which
+      // must keep the pair (the queue still has tracks).
+      final bool listOver = candidates.isEmpty;
+      for (final g in candidates) {
         final landed = await _resolveGlobalIndex(g);
         if (landed == null) continue;
         if (excludedKey != null &&
@@ -684,6 +747,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
           queueWindowStart: landed.window.start,
           queueTotal: landed.window.total,
           currentIndex: landed.offset,
+          bgQueueEnded: false,
           bgStepSeq: state.bgStepSeq + 1,
           bgUserAlignSeq:
               userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
@@ -697,7 +761,18 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       }
       // End of queue (repeat none) or every candidate collides with the
       // foreground file — stop advancing but keep the current media loaded.
-      set(state.copyWith(bgAutoPlay: false));
+      //
+      // Only an ACTUAL list end means "nothing left to sound": then the
+      // controls/picture go back to the video (the run is not dead — a step back
+      // or a row tap lands straight back on 副音). A double-play collision still
+      // HAS a queue, so it must not hand the pair back; `_stepCandidates` is the
+      // discriminator — it is empty exactly when `Repeat.none` walked off the
+      // list (every other mode wraps, and a collision still yields a candidate
+      // that the loop merely rejected).
+      set(state.copyWith(
+        bgAutoPlay: false,
+        bgQueueEnded: listOver,
+      ));
       return false;
     });
   }
@@ -803,6 +878,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     if (state.bgRepeat == Repeat.one && state.currentIndex >= 0) {
       set(state.copyWith(
         bgAutoPlay: true,
+        // Repeat-one never runs out: clear a previous queue-end hand-back.
+        bgQueueEnded: false,
         bgStepSeq: state.bgStepSeq + 1,
       ));
       return true;
@@ -810,6 +887,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     final prevIndex = state.currentIndex;
     final moved = await step(forward: true, excludedKey: excludedKey);
     if (!moved) {
+      // `step` already latched `bgQueueEnded` when the list itself is over;
+      // a double-play collision keeps the pair, so do not touch it here.
       set(state.copyWith(bgAutoPlay: false));
       return false;
     }
@@ -954,26 +1033,145 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// [autoplay] follows the foreground's live transport when this is an
   /// automatic (scope/saved-pairing) entry: a paused foreground must not be
   /// force-resumed by the auto-apply.
-  void applyToCurrent(String? mediaKey, {bool autoplay = true}) {
+  /// [keepQueueProgress] is the AUTOMATIC entry (作用范围 auto-start / a saved
+  /// pairing): the pair re-engages on a NEW foreground media, but the 副音 queue
+  /// keeps the position it had already reached. The two runtimes are two
+  /// independent normal players that share only an anchor, a mix and "which fg
+  /// gets 副音", so re-pointing AT a media must not rewind what 副音 played. Only
+  /// the ALIGNMENT is re-derived — a new fg needs a new anchor.
+  ///
+  /// Keeping progress never means keeping a COLLISION: a landing on the media's
+  /// own file plays it on both engines, so the landing goes through
+  /// [_keepProgressLandingIndex].
+  void applyToCurrent(
+    String? mediaKey, {
+    bool autoplay = true,
+    bool keepQueueProgress = false,
+  }) {
     if (!state.enabled || mediaKey == null || mediaKey.isEmpty) return;
-    final next = Set<String>.of(state.bgOffMediaKeys)..remove(mediaKey);
-    set(state.copyWith(
+    if (!keepQueueProgress) {
+      set(_asAppliedToCurrent(state, mediaKey, autoplay: autoplay));
+      // Explicit "use bg for THIS fg": clear the old queue progress and
+      // re-align instead of continuing mid-queue.
+      restartForCurrent();
+      return;
+    }
+    set(_restartPairForNewFg(
+      _asAppliedToCurrent(state, mediaKey, autoplay: autoplay),
+    ).copyWith(
+      currentIndex: _keepProgressLandingIndex(state),
+    ));
+  }
+
+  /// The landing of an AUTOMATIC re-pairing: today's queue position, made
+  /// playable against the media being opened.
+  ///
+  /// The same-file guard is the reason this exists. Every other landing path
+  /// ([step] / [jumpTo] / [openGate] / [restartForCurrent]) refuses to park 副音
+  /// on the foreground's own file, honouring `allowSameFgBgFile`; the automatic
+  /// entry used to keep `currentIndex` blind, so a media whose saved pairing
+  /// auto-started while that very media was the 副音 track on the air played one
+  /// file twice.
+  ///
+  /// The queue still "keeps going" rather than rewinding: the search moves
+  /// FORWARD from the recorded position and wraps, because a skip is a landing
+  /// decision, not a playback step — [BackgroundPlaybackState.bgRepeat] governs
+  /// natural stepping, and consulting it here would strand 仅当前 + `Repeat.none`
+  /// users on the colliding entry with nothing else to sound. A queue where every
+  /// entry collides (the single-file pool) keeps the position, the same verdict
+  /// [step] reaches.
+  ///
+  /// An index that is not a valid offset into the loaded window has no progress
+  /// to keep (the queue was replaced since): that lands through
+  /// [BackgroundQueueLogic.pickStartIndex], like every other entry point, instead
+  /// of leaving `-1`, which the runtime reads as "no target" and stops the engine
+  /// on.
+  int _keepProgressLandingIndex(BackgroundPlaybackState s) {
+    final queue = s.queue;
+    if (queue.isEmpty) return -1;
+    final String? excluded = excludedForegroundKey();
+    if (excluded == null) {
+      return s.currentIndex >= 0 && s.currentIndex < queue.length
+          ? s.currentIndex
+          : BackgroundQueueLogic.pickStartIndex(queue: queue);
+    }
+    final int current = s.currentIndex;
+    if (current >= 0 && current < queue.length) {
+      for (var i = 0; i < queue.length; i++) {
+        final int at = (current + i) % queue.length;
+        if (backgroundMediaKey(queue[at]) != excluded) return at;
+      }
+      return current;
+    }
+    return BackgroundQueueLogic.pickStartIndex(
+      queue: queue,
+      excludedKey: excluded,
+    );
+  }
+
+  /// The flags "副音 now applies to [mediaKey]" writes: the user's opt-out is
+  /// lifted for it, the gate opens, and every handed-back latch is cleared. The
+  /// queue itself is untouched — whether it restarts is the caller's decision
+  /// ([applyToCurrent] / [restartForCurrent]).
+  BackgroundPlaybackState _asAppliedToCurrent(
+    BackgroundPlaybackState s,
+    String mediaKey, {
+    required bool autoplay,
+  }) {
+    final next = Set<String>.of(s.bgOffMediaKeys)..remove(mediaKey);
+    return s.copyWith(
       bgOffMediaKeys: next,
       gateOpen: true,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       bgAutoPlay: autoplay,
-      scopeAnchorKey: state.applyScope == BgApplyScope.currentOnly
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
+      scopeAnchorKey: s.applyScope == BgApplyScope.currentOnly
           ? mediaKey
-          : state.scopeAnchorKey,
-    ));
-    // Explicit "use bg for THIS fg": clear the old queue progress and
-    // re-align instead of continuing mid-queue.
-    restartForCurrent();
+          : s.scopeAnchorKey,
+    );
+  }
+
+  /// The session teardown a NEW foreground media always needs, whatever happens
+  /// to the queue: the previous fg's offset/anchors describe media that is no
+  /// longer playing, a mapped override belongs to the old fg, and a terminal
+  /// (exhausted) run must resume normal ducking. [bgRunSeq] is bumped so the
+  /// runtime observer re-applies the automatic anchoring rule against the new fg.
+  BackgroundPlaybackState _restartPairForNewFg(BackgroundPlaybackState s) =>
+      s.copyWith(
+        bgRunSeq: s.bgRunSeq + 1,
+        bgExhausted: false,
+        bgOutOfScope: false,
+        bgQueueEnded: false,
+        alignOffsetMs: null,
+        alignVirtualOffsetMs: null,
+        alignOffsetAnchorIndex: null,
+        alignOffsetAnchorKey: null,
+        mappedFile: null,
+        mappedRate: null,
+        mappedFgPercent: null,
+        mappedBgPercent: null,
+        mappedSilenceOn: false,
+        mappedExitAdvanced: false,
+      );
+
+  /// Scope observer's ONE write of the session "out of scope" state.
+  ///
+  /// Kept as a single flag (rather than retargeting [controlTarget] at every
+  /// call site) so the routing PREFERENCE survives: leaving the anchored media
+  /// only makes the pair inactive, and coming back restores exactly the target
+  /// the user had before. No-op on an unchanged value (avoids rebuild storms —
+  /// the observer re-runs on every media key change).
+  void setOutOfScope(bool value) {
+    if (state.bgOutOfScope == value) return;
+    set(state.copyWith(bgOutOfScope: value));
   }
 
   /// 副音 left its anchored media — pause but keep the subsystem alive.
   void pauseForScope() {
     if (!state.enabled) return;
-    set(state.copyWith(bgAutoPlay: false));
+    set(state.copyWith(bgAutoPlay: false, bgOutOfScope: true));
   }
 
   /// 副音 came back to its anchored media — resume. Suppressed while the user
@@ -985,7 +1183,93 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// later resume).
   void resumeForScope({bool play = true}) {
     if (!state.enabled || !state.gateOpen) return;
-    set(state.copyWith(bgAutoPlay: play));
+    set(state.copyWith(
+        bgAutoPlay: play,
+        bgOutOfScope: false,
+        bgSuspendedByFakeCut: false,
+        fakeCutHeldRouting: false));
+  }
+
+  // ── 简播 (fake cut) 临时停用 ──
+
+  /// Suspends 副音 while the foreground plays a 简播 cut.
+  ///
+  /// The cut owns the picture AND the timeline (virtual milliseconds that mean
+  /// nothing on the 副音 side), so the pair must not stay linked — but this is a
+  /// TEMPORARY, per-media suspension, never a user preference:
+  ///  * it is not written to [BackgroundPlaybackState.bgOffMediaKeys] (which is
+  ///    the user's explicit "close 副音 for this media" and must survive);
+  ///  * [BackgroundPlaybackState.bgSuspendedByFakeCut] remembers whether 副音 was
+  ///    actually sounding, so [resumeAfterFakeCut] can restore exactly that and
+  ///    a user pause is never undone;
+  ///  * the controls and the picture are handed back to the video: with 副音
+  ///    silent, a control target on it would only frame a dead engine and hide
+  ///    the cut picture (`displayTarget`).
+  void suspendForFakeCut() {
+    if (!state.enabled) return;
+    // A run that was actually sounding must come back; a paused one must stay
+    // paused. Computed BEFORE the transport is silenced, and OR-ed with an
+    // earlier suspension: a second cut (A(cut) → B(cut)) re-enters this method
+    // with `bgAutoPlay` already false, and recomputing from it alone DROPPED the
+    // memory — leaving the cut never resumed 副音 at all.
+    final bool sounding = state.gateOpen && state.bgAutoPlay;
+    // The routing this call is about to hand back to the video. Remembered so
+    // [resumeAfterFakeCut] can undo it (a bg-master run must come back as bg).
+    final bool handBack = state.controlTarget != ControlTarget.foreground ||
+        state.displayTarget != ControlTarget.foreground;
+    // Idempotent: nothing to silence, nothing to remember, nothing to hand back.
+    if (!sounding &&
+        !state.bgSuspendedByFakeCut &&
+        !state.fakeCutHeldRouting &&
+        !handBack) {
+      return;
+    }
+    // A second cut must not overwrite the memory with the already-handed-back
+    // foreground pair.
+    final bool holdRouting = state.fakeCutHeldRouting || handBack;
+    set(state.copyWith(
+      // Remember the interruption ONLY when 副音 was actually sounding: a run
+      // the user had paused must stay paused after the cut.
+      bgSuspendedByFakeCut: state.bgSuspendedByFakeCut || sounding,
+      fakeCutHeldRouting: holdRouting,
+      controlTargetBeforeFakeCut: state.fakeCutHeldRouting
+          ? state.controlTargetBeforeFakeCut
+          : state.controlTarget,
+      displayTargetBeforeFakeCut: state.fakeCutHeldRouting
+          ? state.displayTargetBeforeFakeCut
+          : state.displayTarget,
+      bgAutoPlay: false,
+      controlTarget: ControlTarget.foreground,
+      displayTarget: ControlTarget.foreground,
+    ));
+  }
+
+  /// The foreground left the 简播 video: restore the transport and the routing a
+  /// cut interrupted.
+  ///
+  /// No-op unless something was actually remembered ([bgSuspendedByFakeCut] for
+  /// the transport, [fakeCutHeldRouting] for the controls/picture) and the gate
+  /// is still open, so an explicit stop keeps its meaning. A cut that silenced
+  /// nothing but still moved the controls back to the video is restored too.
+  void resumeAfterFakeCut({bool play = true}) {
+    final bool restoreTransport = state.bgSuspendedByFakeCut;
+    final bool restoreRouting = state.fakeCutHeldRouting;
+    if (!restoreTransport && !restoreRouting) return;
+    final bool canSound = restoreTransport && state.enabled && state.gateOpen;
+    set(state.copyWith(
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
+      bgOutOfScope: false,
+      bgAutoPlay: canSound ? play : state.bgAutoPlay,
+      controlTarget: restoreRouting
+          ? state.controlTargetBeforeFakeCut
+          : state.controlTarget,
+      displayTarget: restoreRouting
+          ? state.displayTargetBeforeFakeCut
+          : state.displayTarget,
+      controlTargetBeforeFakeCut: ControlTarget.foreground,
+      displayTargetBeforeFakeCut: ControlTarget.foreground,
+    ));
   }
 
   /// 关闭副音（仅当前）: this media opts out of 副音.
@@ -1001,7 +1285,12 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(
       bgOffMediaKeys: {...state.bgOffMediaKeys, mediaKey},
       bgAutoPlay: false,
+      bgSuspendedByFakeCut: false,
+      fakeCutHeldRouting: false,
       controlTarget: ControlTarget.foreground,
+      // The picture is handed back too (same rule as stopGate/disable): a
+      // closed pair must not keep showing the 副音 surface.
+      displayTarget: ControlTarget.foreground,
     ));
   }
 
@@ -1096,6 +1385,15 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   void clearBgExhausted() {
     if (!state.bgExhausted) return;
     set(state.copyWith(bgExhausted: false));
+  }
+
+  /// The run walked off the END of its queue (`Repeat.none`): 副音 has nothing
+  /// left to sound, so the pair hands the controls/picture back to the video
+  /// while keeping the run alive (a step back or a row tap immediately
+  /// re-activates it — no two-step manual retarget needed).
+  void markBgQueueEnded() {
+    if (!state.enabled || state.bgQueueEnded) return;
+    set(state.copyWith(bgQueueEnded: true, bgAutoPlay: false));
   }
 
   /// Physical minimum length of an A–B segment (`bg.minSegmentSpanMs`), in
@@ -1354,8 +1652,18 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   }
 
   /// Whether starting 副音 takes the shared controls (第 3 轮追加需求).
+  ///
+  /// Turning it OFF while 副音 currently owns the bar hands the controls back
+  /// immediately — that is what the preference's description promises ("关闭
+  /// 则仍控制视频"); leaving them on a 副音 the user just opted out of framing
+  /// reproduced the original "control bar drives a dead engine" report.
   Future<void> setAutoFocusControl(bool value) async {
-    set(state.copyWith(autoFocusControl: value));
+    set(state.copyWith(
+      autoFocusControl: value,
+      controlTarget: !value && state.bgOwnsControls
+          ? ControlTarget.foreground
+          : state.controlTarget,
+    ));
     await _writeAux(
       _kAuxAutoFocus,
       ValueCodec.encode(SettingValueType.bool, value),
@@ -1593,6 +1901,27 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     ));
   }
 
+  /// Drops the E 節 override (a mapped file, or a silence hold) WITHOUT
+  /// advancing the natural queue and WITHOUT touching transport.
+  ///
+  /// Used when the pair stops applying to the current media (scope exit, 简播):
+  /// [exitMappedNatural] would `step` the queue and [resumeNatural] would set
+  /// `bgAutoPlay` true — both undo the scope pause. The override itself is
+  /// media-scoped, so it is simply forgotten; re-entering scope re-evaluates the
+  /// timeline from scratch.
+  Future<void> dropMappedOverride() async {
+    if (!state.enabled) return;
+    if (state.mappedFile == null && !state.mappedSilenceOn) return;
+    set(state.copyWith(
+      mappedFile: null,
+      mappedRate: null,
+      mappedFgPercent: null,
+      mappedBgPercent: null,
+      mappedSilenceOn: false,
+      mappedExitAdvanced: false,
+    ));
+  }
+
   /// Host clears the abort latch once the foreground leaves the aborted
   /// segment (re-entry becomes legal again).
   Future<void> clearMappedExitLatch() async {
@@ -1652,6 +1981,14 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       set(state.copyWith(
         currentIndex: index,
         bgAutoPlay: true,
+        // NOT `bgOutOfScope: false`: whether the pair applies to the media on
+        // screen is the scope observer's verdict, and clearing it here would
+        // activate a 「仅当前」 run on a media it is not anchored to (the flag is
+        // not one of that effect's dependencies, so nothing would correct it
+        // until the next foreground switch). An in-scope jump leaves it false
+        // already; an explicit re-activation goes through [openGate], which
+        // re-anchors.
+        bgQueueEnded: false,
         bgStepSeq: state.bgStepSeq + 1,
         bgUserAlignSeq:
             userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
@@ -1723,6 +2060,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
         queueTotal: slid?.total ?? state.queueTotal,
         currentIndex: offset,
         bgAutoPlay: true,
+        // Scope verdict belongs to the observer (see [jumpTo]); only the queue
+        // hand-back latch is cleared by a deliberate move.
+        bgQueueEnded: false,
         bgStepSeq: state.bgStepSeq + 1,
         bgUserAlignSeq:
             userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
@@ -1792,25 +2132,13 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// pool head WAS the foreground.
   void restartForCurrent() {
     if (!state.enabled) return;
-    set(state.copyWith(
+    set(_restartPairForNewFg(state).copyWith(
       currentIndex: state.queue.isEmpty
           ? -1
           : BackgroundQueueLogic.pickStartIndex(
               queue: state.queue,
               excludedKey: excludedForegroundKey(),
             ),
-      bgRunSeq: state.bgRunSeq + 1,
-      bgExhausted: false,
-      alignOffsetMs: null,
-      alignVirtualOffsetMs: null,
-      alignOffsetAnchorIndex: null,
-      alignOffsetAnchorKey: null,
-      mappedFile: null,
-      mappedRate: null,
-      mappedFgPercent: null,
-      mappedBgPercent: null,
-      mappedSilenceOn: false,
-      mappedExitAdvanced: false,
     ));
     unawaited(_persistCurrentOccurrence());
   }
@@ -2365,6 +2693,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       displayTarget: ControlTarget.foreground,
       openQuickPanel: BgQuickPanel.none,
       bgExhausted: false,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
       vmScopeKeyOverride: null,
       vmSessionActive: false,
       vmAlignResetSeq: 0,

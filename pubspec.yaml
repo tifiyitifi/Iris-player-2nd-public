@@ -1,7 +1,7 @@
 name: iris
 description: A lightweight video player
 publish_to: none
-version: 2.0.11+2804
+version: 2.1.0+2866
 
 environment:
   sdk: ^3.5.4
@@ -36,6 +36,7 @@ dependencies:
   flutter_markdown: ^0.7.7+1
   http: ^1.5.0
   collection: ^1.19.1
+  charset: ^2.0.1
   json_annotation: ^4.9.0
   freezed_annotation: ^3.1.0
   disks_desktop: ^1.0.1

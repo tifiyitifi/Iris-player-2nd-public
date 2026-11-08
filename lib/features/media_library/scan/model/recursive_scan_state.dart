@@ -5,6 +5,14 @@ part 'recursive_scan_state.g.dart';
 
 enum ScanPhase { idle, scanning, done, error, stopped }
 
+/// Stored in [RecursiveScanState.error] when a run was left `scanning` by a dead
+/// process.
+///
+/// A marker, not a message: the store has no localization context, and printing
+/// a developer sentence to the user is exactly what this avoids. The overlay
+/// turns it into a localized line.
+const String kScanInterruptedByRestart = 'scan.interrupted.restart';
+
 @freezed
 abstract class RecursiveScanState with _$RecursiveScanState {
   const RecursiveScanState._();
@@ -57,6 +65,13 @@ abstract class RecursiveScanState with _$RecursiveScanState {
     /// Seconds to wait before auto-close after completion.
     /// 0 = close immediately. Default 2.5.
     @Default(2.5) double autoCloseDelay,
+
+    /// Whether the completion countdown is shown.
+    ///
+    /// `false` = "silent completion": the progress panel closes the moment the
+    /// scan finishes. [autoCloseDelay] is kept untouched so re-enabling the
+    /// countdown restores the user's previous duration.
+    @Default(true) bool autoClosePrompt,
   }) = _RecursiveScanState;
 
   /// Count-based scan progress: `scannedDirs / totalDirs`, clamped to [0,1].

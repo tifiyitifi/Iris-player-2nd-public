@@ -114,6 +114,11 @@ class NewWindowRequest {
     this.libraryId,
     this.openStorageId,
     this.openPath,
+    this.mirrorScenarioId,
+    this.mirrorTagViewId,
+    this.mirrorForward = true,
+    this.mirrorTargetIndex,
+    this.mirrorTargetFileKey,
   });
 
   /// CLI flag; the payload is appended after `=`.
@@ -148,6 +153,41 @@ class NewWindowRequest {
   final String? openStorageId;
   final List<String>? openPath;
 
+  /// Multi-window neighbour playback: mirror THIS scenario's definition + state
+  /// into the receiving window's private playing workspace, then step
+  /// [mirrorForward] (next/previous) and play the result.
+  ///
+  /// WHY the scenario id instead of the resolved queue: cloning the definition
+  /// (sources / explicit items / excludes / sort / shuffle seed / current
+  /// occurrence) reproduces the effective queue EXACTLY — virtual-media merges
+  /// included — and stays independent of the queue length, unlike serializing
+  /// every entry into the command line.
+  final String? mirrorScenarioId;
+
+  /// When set, the source window was playing a tag view: the receiving window
+  /// enters the same tag view (its own scenario clone) and steps from there.
+  final int? mirrorTagViewId;
+
+  /// Step direction inside the mirrored queue: true = next, false = previous.
+  final bool mirrorForward;
+
+  /// The neighbour the SOURCE window actually resolved, as an absolute index in
+  /// its own effective stream.
+  ///
+  /// WHY an explicit index instead of letting the receiving window step: the
+  /// two windows locate the anchor differently (the source steps from its LIVE
+  /// position, the receiver would step from the tag's persisted bookmark, which
+  /// a stale resume window replaces with "newest added"). Shipping the decision
+  /// makes the label the source showed and the file the child plays the same
+  /// entry by construction. Absent in older payloads → the child falls back to
+  /// stepping [mirrorForward].
+  final int? mirrorTargetIndex;
+
+  /// Physical file the target entry should open on inside a virtual-merged
+  /// group (the tag view's per-item file identity). Only meaningful together
+  /// with [mirrorTargetIndex].
+  final String? mirrorTargetFileKey;
+
   bool get isPlaybackRequest =>
       scenarioId == null && libraryId == null && openStorageId == null;
 
@@ -179,6 +219,10 @@ class NewWindowRequest {
   /// Human-readable form for startup logs (never includes secrets).
   String describe() => 'new-window[scenario=${scenarioId ?? '-'} '
       'library=${libraryId ?? '-'} open=${openStorageId ?? '-'} '
+      'mirror=${mirrorScenarioId ?? '-'}'
+      '${mirrorTagViewId == null ? '' : '/tag$mirrorTagViewId'}'
+      '${mirrorScenarioId == null ? '' : (mirrorForward ? '/next' : '/prev')}'
+      '${mirrorTargetIndex == null ? '' : '/@$mirrorTargetIndex'} '
       'folders=${{for (final f in folders) '${f.storageId}:${f.path}${f.recursive ? '/*' : ''}'}} '
       'files=${files.length} start=${startItemPath ?? '-'}]';
 
@@ -198,6 +242,15 @@ class NewWindowRequest {
         if (openStorageId != null) ...{
           'open': {'s': openStorageId, 'p': openPath ?? const <String>[]},
         },
+        if (mirrorScenarioId != null) ...{
+          'mirror': {
+            's': mirrorScenarioId,
+            if (mirrorTagViewId != null) 't': mirrorTagViewId,
+            'f': mirrorForward,
+            if (mirrorTargetIndex != null) 'i': mirrorTargetIndex,
+            if (mirrorTargetFileKey != null) 'k': mirrorTargetFileKey,
+          },
+        },
       };
 
   factory NewWindowRequest.fromJson(Map<String, dynamic> json) {
@@ -205,6 +258,8 @@ class NewWindowRequest {
     final startMap = start is Map<String, dynamic> ? start : null;
     final open = json['open'];
     final openMap = open is Map<String, dynamic> ? open : null;
+    final mirror = json['mirror'];
+    final mirrorMap = mirror is Map<String, dynamic> ? mirror : null;
     final sort = json['sort'];
     final sortList = sort is List ? sort : const [];
 
@@ -238,6 +293,11 @@ class NewWindowRequest {
       libraryId: json['library'] as String?,
       openStorageId: openMap?['s'] as String?,
       openPath: (openMap?['p'] as List?)?.map((e) => '$e').toList(),
+      mirrorScenarioId: mirrorMap?['s'] as String?,
+      mirrorTagViewId: (mirrorMap?['t'] as num?)?.toInt(),
+      mirrorForward: mirrorMap?['f'] as bool? ?? true,
+      mirrorTargetIndex: (mirrorMap?['i'] as num?)?.toInt(),
+      mirrorTargetFileKey: mirrorMap?['k'] as String?,
     );
   }
 

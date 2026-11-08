@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -19,6 +19,7 @@ import 'package:iris/features/scenario_playback/model/db/dao/scenarios_dao.dart'
 import 'package:iris/features/scenario_playback/model/db/repositories/scenario_repository.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/resolver/bit_vector.dart';
+import 'package:iris/features/scenario_playback/resolver/merged_order_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_index_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_media_order.dart';
@@ -92,8 +93,8 @@ void main() {
       await ScenarioSharedIndexDao(db).write(
         buildId,
         baseCount: scale,
-        slices: SharedIndexCodec.encodeSlices(
-            [(orderKey: orderKey, mediaRev: mediaRev, bits: all)]),
+        slices: SharedIndexCodec.encodeSlices(SingleBaseOrder(
+            [(orderKey: orderKey, mediaRev: mediaRev, bits: all)])),
         accepted: SharedIndexCodec.encodeBitmap(all),
         absorbed: SharedIndexCodec.encodeBitmap(none),
         groupRows: SharedIndexCodec.encodeGroups(const []),
@@ -249,6 +250,76 @@ void main() {
       expect(seen, scale);
       expect(rssDelta, lessThan(300 * 1024 * 1024),
           reason: 'a full sweep must not accumulate the stream');
+    });
+  });
+
+  /// The persisted shapes are a STORAGE budget, so they are asserted at the
+  /// same 50 万 scale as the read budget above: the merged interleave must not
+  /// approach the 4 B/entry id list it replaced, and the element permutation
+  /// must stay cheap.
+  group('encoding budgets ($scale entries)', () {
+    test('the merged base order stays under 2 bytes per entry', () {
+      const streamCount = 3;
+      final counts = List<int>.filled(streamCount, 0);
+      final entries = <({int stream, int rank})>[];
+      for (var i = 0; i < scale; i++) {
+        final stream = i % streamCount;
+        entries.add((stream: stream, rank: counts[stream]++));
+      }
+      final bytes = MergedOrder.encodeEntries(
+        streams: [
+          for (var s = 0; s < streamCount; s++)
+            MergedOrderStream(
+              orderKey: 'k$s',
+              mediaRev: 1,
+              count: counts[s],
+              // Dense fixture: every stream contributes its order 1:1.
+              orderLength: counts[s],
+            ),
+        ],
+        entries: entries,
+      );
+      final perEntry = bytes.length / scale;
+      // ignore: avoid_print
+      print('[scale:$scale] merged order '
+          '${perEntry.toStringAsFixed(3)}B/entry');
+      expect(perEntry, lessThan(2.0),
+          reason: 'the interleave must not approach the 4 B id list');
+
+      final decoded = MergedOrder.decode(bytes);
+      expect(decoded, isNotNull);
+      expect(decoded!.length, scale);
+      // Random access decodes at most one checkpoint block.
+      expect(decoded.decodeBudgetAt(scale - 1),
+          lessThanOrEqualTo(MergedOrder.defaultCheckInterval));
+      expect(decoded.at(scale - 1), entries.last);
+    });
+
+    test('a single-source bitmap stays under 0.13 bytes per entry', () {
+      final bits = (BitVectorBuilder(scale)
+            ..setAll([for (var i = 0; i < scale; i++) i]))
+          .build();
+      final bytes = SharedIndexCodec.encodeSlices(SingleBaseOrder(
+          [(orderKey: 'k', mediaRev: 1, bits: bits)]));
+      final perEntry = bytes.length / scale;
+      // ignore: avoid_print
+      print('[scale:$scale] single bitmap '
+          '${perEntry.toStringAsFixed(4)}B/entry');
+      expect(perEntry, lessThan(0.13));
+    });
+
+    test('the element permutation round-trips and stays small', () {
+      // A reversed permutation is the worst case for the zigzag delta (every
+      // step is -1), i.e. still one byte per entry.
+      final order = Int32List.fromList(
+          [for (var i = 0; i < scale; i++) scale - 1 - i]);
+      final bytes = SharedIndexCodec.encodeElementOrder(order);
+      final perEntry = bytes.length / scale;
+      // ignore: avoid_print
+      print('[scale:$scale] element order '
+          '${perEntry.toStringAsFixed(3)}B/entry');
+      expect(perEntry, lessThan(3.0));
+      expect(SharedIndexCodec.decodeElementOrder(bytes), order);
     });
   });
 }

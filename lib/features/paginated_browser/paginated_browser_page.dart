@@ -11,6 +11,7 @@ import 'package:iris/features/paginated_browser/models/browser_toolbar_layout.da
 import 'package:iris/features/paginated_browser/models/generic_browser_models.dart';
 import 'package:iris/features/paginated_browser/models/tooltip_direction.dart';
 import 'package:iris/features/paginated_browser/paginated_browser_controller.dart';
+import 'package:iris/features/paginated_browser/widgets/browser_bar_primitives.dart';
 import 'package:iris/features/paginated_browser/widgets/compact_single_row_bar.dart';
 import 'package:iris/features/paginated_browser/widgets/dynamic_responsive_bar.dart';
 import 'package:iris/features/paginated_browser/widgets/floating_grid_bar.dart';
@@ -103,6 +104,15 @@ class PaginatedBrowserPage<T> extends HookWidget {
   /// its slot, so hiding crumbs can never hide the search state.
   final bool showBreadcrumb;
 
+  /// Whether the OPEN list follows the playing item when it switches (next /
+  /// previous, auto-advance, a play started from another surface).
+  ///
+  /// False by default so every other browser keeps its exact behaviour. This is
+  /// deliberately independent of the mount-time locate: opening a list on the
+  /// current item (and the "Go to current" button) still works with this off —
+  /// only the automatic follow is gated.
+  final bool autoLocateOnCurrentChange;
+
   const PaginatedBrowserPage({
     super.key,
     required this.dataSource,
@@ -121,6 +131,7 @@ class PaginatedBrowserPage<T> extends HookWidget {
     this.showBreadcrumb = true,
     this.floatingBarOffset,
     this.onFloatingBarMoved,
+    this.autoLocateOnCurrentChange = false,
   });
 
   @override
@@ -179,6 +190,43 @@ class PaginatedBrowserPage<T> extends HookWidget {
       dataSource.items,
       dataSource.currentPage
     ]);
+
+    // Follow a playing-item switch in an ALREADY OPEN list (opt-in). Separate
+    // from the mount-only effect above so this option can never change where a
+    // browser opens: the initial token is adopted silently, and only a LATER
+    // change moves the viewport. Content refreshes (a duration backfill, a
+    // background scan) keep the same token and therefore must not move it.
+    final lastFollowedToken = useRef<Object?>(null);
+    useEffect(() {
+      if (!autoLocateOnCurrentChange || !dataSource.supportsCurrentItem) {
+        return null;
+      }
+      lastFollowedToken.value = dataSource.currentItemToken;
+      void onSourceChanged() {
+        // A fetch in flight will notify again when it finishes; resolving the
+        // target against a half-loaded list would locate the wrong page.
+        if (dataSource.isLoading) return;
+        final token = dataSource.currentItemToken;
+        if (token == null || token == lastFollowedToken.value) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!context.mounted) return;
+          // Only a LANDED locate consumes the token. Marking it before the
+          // attempt (the old behaviour) meant a single miss — the item not
+          // resolvable yet during a media-content refresh — silenced every
+          // later notify for that switch, so the queue stayed on the old page
+          // until the user switched again.
+          final located = await _goToCurrent(
+            itemScrollController,
+            dataSource,
+            expectedToken: token,
+          );
+          if (located) lastFollowedToken.value = token;
+        });
+      }
+
+      dataSource.addListener(onSourceChanged);
+      return () => dataSource.removeListener(onSourceChanged);
+    }, [dataSource, autoLocateOnCurrentChange]);
 
     final isSearchActive = activeController.isSearchActive;
 
@@ -256,8 +304,9 @@ class PaginatedBrowserPage<T> extends HookWidget {
       listKeyboardCtl,
     );
 
+    final Widget shell;
     if (toolbarLayout != BrowserToolbarLayout.floatingGrid) {
-      return Column(
+      shell = Column(
         children: [
           Expanded(child: content),
           // Bottom section: breadcrumb/search-bar slot + divider + toolbar.
@@ -266,46 +315,68 @@ class PaginatedBrowserPage<T> extends HookWidget {
           _buildBottomBarInScope(context, controller, itemScrollController),
         ],
       );
-    }
-
-    return Column(
-      children: [
-        _buildFloatingHeaderInScope(context, controller),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) => Stack(
-              children: [
-                content,
-                // The bar shrink-wraps its tiles and positions ITSELF from the
-                // remembered fraction, so it is a `Positioned(left: 0, top: 0)`
-                // child: the host Stack sizes itself from the list, and the bar
-                // translates away from the origin. Wrapping it in
-                // `Positioned.fill`/`Align` instead made the bar fill the whole
-                // host, leaving it no room to move at all.
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  child: FloatingGridBar<T>(
-                    controller: controller,
-                    dataSource: dataSource,
-                    onClose: onClose,
-                    onGoToCurrent: dataSource.supportsCurrentItem
-                        ? () => _goToCurrent(itemScrollController, dataSource)
-                        : null,
-                    overflowActions: overflowActions,
-                    offset: floatingBarOffset,
-                    onMoved: onFloatingBarMoved,
-                    // The list area's width, so the grid re-chunks instead of
-                    // overflowing a narrow host. The bar is a `Positioned` child
-                    // and cannot measure this itself.
-                    maxWidth: constraints.maxWidth,
+    } else {
+      shell = Column(
+        children: [
+          _buildFloatingHeaderInScope(context, controller),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) => Stack(
+                children: [
+                  content,
+                  // The bar shrink-wraps its tiles and positions ITSELF from the
+                  // remembered fraction, so it is a `Positioned(left: 0, top: 0)`
+                  // child: the host Stack sizes itself from the list, and the bar
+                  // translates away from the origin. Wrapping it in
+                  // `Positioned.fill`/`Align` instead made the bar fill the whole
+                  // host, leaving it no room to move at all.
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    child: FloatingGridBar<T>(
+                      controller: controller,
+                      dataSource: dataSource,
+                      onClose: onClose,
+                      onGoToCurrent: dataSource.supportsCurrentItem
+                          ? () => _goToCurrent(itemScrollController, dataSource)
+                          : null,
+                      overflowActions: overflowActions,
+                      offset: floatingBarOffset,
+                      onMoved: onFloatingBarMoved,
+                      // The list area's width, so the grid re-chunks instead of
+                      // overflowing a narrow host. The bar is a `Positioned` child
+                      // and cannot measure this itself.
+                      maxWidth: constraints.maxWidth,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      );
+    }
+
+    // Clicking anywhere inside the page (a list row AND the toolbar chrome)
+    // hands the keyboard back to the list, so a stray Space/Enter afterwards
+    // cannot re-trigger whatever toolbar control was last focused — the
+    // defect that popped the page-jump prompt out of nowhere. The inner
+    // `_wrapKeyboardShell` already does this for the list body; this covers
+    // the bottom bar and the floating grid. Keyboard (Tab) focus is
+    // untouched: this only fires on pointer-down, and never steals focus out
+    // of a text field.
+    if (!listKeyboard) return shell;
+    return Listener(
+      onPointerDown: (_) {
+        final focusContext = FocusManager.instance.primaryFocus?.context;
+        if (focusContext != null &&
+            focusContext.findAncestorStateOfType<EditableTextState>() !=
+                null) {
+          return;
+        }
+        listFocusNode.requestFocus();
+      },
+      child: shell,
     );
   }
 
@@ -325,18 +396,28 @@ class PaginatedBrowserPage<T> extends HookWidget {
     );
   }
 
-  Future<void> _goToCurrent(
+  /// Moves the viewport to the current item. Returns false when the item is not
+  /// resolvable (yet) or the caller's token is stale, so a follower can retry
+  /// instead of assuming it succeeded.
+  Future<bool> _goToCurrent(
     ItemScrollController itemScrollController,
-    PaginatedBrowserDataSource<T> dataSource,
-  ) async {
+    PaginatedBrowserDataSource<T> dataSource, {
+    Object? expectedToken,
+  }) async {
     final index = await dataSource.resolveCurrentItemIndex();
-    if (index == null) return;
+    if (index == null) return false;
+    // A rapid next/next/next must not let an older locate win after the item
+    // already moved on again.
+    if (expectedToken != null && dataSource.currentItemToken != expectedToken) {
+      return false;
+    }
     final targetPage =
         dataSource.pageForIndex(index).clamp(0, dataSource.totalPages - 1);
     if (targetPage != dataSource.currentPage) {
       await dataSource.fetchPage(targetPage, dataSource.pageSize);
     }
     await _centerCurrent(itemScrollController, dataSource, index);
+    return true;
   }
 
   Future<void> _centerCurrent(
@@ -608,13 +689,21 @@ class PaginatedBrowserPage<T> extends HookWidget {
     ScrollOffsetListener scrollOffsetListener, {
     ListKeyboardController? listKeyboardCtl,
   }) {
-    if (dataSource.isLoading) {
+    // A background refresh (duration probe write-back, auto-locate page slide)
+    // must not blank the list: keep the rows already on screen and only show the
+    // full-surface spinner when there is nothing to show yet.
+    if (dataSource.isLoading && dataSource.items.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(),
       );
     }
 
-    if (dataSource.isError) {
+    // Same rule for the failure state: the data sources assign `items` inside
+    // the try and only raise `isError` in the catch, so a FAILED background
+    // refresh keeps the previous page. Replacing it with the full-surface error
+    // panel is the same 「列表闪烁」 as the spinner, one step later; keep the rows
+    // and let the retry stay reachable through the next explicit load.
+    if (dataSource.isError && dataSource.items.isEmpty) {
       final t = getLocalizations(context);
       final detail = dataSource.listErrorDetail;
       return Center(
@@ -760,6 +849,13 @@ class PaginatedBrowserPage<T> extends HookWidget {
     final items = dataSource.items;
     final action = resolvePlaylistAction(event);
     if (action != null) {
+      // A held key may only repeat cursor movement. Every other bound action
+      // either mutates the list, toggles state, or opens UI — a repeat would
+      // act on a row the user never saw (a held Delete emptied the queue) or
+      // stack one dialog / Explorer window per repeat.
+      if (event is KeyRepeatEvent && !action.repeatsSafely) {
+        return KeyEventResult.handled;
+      }
       unawaited(_runPlaylistAction(
         context,
         controller,
@@ -812,6 +908,12 @@ class PaginatedBrowserPage<T> extends HookWidget {
         return;
       case PlaylistAction.invertSelection:
         controller.invertSelectionOnPage(items, dataSource);
+        return;
+      case PlaylistAction.jumpToPage:
+        // Page-owned: the prompt needs the data source's paging state, which
+        // only the page holds. Data sources consume this action as a no-op so
+        // the same key never double-fires through delegation.
+        handleBrowserNumericJump(context, dataSource);
         return;
       default:
         break;

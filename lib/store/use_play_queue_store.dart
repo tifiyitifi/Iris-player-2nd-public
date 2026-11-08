@@ -357,6 +357,14 @@ class InMemoryPlayQueueBackend implements PlayQueueBackend {
   }
 }
 
+/// One `next()` / `previous()` press: which way it went and the entry it
+/// landed on.
+///
+/// `index` is the value subscribers see as `PlayQueueState.currentIndex` — the
+/// item id in legacy mode, the virtual position in query mode — so a reader can
+/// match the stamp against the move it observed instead of trusting a stale one.
+typedef PlayQueueMove = ({bool forward, int index});
+
 // ============================================================================
 // UnifiedPlayQueueStore — Facade over legacy and query backends
 // ============================================================================
@@ -521,13 +529,42 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
 
   Future<void> next() async {
     await _activeBackend.next();
-    await _afterMutation();
+    _stampMove(forward: true);
+    await _afterMutation(keepLastMove: true);
   }
 
   Future<void> previous() async {
     await _activeBackend.previous();
-    await _afterMutation();
+    _stampMove(forward: false);
+    await _afterMutation(keepLastMove: true);
   }
+
+  /// Direction of the LAST `next()` / `previous()` press plus the entry it
+  /// landed on, or null when the last mutation was not a step.
+  ///
+  /// Nothing else knows this: a wrap and an ordinary step produce the same pair
+  /// of item ids (see `isForwardQueueMove`), and 「上一集」 at the head is even
+  /// indistinguishable from tapping the last row. 副音 mirrors the foreground's
+  /// direction off this because it has no other way to get it.
+  ///
+  /// `index` is the value subscribers see as `state.currentIndex`, so a reader
+  /// can tell a stale stamp (a later jump moved the queue elsewhere) from the
+  /// move it is looking at. Session-only; never persisted.
+  PlayQueueMove? get lastMove => _lastMove;
+  PlayQueueMove? _lastMove;
+
+  /// Records the direction BEFORE [_afterMutation] publishes the new state:
+  /// subscribers rebuild off that notification and must find it already set.
+  void _stampMove({required bool forward}) {
+    _lastMove = (forward: forward, index: _publishedCurrentIndex);
+  }
+
+  /// The id [_syncSyntheticState] publishes as `currentIndex` for the backend's
+  /// present position. Query mode keeps ONE synthetic item and mirrors the
+  /// virtual position instead of an item id, so the two backends differ.
+  int get _publishedCurrentIndex => _activeBackend.isQueryMode
+      ? _activeBackend.currentVirtualPos
+      : _activeBackend.currentIndex;
 
   Future<void> shuffle() async {
     await _activeBackend.shuffle();
@@ -611,7 +648,11 @@ class UnifiedPlayQueueStore extends PersistentStore<PlayQueueState> {
 
   // ========== Mutation post-processing ==========
 
-  Future<void> _afterMutation() async {
+  Future<void> _afterMutation({bool keepLastMove = false}) async {
+    // Every other mutation (a jump, a removal, a reorder, a replacement) is not
+    // a 「下一集」/「上一集」 press, so it must not inherit one's direction: a
+    // consumer would then read a jump as a step.
+    if (!keepLastMove) _lastMove = null;
     await _syncSyntheticState();
     if (_isQueryMode) {
       await _queryBackend!.save(_queryBackend!.state);

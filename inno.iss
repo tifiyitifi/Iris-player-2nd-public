@@ -8,8 +8,13 @@
 #ifndef MyAppVersion
 #define MyAppVersion "2.0.0"
 #endif
+; Publisher and AppId are the Windows install identity (registry hive,
+; RegisteredApplications entry, upgrade path). Kept as-is on purpose: changing
+; either would orphan every existing install. Only the URLs below move, because
+; they are what the user actually clicks ("support"/"update") and they must
+; point at the releases this build publishes, not at the upstream project.
 #define MyAppPublisher "nini22P"
-#define MyAppURL "https://github.com/nini22P/iris"
+#define MyAppURL "https://github.com/tifiyitifi/Iris-player-2nd-public"
 #define MyAppExeName "iris.exe"
 #define MyAppAssocName MyAppPublisher + "." + MyAppName + ".AssocFile"
 #define MyAppDesc "IRIS player"

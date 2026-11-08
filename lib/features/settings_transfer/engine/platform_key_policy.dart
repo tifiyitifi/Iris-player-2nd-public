@@ -97,6 +97,7 @@ abstract final class PlatformKeyPolicy {
   // phone transfer. Explicit list rather than a prefix rule: the `window.` domain
   // is otherwise genuinely desktop-only.
   static const Set<String> crossPlatformWindowAux = {
+    'window.scenarioQueueAutoLocate',
     'window.scenarioQueueLayout',
     'window.scenarioQueueLayoutDesktop',
     'window.scenarioQueueLayoutPortrait',

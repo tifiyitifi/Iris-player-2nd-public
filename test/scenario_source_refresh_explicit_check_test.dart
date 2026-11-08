@@ -68,8 +68,8 @@ void main() {
     ]);
   }
 
-  test('deletes a node when the parent listing succeeds and omits the file',
-      () async {
+  test('does NOT delete on an EMPTY listing: a missing directory is '
+      'indistinguishable from an empty one', () async {
     await seedFile('movies/gone.mp4');
 
     final service = ScenarioSourceRefreshService(
@@ -77,8 +77,39 @@ void main() {
           const FileListResult(<FileItem>[]),
     );
 
-    // The parent listing succeeds and returns nothing → the explicit file is
-    // confirmed gone and its media node is removed.
+    // Desktop reports an absent/unreadable directory as an error-free empty
+    // result, so an empty listing must never be read as "the file is gone".
+    final check = await service.checkExplicitFiles(
+      unitWith([explicit('movies/gone.mp4')]),
+    );
+
+    expect(check.missing, 0);
+    expect(check.presentPaths, isEmpty);
+    expect(await DbModule.mediaNodeRepo.getNodeByPath(
+      storageId: 's1',
+      path: const ['movies', 'gone.mp4'],
+    ), isNotNull);
+  });
+
+  test('deletes a node when the listing succeeds, is NON-empty, and omits the '
+      'file', () async {
+    await seedFile('movies/gone.mp4');
+
+    final service = ScenarioSourceRefreshService(
+      listDir: (Storage s, List<String> p) async => FileListResult([
+        FileItem(
+          name: 'other.mp4',
+          path: const ['movies', 'other.mp4'],
+          uri: 'other.mp4',
+          isDir: false,
+          type: ContentType.video,
+          size: 10,
+        ),
+      ]),
+    );
+
+    // A successful listing with real entries is proof the directory exists and
+    // the explicit file is not in it → remove the stale node.
     final check = await service.checkExplicitFiles(
       unitWith([explicit('movies/gone.mp4')]),
     );
@@ -89,6 +120,37 @@ void main() {
       storageId: 's1',
       path: const ['movies', 'gone.mp4'],
     ), isNull);
+  });
+
+  test('lists a UNC parent WITHOUT collapsing its leading //', () async {
+    await seedFile('movies/unc.mp4');
+
+    List<String>? seen;
+    final service = ScenarioSourceRefreshService(
+      listDir: (Storage s, List<String> p) async {
+        seen = p;
+        return FileListResult([
+          FileItem(
+            name: 'unc.mp4',
+            path: const ['movies', 'unc.mp4'],
+            uri: 'unc.mp4',
+            isDir: false,
+            type: ContentType.video,
+            size: 10,
+          ),
+        ]);
+      },
+    );
+
+    // Raw UNC path: the stored explicit-item path keeps the `\\server` marker,
+    // which the old `canonicalDbPath(...).split('/')` collapsed away.
+    final check = await service.checkExplicitFiles(
+      unitWith([explicit('\\\\server/share/movies/unc.mp4')]),
+    );
+
+    expect(seen, const ['\\\\server', 'share', 'movies']);
+    expect(check.missing, 0);
+    expect(check.presentPaths, {'server/share/movies/unc.mp4'});
   });
 
   test('keeps the node when the file is present in the listing', () async {

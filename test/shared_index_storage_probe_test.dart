@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:drift/native.dart';
@@ -58,7 +58,8 @@ void main() {
     await shared.write(
       1,
       baseCount: n,
-      slices: SharedIndexCodec.encodeSlices([(orderKey: 'probe', mediaRev: 1, bits: bits)]),
+      slices: SharedIndexCodec.encodeSlices(SingleBaseOrder(
+          [(orderKey: 'probe', mediaRev: 1, bits: bits)])),
       accepted: SharedIndexCodec.encodeBitmap(bits),
       absorbed: SharedIndexCodec.encodeBitmap(absorbed),
       groupRows: SharedIndexCodec.encodeGroups(groupRows),

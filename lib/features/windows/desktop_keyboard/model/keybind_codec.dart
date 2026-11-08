@@ -19,12 +19,17 @@ final _log = AreaKeyLog(LogKeys.legacyStore);
 abstract final class KeybindCodec {
   static const int _maxStoredCombosPerAction = 4;
 
-  static Map<String, dynamic> _encodeCombo(KeyCombo c) => <String, dynamic>{
-        'keyId': c.key.keyId,
-        'ctrl': c.ctrl,
-        'alt': c.alt,
-        'shift': c.shift,
-      };
+  static Map<String, dynamic> _encodeCombo(KeyCombo raw) {
+    // Store the canonical id so a Windows-recorded `quote` (0x22) never lands
+    // in the AUX row as a combo the default table can't name.
+    final KeyCombo c = canonicalKeyCombo(raw);
+    return <String, dynamic>{
+      'keyId': c.key.keyId,
+      'ctrl': c.ctrl,
+      'alt': c.alt,
+      'shift': c.shift,
+    };
+  }
 
   static KeyCombo? _decodeCombo(Object? raw) {
     if (raw is! Map) return null;
@@ -37,7 +42,9 @@ abstract final class KeybindCodec {
     final bool ctrl = raw['ctrl'] == true || raw['ctrl'] == 1;
     final bool alt = raw['alt'] == true || raw['alt'] == 1;
     final bool shift = raw['shift'] == true || raw['shift'] == 1;
-    return KeyCombo(key, ctrl: ctrl, alt: alt, shift: shift);
+    // Rows written by a Windows build may carry `quote` (0x22) for the
+    // apostrophe key; fold it onto the canonical binding id on the way in.
+    return canonicalKeyCombo(KeyCombo(key, ctrl: ctrl, alt: alt, shift: shift));
   }
 
   /// Encodes overrides map to JSON string for the AUX row.

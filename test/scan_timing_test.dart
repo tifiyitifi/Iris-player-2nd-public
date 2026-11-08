@@ -78,6 +78,10 @@ void main() {
     test('withheld until warmed up, then derived from the smoothed rate',
         () async {
       await store.startScan(storageId: 's1', depthPaths: {0: ['A']});
+      // The stored snapshot supplies the tree size (the walk only DISCOVERS
+      // directories, it never knows how many are left); a unit test has no
+      // database, so state that total explicitly.
+      store.debugSetKnownTotalDirs(101);
       // 100 dirs total so `remaining` stays positive.
       await store.updateDepth(
         depth: 0,

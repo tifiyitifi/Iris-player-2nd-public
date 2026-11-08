@@ -95,6 +95,52 @@ void main() {
 
     final buffered = (buffered: true, elapsed: const Duration(milliseconds: 100));
 
+    test('R3: auto-repeat of a standalone action honours the repeat guard', () {
+      // The first press of a standalone key closes the buffer, so the reachable
+      // case is a repeat that lands WHILE the buffer is open (arm `;` while the
+      // key is already held). R3 used to skip the idle path's repeat guard, so a
+      // held key executed once per auto-repeat — Shift+PgDn spawned a window per
+      // repeat, PgDn walked the queue. Repeatable actions must still pass.
+      expect(
+        resolveSequence(
+          state: buffered,
+          input: input(LogicalKeyboardKey.pageDown, shift: true, isRepeat: true),
+        ),
+        isA<Discard>(),
+      );
+      expect(
+        resolveSequence(
+          state: buffered,
+          input: input(LogicalKeyboardKey.pageDown, isRepeat: true),
+        ),
+        isA<Discard>(),
+      );
+      expect(
+        resolveSequence(
+          state: buffered,
+          input: input(LogicalKeyboardKey.pageUp, shift: true, isRepeat: true),
+        ),
+        isA<Discard>(),
+      );
+      // The FIRST press still executes, and a repeatable action still repeats.
+      expect(
+        resolveSequence(
+          state: buffered,
+          input: input(LogicalKeyboardKey.pageDown, shift: true),
+        ),
+        isA<PassThroughStandalone>().having(
+            (v) => v.action, 'action', PotPlayerAction.openNextInNewWindow),
+      );
+      expect(
+        resolveSequence(
+          state: buffered,
+          input: input(LogicalKeyboardKey.arrowRight, isRepeat: true),
+        ),
+        isA<PassThroughStandalone>()
+            .having((v) => v.action, 'action', PotPlayerAction.seekForward),
+      );
+    });
+
     test('R2: legal follower completes with the mapped action', () {
       expect(
         resolveSequence(state: buffered, input: input(LogicalKeyboardKey.keyF)),

@@ -31,6 +31,10 @@ String keybindActionLabel(PotPlayerAction a, AppLocalizations t) => switch (a) {
       PotPlayerAction.playPause => t.keybind_act_play_pause,
       PotPlayerAction.previousItem => t.keybind_act_previous,
       PotPlayerAction.nextItem => t.keybind_act_next,
+      PotPlayerAction.openPreviousInNewWindow => t.keybind_act_open_prev_window,
+      PotPlayerAction.openNextInNewWindow => t.keybind_act_open_next_window,
+      PotPlayerAction.toggleBackgroundGate => t.keybind_act_toggle_bg_gate,
+      PotPlayerAction.toggleControlTarget => t.keybind_act_toggle_bg_control,
       PotPlayerAction.frameBackward => t.keybind_act_frame_backward,
       PotPlayerAction.frameForward => t.keybind_act_frame_forward,
       PotPlayerAction.seekBackward => t.keybind_act_seek_backward,
@@ -99,6 +103,10 @@ String _categoryFor(PotPlayerAction a, AppLocalizations t) {
     PotPlayerAction.playPause,
     PotPlayerAction.previousItem,
     PotPlayerAction.nextItem,
+    PotPlayerAction.toggleBackgroundGate,
+    PotPlayerAction.toggleControlTarget,
+    PotPlayerAction.openPreviousInNewWindow,
+    PotPlayerAction.openNextInNewWindow,
     PotPlayerAction.frameBackward,
     PotPlayerAction.frameForward,
   }.contains(a)) return t.keybind_cat_playback;
@@ -500,7 +508,11 @@ class _KeyCaptureDialog extends HookWidget {
       final bool ctrl = HardwareKeyboard.instance.isControlPressed;
       final bool alt = HardwareKeyboard.instance.isAltPressed;
       final bool shift = HardwareKeyboard.instance.isShiftPressed;
-      final KeyCombo combo = KeyCombo(key, ctrl: ctrl, alt: alt, shift: shift);
+      // Canonical id: on Windows the apostrophe key arrives as `quote` (0x22),
+      // while the default table names the same physical key `quoteSingle`.
+      final KeyCombo combo = canonicalKeyCombo(
+        KeyCombo(key, ctrl: ctrl, alt: alt, shift: shift),
+      );
       if (!KeybindCodec.isRecordable(combo)) {
         error.value = getLocalizations(context).keybind_capture_invalid;
         return;

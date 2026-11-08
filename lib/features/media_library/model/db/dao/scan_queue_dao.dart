@@ -98,6 +98,34 @@ class ScanQueueDao extends DatabaseAccessor<AppDatabase>
     );
   }
 
+  /// Marks many paths `done` in ONE statement.
+  ///
+  /// The scan's per-directory bookkeeping used to be one UPDATE (one
+  /// transaction) per directory, which a 34k-directory phone volume turns into
+  /// 34k commits. Chunked for the same SQLite variable limit as the node deletes.
+  Future<void> markDoneBatch(String storageId, List<String> paths) async {
+    if (paths.isEmpty) return;
+    const chunkSize = 900;
+    final updatedAt = DateTime.now().toIso8601String();
+    for (var i = 0; i < paths.length; i += chunkSize) {
+      final chunk = paths.sublist(
+        i,
+        i + chunkSize > paths.length ? paths.length : i + chunkSize,
+      );
+      await customUpdate(
+        'UPDATE scan_queue SET status = ?, updated_at = ? '
+        'WHERE data_scope_id = ? AND path IN (${List.filled(chunk.length, '?').join(',')})',
+        variables: [
+          Variable.withString('done'),
+          Variable.withString(updatedAt),
+          Variable.withString(StorageScope.of(storageId)),
+          for (final path in chunk) Variable.withString(path),
+        ],
+        updates: {scanQueueTable},
+      );
+    }
+  }
+
   Future<List<String>> getPendingPaths(String storageId) async {
     final rows = await customSelect(
       'SELECT path FROM scan_queue WHERE data_scope_id = ? AND status = ?',

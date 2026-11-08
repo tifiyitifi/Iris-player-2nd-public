@@ -108,4 +108,25 @@ enum PotPlayerAction {
   // Direct base-step adjust (±1s / Shift ±10s) with OSD, no window.
   seekStepIncrease,
   seekStepDecrease,
+
+  // ── Multi-window neighbour playback (desktop, Shift+PageUp/Down) ──
+  // The current window keeps its player in place, PAUSED, while a fresh
+  // window mirrors the same playback context and plays the neighbour. Appended
+  // (never reordered): keybind overrides persist by NAME.
+  openPreviousInNewWindow,
+  openNextInNewWindow,
+
+  // ── 副音 gate for the media playing now (desktop, Alt+') ──
+  // Exactly the quick bar's T0 play/stop button: apply 副音 to the CURRENT
+  // foreground under the run's 作用范围 (so a scope that does not cover this
+  // media auto-hands back). Not the feature switch, not the control-target
+  // toggle. Appended (never reordered): keybind overrides persist by NAME.
+  toggleBackgroundGate,
+
+  // ── fg/bg control target (desktop, Alt+;) ──
+  // Exactly the quick bar's T0 "control fg/bg" button: flip the shared control
+  // surface between the video and 副音. Only moves CONTROLS (the picture target
+  // stays independent), and only while the pair is live. Appended (never
+  // reordered): keybind overrides persist by NAME.
+  toggleControlTarget,
 }

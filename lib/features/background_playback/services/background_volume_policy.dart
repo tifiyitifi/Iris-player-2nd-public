@@ -19,16 +19,23 @@ abstract final class BackgroundVolumePolicy {
 
   /// Whether 副音 is actively mixing right now — the ONE duck gate shared by
   /// both engines. [enabled] is the subsystem flag, [gateOpen] the user gate
-  /// (quick-bar play/stop), [exhausted] the stopRestoreFg terminal state.
+  /// (quick-bar play/stop), [exhausted] the stopRestoreFg terminal state,
+  /// [queueEnded] the "walked off the end of the queue" state and [outOfScope]
+  /// the current media being outside the run's 作用范围 (or a 简播 cut).
   ///
-  /// A closed gate must read exactly like "no 副音 at all": the foreground then
-  /// plays like any normal single-track player.
+  /// A closed gate or an inactive pair must read exactly like "no 副音 at all":
+  /// the foreground then plays like any normal single-track player. Omitting
+  /// [outOfScope] was the 「换到下一首后视频只剩 30% 音量、副音却静音」 report:
+  /// the pair had stopped for the new media but the duck kept multiplying the
+  /// foreground by [defaultFgPercent].
   static bool active({
     required bool enabled,
     required bool gateOpen,
     bool exhausted = false,
+    bool queueEnded = false,
+    bool outOfScope = false,
   }) =>
-      enabled && gateOpen && !exhausted;
+      enabled && gateOpen && !exhausted && !queueEnded && !outOfScope;
 
   /// Effective 0–100 engine volume for the FOREGROUND engine.
   static int foregroundEngineVolume({

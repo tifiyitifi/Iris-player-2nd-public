@@ -151,6 +151,14 @@ Future<void> openGestureRegionEditorDirectly(
   );
 }
 
+/// The actions the editor may assign to [intent].
+///
+/// Must be TOTAL over [GestureIntent]: the phone gesture guide's pencil opens
+/// this editor directly for every page it shows (pan / long-press-pan pages
+/// included), so a missing case is a reachable build failure, not a dead
+/// branch. Each list must also contain every action the default layouts
+/// configure for that intent, or the picker could not even display the current
+/// value (`test/gesture_allowed_actions_test.dart` pins both rules).
 List<GestureActionType> getAllowedActions(GestureIntent intent) {
   switch (intent) {
     case GestureIntent.tap:
@@ -179,11 +187,28 @@ List<GestureActionType> getAllowedActions(GestureIntent intent) {
         GestureActionType.activateTransientSpeed,
         GestureActionType.showPlaybackRateSelector,
       ];
-
+    case GestureIntent.panHorizontal:
+      // A horizontal drag feeds `dx` to the timeline (see the `seekTo`
+      // executor). The vertical adjusters read `dy`, so they would barely react
+      // to a horizontal vector and are deliberately not offered.
+      return [
+        GestureActionType.none,
+        GestureActionType.seekTo,
+      ];
     case GestureIntent.longPressPanHorizontal:
     case GestureIntent.longPressPanVertical:
-    case GestureIntent.panHorizontal:
+      // The long press arms a speed gesture; this pan keeps updating it.
+      return [
+        GestureActionType.none,
+        GestureActionType.updateTransientSpeed,
+        GestureActionType.updatePlaybackRateFromSelector,
+      ];
     case GestureIntent.hover:
-      throw UnimplementedError();
+      // Desktop hover is a discrete "point at the picture" gesture; the default
+      // (and only shipped use) is summoning the controls.
+      return [
+        GestureActionType.none,
+        GestureActionType.toggleControls,
+      ];
   }
 }

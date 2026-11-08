@@ -118,7 +118,15 @@ install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
 
-# Install iris-updater.bat and portable_update_by_zip
-install(FILES "${CMAKE_SOURCE_DIR}/iris-updater.bat" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+# Deliberately retained, install disabled on purpose.
+# windows/iris-updater.bat is the LEGACY updater: nothing under lib/ references
+# it any more, and every release path already strips it from the bundle
+# (ci.yml "Remove updater", scripts/build-windows-release.ps1). The file stays
+# in-tree for history; keeping the install line commented is what guarantees it
+# can never reach a shipped bundle again. Do not re-enable.
+# install(FILES "${CMAKE_SOURCE_DIR}/iris-updater.bat" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+
+# Install portable_update_by_zip.bat / .ps1 -- these are the LIVE updater that
+# ships next to the portable build.
 install(FILES "${CMAKE_SOURCE_DIR}/portable_update_by_zip.bat" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 install(FILES "${CMAKE_SOURCE_DIR}/portable_update_by_zip.ps1" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)

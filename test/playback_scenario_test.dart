@@ -1800,19 +1800,21 @@ void main() {
       await DbModule.scenarioRepo.addSource(
           scenarioId: id, storageId: 'st1', path: '', recursive: true);
 
-      // Effective order (name asc per segment): [k0, x0, k1, x1].
-      // k1 (index 2) is followed by x1 (the second occurrence of x).
+      // GLOBAL order (name asc across sources): [k0, k1, x0, x1] — the 'A'
+      // source and the root source both contribute each file, and the two
+      // copies of one file are adjacent by name.
       await store.setCurrentItem(
         occurrence: const PlaybackOccurrenceId(
             storageId: 'st1', path: 'A/k.mp4', occurrenceIndex: 1),
-        virtualPos: 2,
+        virtualPos: 1,
       );
       final next1 = await provider.next();
       expect(next1?.path, 'A/x.mp4');
-      expect(next1?.occurrenceIndex, 1);
+      expect(next1?.occurrenceIndex, 0);
 
       // x1 (index 3, last) → next is null. Without the occurrence-aware
-      // locate, x1 would be mistaken for x0 (index 1) → next would be k1.
+      // locate, x1 would be mistaken for x0 (index 2) → next would be nothing
+      // too, but x0 itself (index 2) must still resolve forward.
       await store.setCurrentItem(
         occurrence: const PlaybackOccurrenceId(
             storageId: 'st1', path: 'A/x.mp4', occurrenceIndex: 1),

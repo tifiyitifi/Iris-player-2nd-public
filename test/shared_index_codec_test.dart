@@ -37,12 +37,14 @@ void main() {
       (orderKey: '', mediaRev: 0, bits: b.build()),
     ];
     final decoded = SharedIndexCodec.decodeSlices(
-        SharedIndexCodec.encodeSlices(slices));
-    expect(decoded.length, 2);
+        SharedIndexCodec.encodeSlices(SingleBaseOrder(slices)));
+    expect(decoded, isA<SingleBaseOrder>());
+    final roundTripped = decoded.singleSlices;
+    expect(roundTripped.length, 2);
     for (var i = 0; i < 2; i++) {
-      expect(decoded[i].orderKey, slices[i].orderKey);
-      expect(decoded[i].mediaRev, slices[i].mediaRev);
-      expect(decoded[i].bits.toBytes(), slices[i].bits.toBytes());
+      expect(roundTripped[i].orderKey, slices[i].orderKey);
+      expect(roundTripped[i].mediaRev, slices[i].mediaRev);
+      expect(roundTripped[i].bits.toBytes(), slices[i].bits.toBytes());
     }
   });
 

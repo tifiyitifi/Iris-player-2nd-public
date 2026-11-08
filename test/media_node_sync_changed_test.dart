@@ -144,4 +144,49 @@ void main() {
     expect(rows.single.name, 'photo.JPG');
     expect(removed.changed, isTrue);
   });
+
+  test('browsing heals size/mtime the scan lane could not stat', () async {
+    // The row exists (written by a lane that reports size 0 / no mtime), so a
+    // plain re-browse used to be a no-op — and the queue's size sort stayed
+    // wrong forever. The listing's physical facts must trigger the rewrite.
+    await MediaNodeSyncService().syncDirectory(
+      storage: storage(),
+      items: [video('a.mp4')],
+      dirPath: const ['/tmp'],
+    );
+    final t = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+
+    final healed = await MediaNodeSyncService().syncDirectory(
+      storage: storage(),
+      items: [video('a.mp4').copyWith(size: 2048, lastModified: t)],
+      dirPath: const ['/tmp'],
+    );
+
+    expect(healed.changed, isTrue);
+    final row = (await DbModule.mediaNodesDao.getDirectChildren('s1', 'tmp'))
+        .single;
+    expect(row.sizeInBytes, 2048);
+    expect(row.modifiedAt!.millisecondsSinceEpoch, t.millisecondsSinceEpoch);
+  });
+
+  test('a lane without size/mtime never erases the stored values', () async {
+    final t = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+    await MediaNodeSyncService().syncDirectory(
+      storage: storage(),
+      items: [video('a.mp4').copyWith(size: 2048, lastModified: t)],
+      dirPath: const ['/tmp'],
+    );
+
+    final resync = await MediaNodeSyncService().syncDirectory(
+      storage: storage(),
+      items: [video('a.mp4')],
+      dirPath: const ['/tmp'],
+    );
+
+    expect(resync.changed, isFalse, reason: 'unknown is not a change');
+    final row = (await DbModule.mediaNodesDao.getDirectChildren('s1', 'tmp'))
+        .single;
+    expect(row.sizeInBytes, 2048);
+    expect(row.modifiedAt!.millisecondsSinceEpoch, t.millisecondsSinceEpoch);
+  });
 }

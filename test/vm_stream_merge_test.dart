@@ -258,27 +258,27 @@ void main() {
         ['a2.mp4', 'b2.mp4']);
   });
 
-  test('absolute DB paths match relative rule paths (Windows E:/ vs yb/)', () {
-    // The DB stores ABSOLUTE parent paths (`E:/yb/20260614`) while the rule
-    // path is storage-RELATIVE (`yb/20260614`). Both specifiedDir and
+  test('absolute DB paths match relative rule paths (Windows E:/ vs vault/)', () {
+    // The DB stores ABSOLUTE parent paths (`E:/vault/003`) while the rule
+    // path is storage-RELATIVE (`vault/003`). Both specifiedDir and
     // specifiedDirRecursive must still match — this was the root cause of
     // "rules enabled but groups=0".
     final groups = resolveGroupsForStream([
-      streamItem('E:/yb/20260614/a.mp4'),
-      streamItem('E:/yb/20260614/b.mp4'),
-      streamItem('E:/yb/20260614/sub/c.mp4'),
-    ], [rule(paths: ['yb/20260614'])]);
+      streamItem('E:/vault/003/a.mp4'),
+      streamItem('E:/vault/003/b.mp4'),
+      streamItem('E:/vault/003/sub/c.mp4'),
+    ], [rule(paths: ['vault/003'])]);
     expect(groups.byKey.keys, containsAll([
-      'st1:E:/yb/20260614/a.mp4',
-      'st1:E:/yb/20260614/b.mp4',
-      'st1:E:/yb/20260614/sub/c.mp4',
+      'st1:E:/vault/003/a.mp4',
+      'st1:E:/vault/003/b.mp4',
+      'st1:E:/vault/003/sub/c.mp4',
     ]), reason: 'recursive must match absolute parentPath against relative rule');
 
     final direct = resolveGroupsForStream([
-      streamItem('E:/yb/20260614/a.mp4'),
-      streamItem('E:/yb/20260614/sub/c.mp4'),
-    ], [rule(matchMode: VmMatchMode.specifiedDir, paths: ['yb/20260614'])]);
-    expect(direct.byKey.keys, ['st1:E:/yb/20260614/a.mp4'],
+      streamItem('E:/vault/003/a.mp4'),
+      streamItem('E:/vault/003/sub/c.mp4'),
+    ], [rule(matchMode: VmMatchMode.specifiedDir, paths: ['vault/003'])]);
+    expect(direct.byKey.keys, ['st1:E:/vault/003/a.mp4'],
         reason: 'non-recursive direct-children must match relative rule too');
   });
 

@@ -163,6 +163,99 @@ String? safTreeRelativeTo(String raw, String treeBase) {
   return rawDecoded.substring(baseDecoded.length + 1);
 }
 
+/// Human-readable display form of a SAF tree/document URI for scan progress.
+///
+/// Identity functions ([safSegmentsOf], [safReadableRelative]) must stay
+/// byte-stable, so display decoding lives here, display-only.
+///
+/// Handles both shapes seen on device:
+/// - tree form: `.../tree/<encTreeId>[/literalTail]`
+/// - document form: `.../tree/<encTreeId>/document/<encDocId>[/literalTail]`
+///   (the storage `basePath` SAF entries carry, e.g.
+///   `.../tree/primary%3Aa_all/document/primary%3Aa_all/vision`).
+///
+/// The volume prefix (`primary:`) is dropped and the encoded DOCUMENT ID is
+/// decoded for readability. Literal tail segments stay untouched: they are real
+/// names, so decoding would turn a file called `a%20b.mp4` into `a b.mp4`
+/// (same rule as [_safTailSegments]). Non-SAF input returns [raw] unchanged.
+String safDisplayPath(String raw) {
+  if (!isSafPath(raw)) return raw;
+  final prefix = _kSafTreePrefix.stringMatch(raw) ?? '';
+  if (prefix.isEmpty) return safReadableRelative(raw) ?? raw;
+  final rest = raw.substring(prefix.length);
+  const docMarker = '/document/';
+  if (rest.startsWith(docMarker)) {
+    final after = rest.substring(docMarker.length);
+    if (after.isEmpty) return safReadableRelative(prefix) ?? raw;
+    final parts = after.split('/');
+    final docIdEnc = parts.first;
+    if (docIdEnc.isEmpty) return safReadableRelative(prefix) ?? raw;
+    final docDecoded = _decodeSafSegment(docIdEnc);
+    final sep = docDecoded.indexOf(':');
+    final basePath = sep < 0 ? docDecoded : docDecoded.substring(sep + 1);
+    final baseSegs = basePath
+        .split('/')
+        .where((e) => e.isNotEmpty && e != '.' && e != '..')
+        .toList();
+    final tailSegs = <String>[
+      for (final p in parts.sublist(1))
+        if (p.isNotEmpty && p != '.' && p != '..') p,
+    ];
+    final all = [...baseSegs, ...tailSegs];
+    if (all.isEmpty) return safReadableRelative(prefix) ?? raw;
+    return all.join('/');
+  }
+  return safReadableRelative(raw) ?? raw;
+}
+
+/// Canonical container URI for a SAF document-form segment list, or null.
+///
+/// A document-form storage base (`.../tree/X/document/Y`) splits via
+/// [safSegmentsOf] into `[prefix, 'document', docId, ...literalTail]`. Passing
+/// that tail to `SafUtil().child` looks for a literal child named `document`
+/// and silently falls back to the tree root, so the scan lists the wrong
+/// folder.
+///
+/// It is NOT enough to join the segments verbatim: `SafUtil().list` wraps the
+/// URI in `DocumentFile.fromTreeUri`, which rebuilds it as
+/// `.../tree/<treeId>/document/<treeDocId>` from the TREE id — every literal
+/// segment after the doc id would be dropped and the tree root listed again.
+/// The whole document id (doc id + literal tail, `/`-separated) must therefore
+/// be percent-encoded into ONE path segment, exactly like
+/// `DocumentsContract.buildDocumentUriUsingTree` does:
+/// `.../tree/X/document/primary%3Aa_all%2Fvision`.
+///
+/// Returns null for tree-form paths (normal `child` resolution) and for a
+/// genuine folder literally named `document` (its next segment would not carry
+/// a document id's volume prefix).
+String? safDirectDocumentUri(List<String> path) {
+  if (path.length < 3) return null;
+  if (!isSafPath(path.first)) return null;
+  if (path[1] != 'document') return null;
+  final docIdEnc = path[2];
+  if (docIdEnc.isEmpty) return null;
+  final docId = _decodeSafSegment(docIdEnc);
+  // A document id carries the provider volume prefix (`primary:a_all`,
+  // `msf:123`, `raw:/storage/...`); a folder literally named `document`
+  // would not.
+  if (!docId.contains(':')) return null;
+  final tail = <String>[
+    for (final s in path.sublist(3))
+      if (s.isNotEmpty && s != '.' && s != '..') s,
+  ];
+  final fullId = tail.isEmpty ? docId : '$docId/${tail.join('/')}';
+  return '${path.first}/document/${Uri.encodeComponent(fullId)}';
+}
+
+/// Display form for a scan progress path: SAF URIs become readable
+/// (`a_all/vision/music`), local paths keep their filesystem spelling.
+/// Non-SAF input is returned with separators normalised only.
+String displayScanPath(String raw) {
+  if (raw.isEmpty) return raw;
+  if (isSafPath(raw)) return safDisplayPath(raw);
+  return raw.replaceAll('\\', '/');
+}
+
 /// Decodes any SAF tree URI into its readable directory tail, dropping the
 /// `content://<authority>/tree/` head and the provider volume prefix
 /// (`primary:` / `0000-0000:`), e.g.:
@@ -340,6 +433,29 @@ String canonicalPath(String raw) => _canonicalSafOrLegacy(raw);
 String canonicalKey(String storageId, String path) =>
     '$storageId:${canonicalPath(path)}';
 
+/// Canonical media key of a file ROW, keeping a SAF single-picked file's
+/// identity in its document `uri`.
+///
+/// A SAF single pick has an EMPTY [path] (the row was added by the picker, not
+/// by a directory scan), so `path.join('/')` would collapse EVERY such file of
+/// one storage onto `storageId:` — they then dedupe, rank and merge as ONE file,
+/// and a 简播 exclusion keyed on the uri form never matches. [path] is used
+/// whenever it is non-empty, so ordinary rows keep the historical key.
+///
+/// Mirrors `MediaNode.occurrencePath`; every producer of a Virtual-Media
+/// segment key (runtime merge, persisted queue build, exclusion lookup) must go
+/// through this one helper so the three cannot drift.
+String canonicalMediaKey(
+  String storageId,
+  List<String> path, {
+  String? uri,
+}) {
+  if (path.isEmpty && uri != null && uri.isNotEmpty) {
+    return canonicalKey(storageId, uri);
+  }
+  return canonicalKey(storageId, path.join('/'));
+}
+
 /// Canonical occurrence key `storageId:canonicalPath#occurrenceIndex` — the
 /// form the playback mirror and queue highlight compare against.
 String canonicalOccurrenceKey(String storageId, String path, int occurrenceIndex) =>
@@ -476,9 +592,9 @@ String sanitizePlayableUri(String uri) => normalizePathText(uri);
 /// Every path-keyed operation (delete, merge, progress key) must run the caller
 /// string through this before comparing, because the same file has historically
 /// arrived in several shapes:
-/// - Windows backslashes (`E:\yb\a.mp4`);
+/// - Windows backslashes (`E:\vault\a.mp4`);
 /// - the legacy `/E:/…` drive form (a producer bug that reached the DB);
-/// - duplicated / trailing slashes (`E://yb//a.mp4/`);
+/// - duplicated / trailing slashes (`E://vault//a.mp4/`);
 /// - UNC heads (`\\server\share\…`), whose literal `//` is identity.
 ///
 /// SAF (`content://…`) input is returned UNTOUCHED: the scheme and the encoded

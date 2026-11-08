@@ -74,19 +74,30 @@ void main() {
   group('advancePlayQueueOnCompleted query mode', () {
     test('not at the end advances regardless of repeat', () async {
       final store = _FakeStore(queryMode: true, virtualPos: 1, count: 3);
-      await advancePlayQueueOnCompleted(Repeat.none, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.none, store: store),
+        isTrue,
+        reason: 'the caller must know the queue really moved',
+      );
       expect(store.calls, ['next']);
     });
 
     test('at the end with repeat-none does not wrap', () async {
       final store = _FakeStore(queryMode: true, virtualPos: 2, count: 3);
-      await advancePlayQueueOnCompleted(Repeat.none, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.none, store: store),
+        isFalse,
+        reason: 'nothing advanced — a tail latch must not stay armed',
+      );
       expect(store.calls, isEmpty);
     });
 
     test('at the end with repeat-all wraps', () async {
       final store = _FakeStore(queryMode: true, virtualPos: 2, count: 3);
-      await advancePlayQueueOnCompleted(Repeat.all, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.all, store: store),
+        isTrue,
+      );
       expect(store.calls, ['next']);
     });
   });
@@ -94,19 +105,28 @@ void main() {
   group('advancePlayQueueOnCompleted legacy mode', () {
     test('advances to the next explicit index', () async {
       final store = _FakeStore(queryMode: false, single: _items(3), currentIndex: 0);
-      await advancePlayQueueOnCompleted(Repeat.none, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.none, store: store),
+        isTrue,
+      );
       expect(store.calls, ['update:1']);
     });
 
     test('at the end with repeat-none stays put', () async {
       final store = _FakeStore(queryMode: false, single: _items(3), currentIndex: 2);
-      await advancePlayQueueOnCompleted(Repeat.none, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.none, store: store),
+        isFalse,
+      );
       expect(store.calls, isEmpty);
     });
 
     test('at the end with repeat-all wraps to the first index', () async {
       final store = _FakeStore(queryMode: false, single: _items(3), currentIndex: 2);
-      await advancePlayQueueOnCompleted(Repeat.all, store: store);
+      expect(
+        await advancePlayQueueOnCompleted(Repeat.all, store: store),
+        isTrue,
+      );
       expect(store.calls, ['update:0']);
     });
   });

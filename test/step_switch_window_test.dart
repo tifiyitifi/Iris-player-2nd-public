@@ -3,30 +3,35 @@ import 'package:iris/hooks/player/live_progress_attribution.dart';
 import 'package:iris/hooks/player/seek_tuning.dart';
 import 'package:iris/models/enums/step_tail_finish_mode.dart';
 
-/// Regression test for the "a held step key skips an episode" defect.
+/// Regression test for the "rapid → at the tail parks / rewinds / skips an
+/// episode" family.
 ///
 /// The hooks cannot be exercised without a real engine, so the ORDERING of the
 /// production path is reproduced here with the real decision helpers:
 ///
 /// ```
-/// seekRelative → shouldAcceptStepPress → decideStepTail → armFirstPress
-///              → publish → armTailEofWindow → (300 ms) collapseTailStepToEof
-///              → consumeCollapse(mediaUri) → dispatchItemFinished
+/// seekRelative → (release a spent tail latch) → gateStepPress
+///              → decideStepTail (base = StepIntent.baseFor)
+///              → finishItem: dispatchItemFinished (NO seek) + tail latch
+///              → exactStep : one absolute seek, burst stays alive
+///              → step      : one native relative keyframe seek
 /// ```
 ///
-/// Every gate this harness models is load-bearing: removing one makes a real
-/// episode get skipped in the field
-/// (`.ai_knowledge/tmp/seeK/seekaftempvlog.txt`: Evelyn's tail finish advanced
-/// the queue, then presses arriving before the next open completed re-armed
-/// with Evelyn's duration and collapsed the new entry — `pos=311750ms
-/// dur=312106ms` logged against a 644 928 ms file).
+/// Two field defects are pinned here:
+///
+///  * the exact tail step seeked BACKWARDS, because the tail was judged against
+///    the nominal burst sum while the picture (keyframe landings round forward)
+///    was already further ahead — `base=962017ms reported=974271ms` produced a
+///    seek to 966017 ms on a 974 271 ms file;
+///  * a second press after the dispatch returned but before the hook rebound
+///    the next media dispatched a SECOND finish (`finish now` twice) and
+///    advanced twice, skipping one entry.
 void main() {
   const int stepMs = 4000;
-  const int eofWindowMs = 300;
   const String evelyn = 'file:///media/evelyn.mp4';
   const String nightParty = 'file:///media/night-party.mp4';
 
-  group('step burst across a queue advance', () {
+  group('a tail press across a queue advance', () {
     late _StepHarness h;
 
     setUp(() {
@@ -38,42 +43,155 @@ void main() {
       );
     });
 
-    test('a held key finishes the item ONCE and never skips the next one', () {
-      // 1. The user holds → at the tail: the first press arms, the rest are
-      //    swallowed (mpv drops the queued seek, `playloop.c:1240-1243`).
-      for (int i = 0; i < 21; i++) {
-        h.press(stepMs, nowMs: i * 10);
-      }
-      expect(h.seeks, 1, reason: 'only the first tail press may seek');
-      expect(h.advances, 0, reason: 'the finish waits for the EOF window');
+    test('the crossing press finishes ONCE, without a seek', () {
+      // 309.55 s + 4 s >= 312.106 s: the press asks to go past the end.
+      h.press(stepMs);
+      expect(h.finishes, 1);
+      expect(h.seeks, 0,
+          reason: 'a finish must never be turned into a keyframe seek');
+      expect(h.exactSteps, 0);
 
-      // 2. The window expires: exactly one advance.
-      h.tick(nowMs: eofWindowMs);
-      expect(h.advances, 1);
-      final int writesBeforeSwitch = h.progressWrites;
-
-      // 3. The queue advanced; the next media's open is still in flight, so the
-      //    hook still holds Evelyn's duration/position (the field log's shape).
-      h.advanceQueueWillOpen(nextUri: nightParty);
+      // The dispatch is in flight: a held key keeps arriving, every repeat is
+      // dropped (the engine's seek queue is left alone).
       for (int i = 0; i < 20; i++) {
-        h.press(stepMs, nowMs: eofWindowMs + 10 + i * 10);
+        h.press(stepMs);
       }
-      expect(h.seeks, 1,
-          reason: 'presses during the switch must not seek with stale state');
-      expect(h.advances, 1, reason: 'the next episode must not be collapsed');
-      expect(h.progressWrites, writesBeforeSwitch,
-          reason: 'no progress write may be attributed across the switch');
+      expect(h.finishes, 1);
+      expect(h.seeks, 0);
 
-      // 4. A stray timer from the switch window cannot fire either.
-      h.tick(nowMs: eofWindowMs * 3);
-      expect(h.advances, 1);
+      // Dispatch returned; the queue moved on but the next open is still in
+      // flight (the hook holds the new file with the OLD engine state).
+      h.advanceQueueWillOpen(nextUri: nightParty);
+      for (int i = 0; i < 5; i++) {
+        h.press(stepMs);
+      }
+      expect(h.finishes, 1, reason: 'the next episode must not be collapsed');
+      expect(h.seeks, 0, reason: 'no seek may resolve against the old state');
 
-      // 5. Open completed: the burst continues on the NEW media, from its head.
+      // Open completed: the burst resumes on the NEW media, from its head.
       h.openCompleted(uri: nightParty, durationMs: 644928, positionMs: 0);
-      h.press(stepMs, nowMs: 2000);
-      expect(h.seeks, 2, reason: 'presses resume on the new media');
-      expect(h.advances, 1);
+      h.press(stepMs);
+      expect(h.finishes, 1);
+      expect(h.seeks, 1);
       expect(h.lastSeekWasOn, nightParty);
+    });
+
+    test('a press after the dispatch returns does NOT finish twice', () {
+      // The exact field sequence: `[step-tail] finish now` → `completed advance
+      // handled=true` → another → `[step-tail] finish now` again →
+      // `provider.next` (seg1 skipped to seg2). `finishedDispatchInFlight` is
+      // already cleared at that point, and the hook still holds the old media,
+      // so ONLY the per-media tail latch can stop the second advance.
+      h.press(stepMs);
+      expect(h.finishes, 1);
+      h.dispatchReturned(); // finally: in-flight latch cleared, queue advanced
+      for (int i = 0; i < 8; i++) {
+        h.press(stepMs);
+      }
+      expect(h.finishes, 1, reason: 'one advance per media');
+      expect(h.dropped, 8);
+      expect(h.seeks, 0);
+      expect(h.exactSteps, 0);
+    });
+
+    test('the latch is released when the media actually changes', () {
+      h.press(stepMs);
+      h.dispatchReturned();
+      h.advanceQueueWillOpen(nextUri: nightParty);
+      h.openCompleted(uri: nightParty, durationMs: 644928, positionMs: 644000);
+      // Same burst, new media: the tail press finishes THAT entry.
+      h.press(stepMs);
+      expect(h.finishes, 2);
+      expect(h.finishedUri, nightParty);
+    });
+
+    test('a rewind off the tail releases the latch so it can finish again', () {
+      h.press(stepMs);
+      h.dispatchReturned();
+      // Repeat-one style restart of the SAME media: back at the head.
+      h.positionMs = 1000;
+      h.press(stepMs);
+      expect(h.seeks, 1, reason: 'a fresh step, not a dropped press');
+    });
+
+    test('a no-op advance releases the latch (single-item queue)', () {
+      // The most common setup: ONE entry, repeat off (watching a movie). The
+      // tail press finishes it, `advancePlayQueueOnCompleted` has nowhere to go,
+      // and playback keeps running to the real EOF. With the latch left armed on
+      // the tail, the gate dropped EVERY later press in both directions — the
+      // only way out was an absolute scrub.
+      h.press(stepMs);
+      expect(h.finishes, 1);
+      h.dispatchReturned(advanced: false);
+
+      h.press(-stepMs);
+      expect(h.dropped, 0);
+      expect(h.seeks, 1, reason: 'a rewind must always work');
+
+      h.press(stepMs);
+      expect(h.dropped, 0, reason: 'the forward press is alive again');
+    });
+
+    test('a backward press alone releases an armed latch', () {
+      // The advance is in flight (the hook still holds the OLD media), so the
+      // latch must keep dropping a second FINISH. It must not also drop a
+      // rewind: a rewind demonstrably leaves the tail, and `resetStepBurst`
+      // clears the latch before the gate ever sees the press.
+      h.press(stepMs);
+      h.dispatchReturned(); // queue advanced, the hook is not rebound yet
+      h.press(-stepMs);
+      expect(h.dropped, 0);
+      expect(h.seeks, 1);
+
+      // The latch is gone, so a press that sits back inside the final GOP takes
+      // the exact path instead of being swallowed.
+      h.positionMs = h.durationMs - 10000;
+      h.press(stepMs);
+      expect(h.dropped, 0);
+      expect(h.exactSteps, 1);
+    });
+
+    test('the tail is judged from the PICTURE, never from the stale sum', () {
+      // The field log, press by press: the accumulator chained +4 s nominal
+      // steps while the engine's keyframe landings ran far ahead, until the
+      // picture sat ON the end (974271 == duration) with the sum still at
+      // 962017. That press must finish — not exact-seek back to 966017.
+      final h2 = _StepHarness(
+        fileUri: evelyn,
+        openedUri: evelyn,
+        durationMs: 974271,
+        positionMs: 890017,
+      );
+      for (int i = 0; i < 20; i++) {
+        h2.press(stepMs, pictureAhead: 974271);
+      }
+      expect(h2.finishes, 1);
+      expect(h2.exactSteps, 0,
+          reason: 'the crossing press must never exact-seek backwards');
+      expect(h2.lastExactTarget, isNull);
+    });
+
+    test('an exact tail step never lands behind the picture', () {
+      // Inside the final GOP but not the end: 310 s + 3 s of a 322.293 s file.
+      final h2 = _StepHarness(
+        fileUri: evelyn,
+        openedUri: evelyn,
+        durationMs: 322293,
+        positionMs: 310000,
+      );
+      h2.press(3000);
+      expect(h2.exactSteps, 1);
+      expect(h2.finishes, 0);
+      expect(h2.seeks, 0,
+          reason: 'the exact path replaces the relative keyframe seek');
+      expect(h2.lastExactTarget, 313000);
+
+      // A later press while the picture already jumped ahead (keyframe landing
+      // of the previous exact seek) must seek FORWARD from the picture.
+      h2.positionMs = 318000;
+      h2.press(3000);
+      expect(h2.lastExactTarget, 321000);
+      expect(h2.lastExactTarget! >= h2.positionMs, isTrue);
     });
 
     test('presses during the advance dispatch are dropped too', () {
@@ -81,37 +199,20 @@ void main() {
       // queue actually changing: `file`/`opened` still describe Evelyn.
       h.advancing = true;
       for (int i = 0; i < 5; i++) {
-        h.press(stepMs, nowMs: i * 10);
+        h.press(stepMs);
       }
       expect(h.seeks, 0);
-      expect(h.progressWrites, 0);
-      expect(h.advances, 0);
+      expect(h.exactSteps, 0);
+      expect(h.finishes, 0);
+      expect(h.dropped, 5);
     });
 
-    test('an abandoned arm cannot collapse the entry that replaced it', () {
-      // Defense in depth: even if a press slipped past the gate, the arm carries
-      // the media it was raised for (mpv clears the queued seek at the switch,
-      // `player/loadfile.c:1825-1826`).
-      expect(h.tail.armFirstPress(evelyn, 312106), isTrue);
-      h.advanceQueueWillOpen(nextUri: nightParty);
-      h.tick(nowMs: eofWindowMs);
-      expect(h.advances, 0);
-      expect(h.tail.consumeCollapse(mediaUri: nightParty), isFalse);
-    });
-
-    test('an absolute seek inside the EOF window drops the pending finish', () {
-      // Tail press → the arm + its 300 ms window. The user drags back to the
-      // middle before it expires: the hooks' `seek()` (src != 'step') drops the
-      // whole step bookkeeping, so the timer must find nothing to collapse.
-      // Without it the armed press advanced the queue from a position the user
-      // had already left (the fvp hook clears only the OSD/intent before this
-      // parity fix).
-      h.press(stepMs, nowMs: 0);
-      expect(h.seeks, 1);
-      h.absoluteSeek();
-      h.tick(nowMs: eofWindowMs);
-      expect(h.advances, 0,
-          reason: 'a seek away from the tail cancels the finish it armed');
+    test('a paused tail press is held (no advance, no seek)', () {
+      h.playing = false;
+      h.press(stepMs);
+      expect(h.finishes, 0);
+      expect(h.seeks, 0);
+      expect(h.exactSteps, 0);
     });
   });
 }
@@ -125,93 +226,120 @@ class _StepHarness {
     required this.positionMs,
   });
 
-  final MpvSeekTailState tail = MpvSeekTailState();
-
   String fileUri;
   String? openedUri;
   int durationMs;
   int positionMs;
+  bool playing = true;
   bool advancing = false;
 
-  int seeks = 0;
-  int progressWrites = 0;
-  int advances = 0;
-  int dropped = 0;
-  int? _collapseDueMs;
-  String? _armedUri;
-  String? lastSeekWasOn;
+  /// The hook's burst accumulator ([StepIntent]).
+  final StepIntent intent = StepIntent();
 
-  /// One ←/→ press, mirroring `seekRelative` + `applyTailStep`.
-  void press(int deltaMs, {required int nowMs}) {
-    // seekRelative's first gate (the SAME function the hooks call).
+  /// The hook's per-media tail finish latch.
+  String? finishedUri;
+
+  int seeks = 0;
+  int exactSteps = 0;
+  int finishes = 0;
+  int dropped = 0;
+  String? lastSeekWasOn;
+  int? lastExactTarget;
+
+  /// One ←/→ press, mirroring `seekRelative` → `applyTailStep`.
+  ///
+  /// [pictureAhead] lets a test model the engine's keyframe landing running
+  /// ahead of the nominal sum (the position the picture is really on).
+  void press(int deltaMs, {int? pictureAhead}) {
+    final int reportedMs = pictureAhead ?? positionMs;
+    // A rewind leaves the tail, so `seekRelative` resets the burst (which also
+    // clears the tail latch) BEFORE the gate. The gate itself is what drops
+    // presses while a latch is armed, so a backward press could never release
+    // it — the finished item stayed un-steppable until an absolute seek.
+    if (deltaMs < 0) {
+      intent.reset();
+      finishedUri = null;
+    }
+    // seekRelative releases a spent latch BEFORE the gate.
+    if (finishedUri != null &&
+        (finishedUri != fileUri ||
+            stepTailLatchReusable(
+              reportedMs: reportedMs,
+              durationMs: durationMs,
+            ))) {
+      finishedUri = null;
+    }
+    // The gate the hooks call (same function, same latch semantics).
     if (gateStepPress(
           mediaUri: fileUri,
           openedUri: openedUri,
           dispatchInFlight: advancing,
-        ) ==
-        StepPressGate.dropMediaSwitching) {
+          finishedUri: finishedUri,
+        ) !=
+        StepPressGate.accept) {
       dropped++;
       return;
     }
-    if (deltaMs < 0) tail.reset();
+    final int baseMs = intent.baseFor(
+      reportedMs: reportedMs,
+      lockIntentMs: null,
+      deltaMs: deltaMs,
+    );
     final StepTailAction action = decideStepTail(
-      reportedMs: positionMs,
+      reportedMs: baseMs,
       deltaMs: deltaMs,
       durationMs: durationMs,
       mode: StepTailFinishMode.strict,
-      playing: true,
+      playing: playing,
     );
     switch (action) {
-      case StepTailAction.hold:
-        return;
       case StepTailAction.step:
         seeks++;
         lastSeekWasOn = fileUri;
-        progressWrites++;
+        intent.note((baseMs + deltaMs).clamp(0, durationMs), deltaMs: deltaMs);
+        return;
+      case StepTailAction.exactStep:
+        exactSteps++;
+        lastSeekWasOn = fileUri;
+        lastExactTarget = stepSeekTargetMs(
+          reportedMs: baseMs,
+          deltaMs: deltaMs,
+          durationMs: durationMs,
+        );
+        intent.note(lastExactTarget!, deltaMs: deltaMs);
+        return;
+      case StepTailAction.hold:
+        intent.reset();
         return;
       case StepTailAction.finishItem:
-        if (!tail.armFirstPress(fileUri, durationMs)) return;
-        seeks++;
-        lastSeekWasOn = fileUri;
-        progressWrites++;
-        // armTailEofWindow captures the media the arm belongs to.
-        _armedUri = fileUri;
-        _collapseDueMs = nowMs + 300;
+        finishes++;
+        // `dispatchItemFinished` sets the latch and the in-flight flag
+        // synchronously, before its first await.
+        finishedUri = fileUri;
+        advancing = true;
         return;
     }
   }
 
-  /// Fires the EOF window (mirrors `armTailEofWindow`'s Timer callback and
-  /// `collapseTailStepToEof`).
-  void tick({required int nowMs}) {
-    final int? due = _collapseDueMs;
-    if (due == null || nowMs < due) return;
-    _collapseDueMs = null;
-    final String? uri = _armedUri;
-    _armedUri = null;
-    if (uri == null) return;
-    if (fileUri != uri || openedUri != uri) return;
-    if (!tail.consumeCollapse(mediaUri: uri)) return;
-    // dispatchItemFinished resets the arm before advancing (so a repeat-one
-    // loop of the SAME media can arm again).
-    tail.reset();
-    advances++;
+  /// The dispatch's `finally`: `finishedDispatchInFlight = false`. The queue has
+  /// advanced, but the hook still holds the OLD media until it rebinds.
+  ///
+  /// [advanced] is false when the advance door had nowhere to go (single-entry
+  /// queue with repeat off, scenario tail, a VM segment that was already
+  /// advancing): the hook then drops the latch, because nothing is coming to
+  /// rebind the media and a latch at the tail would swallow every later press.
+  void dispatchReturned({bool advanced = true}) {
+    advancing = false;
+    if (!advanced) finishedUri = null;
   }
 
-  /// An ABSOLUTE seek (`src != 'step'`): both hooks drop the whole step
-  /// bookkeeping, tail arm and its EOF window included (media_kit already did;
-  /// the fvp hook clears them through the same `resetStepBurst`).
-  void absoluteSeek() {
-    tail.reset();
-    _armedUri = null;
-    _collapseDueMs = null;
-  }
-
-  /// The queue advanced but the new media's open is still in flight: the hook
-  /// keeps the PREVIOUS duration/position (the field log's `end=312106ms`).
+  /// The "queue advanced, next open in flight" leg.
   void advanceQueueWillOpen({required String nextUri}) {
+    advancing = false;
     fileUri = nextUri;
     openedUri = null;
+    intent.reset();
+    finishedUri = null;
   }
 
   void openCompleted({

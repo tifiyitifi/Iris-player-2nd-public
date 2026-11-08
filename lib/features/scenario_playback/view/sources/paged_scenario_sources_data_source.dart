@@ -33,6 +33,7 @@ import 'package:iris/features/scenario_playback/view/dialogs/show_override_confi
 import 'package:iris/models/file.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_storage_store.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 
 enum ScenarioManageItemKind { source, exclude, include }
@@ -1077,7 +1078,7 @@ int manageKindOrdinal(ScenarioManageItemKind kind) => switch (kind) {
 
 /// Sort key of [item] for the given [sortBy] field (D8/D14).
 ///
-/// - name → case-insensitive basename
+/// - name → the natural sort key of the basename (1, 2, 10)
 /// - storage → case-insensitive storage display name
 /// - path → case-insensitive `$storageId:path` (root for empty/null path)
 /// - type → kind ordinal (source < include < exclude)
@@ -1085,7 +1086,7 @@ int manageKindOrdinal(ScenarioManageItemKind kind) => switch (kind) {
 Comparable manageSortKeyOf(ScenarioManageItem item, ScenarioManageSortBy sortBy) {
   switch (sortBy) {
     case ScenarioManageSortBy.name:
-      return item.sortName.toLowerCase();
+      return naturalSortKey(item.sortName);
     case ScenarioManageSortBy.storage:
       return item.storageName.toLowerCase();
     case ScenarioManageSortBy.path:

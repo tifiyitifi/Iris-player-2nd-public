@@ -29,7 +29,8 @@ void main() {
   /// Epoch-based, so the expected order does not depend on the local timezone.
   DateTime at(int ms) => DateTime.fromMillisecondsSinceEpoch(ms);
 
-  Future<void> seed(String path, {DateTime? modifiedAt}) async {
+  Future<void> seed(String path,
+      {DateTime? modifiedAt, int? width, int? height}) async {
     final segments = path.split('/');
     await dao.insertNode(MediaNode.file(
       id: 'st1:$path',
@@ -38,6 +39,8 @@ void main() {
       name: segments.last,
       mediaType: MediaType.video,
       modifiedAt: modifiedAt,
+      width: width,
+      height: height,
     ));
   }
 
@@ -192,6 +195,35 @@ void main() {
       final node = await repo
           .getNodeByPath(storageId: 'st1', path: const ['A', 'aaa.mp4']);
       expect(node!.modifiedAt!.millisecondsSinceEpoch, 1400);
+    });
+  });
+
+  group('resolution (pixelCount) order is not a silent name fallback', () {
+    setUp(() async {
+      // Resolutions in the OPPOSITE order to the names: a path that forgets the
+      // pixelCount sort column falls back to `natural_name` and returns
+      // a.mp4, m.mp4, z.mp4 instead of the resolution order.
+      await seed('A/z.mp4', width: 1280, height: 720); // 921 600
+      await seed('A/a.mp4', width: 3840, height: 2160); // 8 294 400
+      await seed('A/m.mp4'); // never probed → NULL, sorts last
+    });
+
+    test('getPagedNodes desc: biggest first, unknown last', () async {
+      expect(
+        await paged(
+            sortField: MediaSortField.pixelCount,
+            sortDirection: SortDirection.desc),
+        ['a.mp4', 'z.mp4', 'm.mp4'],
+      );
+    });
+
+    test('getPagedNodesForSources agrees with the reference path', () async {
+      expect(
+        await pagedForSources(
+            sortField: MediaSortField.pixelCount,
+            sortDirection: SortDirection.desc),
+        ['a.mp4', 'z.mp4', 'm.mp4'],
+      );
     });
   });
 }

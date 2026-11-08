@@ -43,10 +43,19 @@ class MainActivity : FlutterActivity() {
     // setup would race (invokeMethod before any Dart handler drops the msg).
     private var pendingLaunchId: String? = null
 
+    /** Worker pool for media probing: header reads must never block the UI thread. */
+    private val probeExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         // ── iris/media_probe (pre-existing scan-probe channel) ──
+        //
+        // BOTH entry points run on a small worker pool, never on the platform
+        // main thread: MediaMetadataRetriever.setDataSource() opens the file and
+        // parses the header, which measured 300–450 ms per call under load on a
+        // 2019 device (logcat: "Slow Binder ... IMediaMetadataRetriever"). On the
+        // main thread that is a frozen UI for the whole metadata pass.
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "iris/media_probe"
@@ -58,10 +67,42 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                         return@setMethodCallHandler
                     }
-                    try {
-                        result.success(probeMediaInfo(target))
-                    } catch (_: Exception) {
-                        result.success(null)
+                    probeExecutor.execute {
+                        val info = try {
+                            probeMediaInfo(target)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        runOnUiThread { result.success(info) }
+                    }
+                }
+                // Batch form: ONE channel round trip per probe batch instead of
+                // one per file, so a 2k-file fallback pass does not pay 2k
+                // platform-channel waits.
+                "probeBatch" -> {
+                    val targets = call.argument<List<String>>("targets")
+                    if (targets.isNullOrEmpty()) {
+                        result.success(emptyList<Map<String, Int?>>())
+                        return@setMethodCallHandler
+                    }
+                    probeExecutor.execute {
+                        val out = ArrayList<Map<String, Int?>>(targets.size)
+                        for (target in targets) {
+                            if (target.isBlank()) {
+                                out.add(emptyMap())
+                            } else {
+                                out.add(
+                                    try {
+                                        probeMediaInfo(target)
+                                    } catch (_: Exception) {
+                                        // "unprobeable" is a normal outcome: the
+                                        // Dart side treats empty as unknown.
+                                        emptyMap<String, Int?>()
+                                    }
+                                )
+                            }
+                        }
+                        runOnUiThread { result.success(out) }
                     }
                 }
                 else -> result.notImplemented()
@@ -168,6 +209,13 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         // Warm-start delivery while the activity is already alive.
         forwardLaunchEntryId(intent)
+    }
+
+    override fun onDestroy() {
+        // The pool is owned by the activity; leaving it alive across recreation
+        // would keep two probing threads per rotation.
+        probeExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     private fun forwardLaunchEntryId(intent: Intent?) {

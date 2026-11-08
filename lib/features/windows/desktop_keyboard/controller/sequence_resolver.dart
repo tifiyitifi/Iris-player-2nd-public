@@ -91,13 +91,26 @@ SequenceVerdict resolveSequence({
     if (follower != null) return Complete(follower); // R2
   }
 
-  final standalone = kPotPlayerKeyMap[KeyCombo(
+  final rawCombo = KeyCombo(
     input.key,
     ctrl: input.ctrl,
     alt: input.alt,
     shift: input.shift,
-  )];
-  if (standalone != null) return PassThroughStandalone(standalone); // R3
+  );
+  final standalone = kPotPlayerKeyMap[canonicalKeyCombo(rawCombo)];
+  if (standalone != null) {
+    // R3 must honour the repeat guard the idle path applies. The first press of
+    // a standalone key closes the buffer, so the reachable case is a repeat that
+    // lands WHILE the buffer is open (arm `;` while the key is already held):
+    // without this guard it executed once per auto-repeat — Shift+PgDn spawned
+    // a window per repeat, plain PgDn walked the queue. Swallow the repeat; the
+    // buffer ends with it, like any other discarded key.
+    if (input.isRepeat &&
+        !kRepeatablePotPlayerActions.contains(standalone)) {
+      return const Discard();
+    }
+    return PassThroughStandalone(standalone); // R3
+  }
 
   return const Discard(); // R4
 }

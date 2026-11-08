@@ -24,6 +24,7 @@ import 'package:iris/features/scenario_playback/scan/commands/scenario_source_sc
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/tag_play/commands/tag_play_actions.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
+import 'package:iris/features/virtual_media/view/vm_manager_page.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keyboard_scheme.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/show_jump_to_time_dialog.dart';
@@ -111,6 +112,9 @@ class MoreMenuButton extends HookWidget {
         useAppStore().select(context, (s) => s.phoneLandscapeUseMode);
     final bool metaSettingsOn =
         useAppStore().select(context, (s) => s.useMetadataSettings);
+    // Virtual-media feature availability (metadata stack on). Read in build:
+    // itemBuilder must stay select-free.
+    final bool vmEnabled = VirtualMediaGate.enabled;
     // This button is instantiated by BOTH bars and `LegacyControlBar` builds
     // its own, so the menu has to ask which LAYOUT it is attached to — the bar
     // it lives in, not just the stored mode. `ControlBar.build` can read
@@ -262,6 +266,9 @@ class MoreMenuButton extends HookWidget {
         // adjuster is a rarely-used setting, so it left the primary bar.
         _seekStepItem(context, t, seekStepSec),
         _tagPlayItem(context, t),
+        // Virtual-media management: the only live More-menu door (the legacy
+        // sheet below stays sealed). The manager page owns the master switch.
+        if (vmEnabled) _virtualMediaManagerItem(context, t),
         if (NewWindowLauncher.isSupported && currentFileForNewWindow != null)
           _newWindowItem(context, t, currentFileForNewWindow, workspaceSort),
         if (scanScenarioId != null)
@@ -438,6 +445,22 @@ class MoreMenuButton extends HookWidget {
             : null,
       ),
       onTap: onToggle,
+    );
+  }
+
+  /// Virtual-media manager (rules CRUD + global pause switch) — the live
+  /// More-menu entry. The legacy [openVirtualMediaSheet] path stays sealed.
+  PopupMenuItem _virtualMediaManagerItem(BuildContext context, t) {
+    return PopupMenuItem(
+      child: ListTile(
+        mouseCursor: SystemMouseCursors.click,
+        leading: const Icon(Icons.auto_awesome_motion_rounded,
+            size: kMenuTileIconSizeTiny),
+        title: Text(t.menu_virtual_media),
+      ),
+      onTap: () {
+        showControlForHover(showVirtualMediaManager(context));
+      },
     );
   }
 

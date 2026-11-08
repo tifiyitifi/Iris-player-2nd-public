@@ -11,7 +11,7 @@ import 'package:iris/features/virtual_media/resolver/vm_preflight.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resume_target.dart';
 import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
-import 'package:iris/features/virtual_media/rule/vm_natural_compare.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/features/virtual_media/scan/vm_scan_facade.dart';
 
 VirtualSegment seg(String name, {int? durationMs, String parent = 'd'}) {
@@ -197,8 +197,8 @@ void main() {
 
     test('natural compare orders 2 before 10 without per-char lowercasing crash',
         () {
-      expect(vmNaturalCompare('ep2.mp4', 'ep10.mp4'), lessThan(0));
-      expect(vmNaturalCompare('EP2.mp4', 'ep10.mp4'), lessThan(0));
+      expect(naturalCompare('ep2.mp4', 'ep10.mp4'), lessThan(0));
+      expect(naturalCompare('EP2.mp4', 'ep10.mp4'), lessThan(0));
     });
   });
 }

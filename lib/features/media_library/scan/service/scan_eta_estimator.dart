@@ -1,8 +1,9 @@
 /// Throughput-based ETA estimator for the recursive scan.
 ///
-/// The scan's denominator (`totalDirs`) GROWS as directories are discovered, so
-/// the remaining count is a moving target. The only honest model is a smoothed
-/// processing RATE:
+/// The scan's denominator (`totalDirs`) starts as the size the STORED snapshot
+/// already knows and only GROWS when the tree turns out to be bigger, so the
+/// remaining count is still a moving target. The only honest model is a
+/// smoothed processing RATE:
 ///
 ///   eta = (totalDirs - scannedDirs) / rate
 ///
@@ -11,6 +12,7 @@
 /// unsmoothed ETA would flicker / jump backwards; the EWMA (α = [alpha]) keeps
 /// the number stable. Before enough directories have completed the estimate is
 /// meaningless, so [eta] returns null and the UI shows "estimating…".
+/// `totalDirs == 0` means "unknown" (never scanned) and is also null.
 ///
 /// Pure and Flutter-free so the policy is unit-testable in isolation.
 class ScanEtaEstimator {
@@ -52,7 +54,13 @@ class ScanEtaEstimator {
   }
 
   /// Estimated remaining time, or null while warming up / rate unusable.
+  ///
+  /// [totalDirs] of 0 means the total is UNKNOWN (a volume that was never
+  /// scanned, so the scan has no denominator floor). Returning
+  /// `Duration.zero` there — which `remaining = 0 - scanned` used to do — made
+  /// the overlay promise "0 s left" while the walk had just started.
   Duration? eta(int scannedDirs, int totalDirs) {
+    if (totalDirs <= 0) return null;
     final rate = _rate;
     if (rate == null || rate <= 0) return null;
     if (scannedDirs < minSamples) return null;

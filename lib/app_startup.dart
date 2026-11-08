@@ -252,6 +252,12 @@ Future<void> completeStartupInitialization() async {
     'playback.dropAppendPercent',
     () => DragDropGate.enabled,
   );
+  // The drop auto-scan switch exists only where the drop path does; it is the
+  // same feature surface as the split row above.
+  DefVisibility.registerKey(
+    'playback.dropAutoScan',
+    () => DragDropGate.enabled,
+  );
   // Demuxer cache preset steers the media_kit (mpv) backend only; hide it
   // while fvp is active (unavailable functionality must never be shown).
   DefVisibility.registerKey(

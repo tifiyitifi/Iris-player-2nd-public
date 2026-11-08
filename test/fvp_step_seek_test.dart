@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/hooks/player/seek_tuning.dart';
 import 'package:iris/hooks/player/use_fvp_player.dart';
 
 /// The fvp backend has no mpv-native relative keyframe seek, so a STEP seek
@@ -82,12 +83,13 @@ void main() {
   // answers a target it cannot reach with "the last key frame of media"
   // (`generated_bindings` `seek` doc). That substitution is the visible tail
   // rollback, so a step landing in the tail must take the EXACT path instead.
-  group('fvp step tail (fvpStepNeedsExactSeek)', () {
+  // The window is shared with the media_kit hook (`stepNeedsExactSeek`).
+  group('shared step tail exact window (stepNeedsExactSeek)', () {
     const int dur = 60000;
 
     test('a mid-file step keeps the fast key-frame seek', () {
       expect(
-        fvpStepNeedsExactSeek(targetMs: 30000, durationMs: dur, deltaMs: 5000),
+        stepNeedsExactSeek(targetMs: 30000, durationMs: dur, deltaMs: 5000),
         isFalse,
       );
     });
@@ -96,11 +98,11 @@ void main() {
       // 55s + 5s lands on the final second: a key-frame landing there can only be
       // the media's last key frame.
       expect(
-        fvpStepNeedsExactSeek(targetMs: 59900, durationMs: dur, deltaMs: 5000),
+        stepNeedsExactSeek(targetMs: 59900, durationMs: dur, deltaMs: 5000),
         isTrue,
       );
       expect(
-        fvpStepNeedsExactSeek(targetMs: 58000, durationMs: dur, deltaMs: 5000),
+        stepNeedsExactSeek(targetMs: 58000, durationMs: dur, deltaMs: 5000),
         isTrue,
       );
     });
@@ -109,34 +111,34 @@ void main() {
       // A large step reaches further back: 45s + 12s → 57s, still "this press
       // reaches the end area", so it must not be served from a key frame.
       expect(
-        fvpStepNeedsExactSeek(targetMs: 57000, durationMs: dur, deltaMs: 12000),
+        stepNeedsExactSeek(targetMs: 57000, durationMs: dur, deltaMs: 12000),
         isTrue,
       );
     });
 
     test('a short step next to a long final GOP still switches', () {
-      // Floor of kFvpStepTailExactWindowMs: a 1 s step at 58.5 s.
+      // 10 s floor: a 1 s step at 55 s is inside the default x264 GOP.
       expect(
-        fvpStepNeedsExactSeek(targetMs: 58500, durationMs: dur, deltaMs: 1000),
+        stepNeedsExactSeek(targetMs: 55000, durationMs: dur, deltaMs: 1000),
         isTrue,
       );
-      expect(kFvpStepTailExactWindowMs, greaterThan(1000));
+      expect(kStepTailExactWindowMs, 10000);
     });
 
     test('a backward step is judged by distance, not direction', () {
       expect(
-        fvpStepNeedsExactSeek(targetMs: 59200, durationMs: dur, deltaMs: -5000),
+        stepNeedsExactSeek(targetMs: 59200, durationMs: dur, deltaMs: -5000),
         isTrue,
       );
       expect(
-        fvpStepNeedsExactSeek(targetMs: 20000, durationMs: dur, deltaMs: -5000),
+        stepNeedsExactSeek(targetMs: 20000, durationMs: dur, deltaMs: -5000),
         isFalse,
       );
     });
 
     test('an unknown duration never forces the exact path', () {
       expect(
-        fvpStepNeedsExactSeek(targetMs: 1000, durationMs: 0, deltaMs: 5000),
+        stepNeedsExactSeek(targetMs: 1000, durationMs: 0, deltaMs: 5000),
         isFalse,
       );
     });

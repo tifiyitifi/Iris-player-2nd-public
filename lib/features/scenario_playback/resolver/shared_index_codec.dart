@@ -2,7 +2,45 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:iris/features/scenario_playback/resolver/bit_vector.dart';
+import 'package:iris/features/scenario_playback/resolver/merged_order_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_row_overlay.dart';
+
+/// One stored base order.
+///
+/// [SingleBaseOrder] is the v44 shape: one storage's shared order plus a
+/// membership bitmap. [MultiBaseOrder] is the v52 shape: a globally sorted base
+/// order over several streams, stored as a [MergedOrder] (and used only when the
+/// queue is NOT a single storage's filtered subsequence — otherwise the bitmap is
+/// both smaller and byte-identical to what older builds wrote).
+sealed class StoredBaseOrder {
+  const StoredBaseOrder();
+}
+
+class SingleBaseOrder extends StoredBaseOrder {
+  const SingleBaseOrder(this.slices);
+
+  /// One entry per source, in `sortOrder` (the virtual space is their
+  /// concatenation). This is the shape every single-source build still writes.
+  final List<({String orderKey, int mediaRev, BitVector bits})> slices;
+}
+
+class MultiBaseOrder extends StoredBaseOrder {
+  const MultiBaseOrder(this.order);
+
+  final MergedOrder order;
+}
+
+extension StoredBaseOrderSlices on StoredBaseOrder {
+  /// The concatenation slices, or an empty list for a merged order.
+  ///
+  /// Convenience for tests and legacy call sites; production code branches on
+  /// the kind explicitly so a merged order can never be mistaken for a bitmap.
+  List<({String orderKey, int mediaRev, BitVector bits})> get singleSlices =>
+      switch (this) {
+        SingleBaseOrder(:final slices) => slices,
+        MultiBaseOrder() => const [],
+      };
+}
 
 /// Binary codec for the shared-order derived index blobs.
 ///
@@ -13,7 +51,11 @@ import 'package:iris/features/scenario_playback/resolver/shared_row_overlay.dart
 class SharedIndexCodec {
   const SharedIndexCodec._();
 
-  static const int version = 3;
+  static const int version = 4;
+
+  /// Slice kinds in the `slices` blob.
+  static const int kindSingle = 0;
+  static const int kindMerged = 1;
 
   // ── Bitmaps ──
 
@@ -36,39 +78,121 @@ class SharedIndexCodec {
 
   // ── Slices ──
 
-  /// One shared-order slice: the order key, the media revision the order was
-  /// built against, and its membership bitmap.
+  /// `[version][kind]` followed by the kind's payload.
   ///
-  /// The revision travels WITH the slice so the read side needs no revision
-  /// plumbing: it reads the order at the revision the index was built with, and
-  /// a newer revision makes the order look absent (the caller falls back).
-  static Uint8List encodeSlices(
-      List<({String orderKey, int mediaRev, BitVector bits})> slices) {
-    final w = _Writer()
-      ..varint(version)
-      ..varint(slices.length);
-    for (final s in slices) {
-      w.string(s.orderKey);
-      w.varint(s.mediaRev);
-      w.bytes(encodeBitmap(s.bits));
+  /// A [SingleBaseOrder] carries its `(orderKey, mediaRev)` IN the blob so the
+  /// read side needs no revision plumbing: it reads the order at the revision
+  /// the index was built with, and a newer revision makes the order look absent
+  /// (the caller falls back).
+  static Uint8List encodeSlices(StoredBaseOrder order) {
+    final w = _Writer()..varint(version);
+    switch (order) {
+      case SingleBaseOrder():
+        w
+          ..varint(kindSingle)
+          ..varint(order.slices.length);
+        for (final s in order.slices) {
+          w
+            ..string(s.orderKey)
+            ..varint(s.mediaRev)
+            ..bytes(encodeBitmap(s.bits));
+        }
+      case MultiBaseOrder():
+        w
+          ..varint(kindMerged)
+          ..bytes(order.order.toBytes());
     }
     return w.done();
   }
 
-  static List<({String orderKey, int mediaRev, BitVector bits})> decodeSlices(
-      Uint8List data) {
+  static StoredBaseOrder decodeSlices(Uint8List data) {
     final r = _Reader(data);
     _checkVersion(r.varint());
-    final n = r.varint();
-    return [
-      for (var i = 0; i < n; i++)
-        (
-          orderKey: r.string(),
-          mediaRev: r.varint(),
-          bits: decodeBitmap(r.bytes()),
-        ),
-    ];
+    final kind = r.varint();
+    switch (kind) {
+      case kindSingle:
+        final n = r.varint();
+        return SingleBaseOrder([
+          for (var i = 0; i < n; i++)
+            (
+              orderKey: r.string(),
+              mediaRev: r.varint(),
+              bits: decodeBitmap(r.bytes()),
+            ),
+        ]);
+      case kindMerged:
+        final merged = MergedOrder.decode(r.bytes());
+        if (merged == null) {
+          throw const FormatException('corrupt merged base order');
+        }
+        return MultiBaseOrder(merged);
+      default:
+        throw FormatException('unknown base-order kind $kind');
+    }
   }
+
+  // ── Element order (VM display order) ──
+
+  /// Version tag of [encodeElementOrder].
+  static const int elementOrderVersion = 1;
+
+  /// Encodes the element-axis permutation: `rankByOrdinal[ordinal]` is the base
+  /// anchor rank the queue displays at [ordinal].
+  ///
+  /// Zigzag deltas from the previous ordinal (starting at -1): a VM-sorted view
+  /// is NOT monotonic in anchor rank, so a plain delta would go negative.
+  static Uint8List encodeElementOrder(Int32List rankByOrdinal) {
+    final w = _Writer()
+      ..varint(elementOrderVersion)
+      ..varint(rankByOrdinal.length);
+    var previous = -1;
+    for (final rank in rankByOrdinal) {
+      w.varint(_zigzag(rank - previous));
+      previous = rank;
+    }
+    return w.done();
+  }
+
+  /// Decodes [encodeElementOrder]'s output, or throws [FormatException] when it
+  /// is malformed.
+  ///
+  /// Values are BASE anchor ranks, so their range is the caller's `baseCount`;
+  /// here we can only guarantee non-negative, duplicate-free and no trailing
+  /// bytes. The read side additionally checks the range against the absorbed
+  /// bitmap before trusting the permutation.
+  static Int32List decodeElementOrder(Uint8List data) {
+    final r = _Reader(data);
+    final version = r.varint();
+    if (version != elementOrderVersion) {
+      throw FormatException('unsupported element-order version $version');
+    }
+    final count = r.varint();
+    if (count < 0) throw const FormatException('negative element count');
+    final out = Int32List(count);
+    final seen = <int>{};
+    var previous = -1;
+    for (var i = 0; i < count; i++) {
+      final rank = previous + _unzigzag(r.varint());
+      if (rank < 0) {
+        throw FormatException('negative element rank $rank at $i');
+      }
+      if (!seen.add(rank)) {
+        throw FormatException('duplicate element rank $rank at $i');
+      }
+      out[i] = rank;
+      previous = rank;
+    }
+    // A trailing payload would mean the blob was written by a different
+    // shape — refuse instead of silently ignoring it.
+    if (r.pos != data.length) {
+      throw const FormatException('trailing bytes in element order');
+    }
+    return out;
+  }
+
+  static int _zigzag(int v) => v >= 0 ? (v << 1) : ((-v) << 1) - 1;
+
+  static int _unzigzag(int v) => (v >> 1) ^ -(v & 1);
 
   // ── Group rows ──
 
@@ -243,6 +367,9 @@ class _Reader {
 
   final Uint8List _data;
   int _pos = 0;
+
+  /// Bytes consumed so far (format validation: a well-formed blob has no tail).
+  int get pos => _pos;
 
   int varint() {
     var result = 0;

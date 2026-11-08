@@ -100,34 +100,37 @@ void main() {
 
   group('progress fraction', () {
     test('progressFraction = scannedDirs / totalDirs, clamped', () {
-      final store = RecursiveScanStore();
-      expect(store.state.progressFraction, 0.0);
-
-      store.updateProgress(scannedDirs: 5);
-      store.updateDepth(depth: 0, paths: ['A']);
-      store.updateDepth(depth: 1, paths: ['A/x', 'A/y', 'A/z', 'A/w']);
-      // totalDirs = 5 (1 root + 4 children)
-      expect(store.state.totalDirs, 5);
-      expect(store.state.progressFraction, 1.0); // 5/5 = 100% at exactly all done
-
-      store.updateProgress(scannedDirs: 2);
-      expect(store.state.progressFraction, closeTo(0.4, 0.001));
-
-      store.updateProgress(scannedDirs: 99);
-      expect(store.state.progressFraction, 1.0); // clamped
+      // Pure model contract: the STORE supplies the total (the stored tree
+      // size), the fraction itself is count-based, so 100% can only appear once
+      // every directory is done.
+      expect(
+        const RecursiveScanState(totalDirs: 5, scannedDirs: 2).progressFraction,
+        closeTo(0.4, 0.001),
+      );
+      expect(
+        const RecursiveScanState(totalDirs: 5, scannedDirs: 5)
+            .progressFraction,
+        1.0,
+      );
+      expect(
+        const RecursiveScanState(totalDirs: 5, scannedDirs: 99)
+            .progressFraction,
+        1.0,
+        reason: 'clamped',
+      );
+      // Unknown total (never scanned): 0, never "done".
+      expect(const RecursiveScanState(scannedDirs: 7).progressFraction, 0.0);
     });
 
     test('completeScan sets progress to 1.0 (the only 100% source)', () async {
       final store = RecursiveScanStore();
-      store.updateDepth(depth: 0, paths: ['A']);
-      store.updateDepth(depth: 1, paths: ['A/x', 'A/y']);
-      store.updateProgress(scannedDirs: 2); // 2/3
-      expect(store.state.progressFraction, closeTo(2 / 3, 0.001));
+      store.updateProgress(scannedDirs: 2);
       expect(store.state.progress, 0.0); // weight field untouched
 
       await store.completeScan();
       expect(store.state.phase, ScanPhase.done);
       expect(store.state.progress, 1.0);
+      await store.dispose();
     });
   });
 }

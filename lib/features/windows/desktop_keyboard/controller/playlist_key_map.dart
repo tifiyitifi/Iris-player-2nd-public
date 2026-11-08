@@ -53,6 +53,7 @@ final Map<KeyCombo, PlaylistAction> kPotPlayerPlaylistMap =
   KeyCombo(LogicalKeyboardKey.f1, ctrl: true): PlaylistAction.fileInformation,
   KeyCombo(LogicalKeyboardKey.keyF, ctrl: true): PlaylistAction.openLocation,
   KeyCombo(LogicalKeyboardKey.keyS, ctrl: true): PlaylistAction.search,
+  KeyCombo(LogicalKeyboardKey.keyG, ctrl: true): PlaylistAction.jumpToPage,
 
   // ── Playlist / queue / sources ──
   KeyCombo(LogicalKeyboardKey.f2): PlaylistAction.savePlaylist,

@@ -35,10 +35,10 @@ void main() {
     String name = 'a.mp4',
   }) =>
       dao.insertNode(MediaNode.file(
-        id: '$storageId:yb/br/$name',
+        id: '$storageId:vault/br/$name',
         storageId: storageId,
-        path: ['yb', 'br', name],
-        parentPath: 'yb/br',
+        path: ['vault', 'br', name],
+        parentPath: 'vault/br',
         pathDepth: 2,
         name: name,
         mediaType: MediaType.video,
@@ -46,7 +46,7 @@ void main() {
 
   Future<bool> present(String scopeId) async {
     final rows = await dao.rowsInScope(scopeId);
-    return rows.any((r) => r.path == 'yb/br/a.mp4' && r.isPresent);
+    return rows.any((r) => r.path == 'vault/br/a.mp4' && r.isPresent);
   }
 
   test('delete reaches a row owned by a sibling scope', () async {
@@ -55,7 +55,7 @@ void main() {
     final removed = await dao.deleteNodeAcrossScopes(
       storageId: 'new',
       scopeIds: const {'new', 'old'},
-      rawPath: 'E:/yb/br/a.mp4',
+      rawPath: 'E:/vault/br/a.mp4',
     );
 
     expect(removed, 1);
@@ -68,7 +68,7 @@ void main() {
     final removed = await dao.deleteNodeAcrossScopes(
       storageId: 'new',
       scopeIds: const {'new'},
-      rawPath: 'E:/yb/br/a.mp4',
+      rawPath: 'E:/vault/br/a.mp4',
     );
 
     expect(removed, 0);
@@ -78,10 +78,10 @@ void main() {
   test('every caller spelling of the path finds the row', () async {
     await insert(storageId: 'old');
     for (final spelling in <String>[
-      r'E:\yb\br\a.mp4',
-      '/E:/yb/br/a.mp4',
-      'E://yb//br//a.mp4',
-      'yb/br/a.mp4',
+      r'E:\vault\br\a.mp4',
+      '/E:/vault/br/a.mp4',
+      'E://vault//br//a.mp4',
+      'vault/br/a.mp4',
     ]) {
       final scopes = await dao.scopesContainingPath(
         storageId: 'new',
@@ -97,7 +97,7 @@ void main() {
     final scopes = await dao.scopesContainingPath(
       storageId: 'new',
       candidateScopes: const {'new', 'other'},
-      rawPath: 'E:/yb/br/a.mp4',
+      rawPath: 'E:/vault/br/a.mp4',
     );
     expect(scopes, isEmpty);
   });
@@ -108,7 +108,7 @@ void main() {
     final marked = await dao.markNodeAbsentAcrossScopes(
       storageId: 'new',
       scopeIds: const {'new', 'old'},
-      rawPath: '/E:/yb/br/a.mp4',
+      rawPath: '/E:/vault/br/a.mp4',
     );
 
     expect(marked, 1);
@@ -135,7 +135,7 @@ void main() {
     final removed = await dao.deleteNodeAcrossScopes(
       storageId: 'new',
       scopeIds: const {'new', 'old'},
-      rawPath: 'E:/yb/br/a.mp4',
+      rawPath: 'E:/vault/br/a.mp4',
     );
     expect(removed, 2);
   });

@@ -21,17 +21,19 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.d
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_source_provider.dart';
-import 'package:iris/features/scenario_playback/resolver/shared_base_order.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_index_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_row_overlay.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/models/db/app_database.dart';
 
+import 'helpers/shared_index_decode.dart';
+
 /// The BUILD side of the shared-order index: a scenario the representation can
-/// express must get a shared index that reproduces the v43 queue exactly, and
-/// one it cannot (placeholder segment, explicit item) must get NONE rather than
-/// a wrong one.
+/// express must get a shared index that reproduces the queue exactly.
+/// Explicit items and empty-source placeholders are now expressible (merged base
+/// order + placeholder tail); only a genuinely unrepresentable walk (a provider
+/// whose order disagrees with the shared order, a missing node) is refused.
 void main() {
   group('shared index build (v44)', () {
     late AppDatabase db;
@@ -138,26 +140,12 @@ void main() {
     Future<({List<QueueEntryRow> rows, SharedRowOverlay overlay})> load(
         int buildId) async {
       final blobs = (await sharedDao.read(buildId))!;
-      final slices = <SharedOrderSlice>[];
-      for (final s in SharedIndexCodec.decodeSlices(blobs.slices)) {
-        final order = await orderDao.read(s.orderKey, mediaRev: s.mediaRev);
-        expect(order, isNotNull, reason: 'order ${s.orderKey} must be cached');
-        slices.add(
-            SharedOrderSlice(orderKey: s.orderKey, order: order!, bits: s.bits));
-      }
-      final base = SharedBaseOrder(
-        slices: slices,
-        accepted: SharedIndexCodec.decodeBitmap(blobs.accepted),
+      final decoded =
+          await decodeSharedIndex(blobs: blobs, orderDao: orderDao);
+      return (
+        rows: decoded.overlay.toEntries(decoded.base),
+        overlay: decoded.overlay
       );
-      final overlay = SharedRowOverlay(
-        baseCount: blobs.baseCount,
-        absorbed: SharedIndexCodec.decodeBitmap(blobs.absorbed),
-        groupRows: SharedIndexCodec.decodeGroups(blobs.groupRows),
-        placeholders: SharedIndexCodec.decodePlaceholders(blobs.placeholders),
-        occurrence: SharedIndexCodec.decodeIntMap(blobs.occurrence),
-        flags: SharedIndexCodec.decodeIntMap(blobs.flags),
-      );
-      return (rows: overlay.toEntries(base), overlay: overlay);
     }
 
     test('a DESC scenario is representable too: the shared order runs the same '
@@ -242,7 +230,7 @@ void main() {
       // The shared order was cached for reuse by the next build.
       expect(await orderDao.count(), 1);
       expect(await orderDao.read(
-              (SharedIndexCodec.decodeSlices(blobs.slices)).single.orderKey,
+              (SharedIndexCodec.decodeSlices(blobs.slices)).singleSlices.single.orderKey,
               mediaRev: mediaRev),
           isNotNull);
     });
@@ -339,25 +327,50 @@ void main() {
       expect(line, contains('provider order != shared order'));
     });
 
-    test('an explicit item is NOT representable: no shared index is persisted',
+    test('an explicit item joins the global order (one storage, merged shape)',
         () async {
       await seedMedia(5);
+      final dao = MediaNodesDao(db);
+      // A file OUTSIDE the source's directory: only the explicit segment brings
+      // it in, so the test proves the explicit entry takes part in the sort.
+      await dao.insertNode(MediaNode.file(
+        id: 'B/0009.mp4',
+        storageId: 'st1',
+        path: const ['B', '0009.mp4'],
+        name: '0009.mp4',
+        mediaType: MediaType.video,
+      ));
       final resolver = buildResolver();
       final id = await scenarioWithSource();
       await repo.addExplicitItem(
         scenarioId: id,
         storageId: 'st1',
-        path: 'A/0000.mp4',
+        path: 'B/0009.mp4',
       );
       final buildId = await resolver.buildQueueIndex(id);
+      final blobs = await sharedDao.read(buildId);
+      expect(blobs, isNotNull,
+          reason: 'an explicit item is representable (merged base order)');
+      expect(SharedIndexCodec.decodeSlices(blobs!.slices),
+          isA<MultiBaseOrder>(),
+          reason: 'even one storage uses the merged shape once a second '
+              'segment participates');
 
-      expect(await sharedDao.read(buildId), isNull,
-          reason: 'the virtual space has an explicit segment');
-      expect(await indexDao.visibleBaseCount(id, buildId), isNotNull,
-          reason: 'the build meta row is written so the reads can degrade');
+      final page = await resolver.resolvePageIndexed(
+          scenarioId: id, page: 0, pageSize: 50);
+      expect(page.totalItems, 6);
+      expect(page.items.map((e) => e.media.name).toList(), [
+        '0000.mp4',
+        '0001.mp4',
+        '0002.mp4',
+        '0003.mp4',
+        '0004.mp4',
+        '0009.mp4',
+      ]);
     });
 
-    test('an empty source is NOT representable: no shared index', () async {
+    test('an empty source is representable: its placeholder is the queue tail',
+        () async {
       await seedMedia(2);
       final resolver = buildResolver();
       final id = await scenarioWithSource();
@@ -368,8 +381,60 @@ void main() {
         recursive: true,
       );
       final buildId = await resolver.buildQueueIndex(id);
-      expect(await sharedDao.read(buildId), isNull,
-          reason: 'the virtual space has a placeholder segment');
+      final blobs = await sharedDao.read(buildId);
+      expect(blobs, isNotNull,
+          reason: 'the placeholder tail has a persisted representation');
+
+      final page = await resolver.resolvePageIndexed(
+          scenarioId: id, page: 0, pageSize: 50);
+      expect(page.totalItems, 3);
+      expect(page.items.take(2).map((e) => e.media.name).toList(),
+          ['0000.mp4', '0001.mp4']);
+      expect(page.items.last.available, isFalse,
+          reason: 'the empty source surfaces as a greyed row at the end');
+    });
+
+    test('a GAP in the shared order does not cost the index', () async {
+      // The queue's base order stores each entry as `(stream, rank)` where rank
+      // is the node's POSITION in that storage's shared order — which enumerates
+      // the WHOLE storage, not just the scenario's files. A second source plus an
+      // unrelated folder (M) in between therefore leaves a HOLE at rank 1, and
+      // the merged codec must accept ranks bounded by the order's length rather
+      // than by the number of entries this stream contributed.
+      final dao = MediaNodesDao(db);
+      Future<void> seed(String path) async {
+        await dao.insertNode(MediaNode.file(
+          id: path,
+          storageId: 'st1',
+          path: path.split('/'),
+          name: path.split('/').last,
+          mediaType: MediaType.video,
+          durationMs: 60000,
+        ));
+      }
+
+      await seed('A/0000.mp4'); // rank 0 — covered by source A
+      await seed('M/0001.mp4'); // rank 1 — NOT covered by any source
+      await seed('Z/0002.mp4'); // rank 2 — covered by source Z
+
+      final resolver = buildResolver();
+      final id = await scenarioWithSource();
+      await repo.addSource(
+        scenarioId: id,
+        storageId: 'st1',
+        path: 'Z',
+        recursive: true,
+      );
+
+      final buildId = await resolver.buildQueueIndex(id);
+      expect(await sharedDao.read(buildId), isNotNull,
+          reason: 'a sparse shared order is representable: the ranks are '
+              'positions in that order, not ordinals of the contribution');
+
+      final page = await resolver.resolvePageIndexed(
+          scenarioId: id, page: 0, pageSize: 50);
+      expect(page.items.map((e) => e.media.name).toList(),
+          ['0000.mp4', '0002.mp4']);
     });
 
     test('a stale media revision is not served: the order is rebuilt',
@@ -382,6 +447,7 @@ void main() {
 
       final key = (SharedIndexCodec.decodeSlices(
               (await sharedDao.read(await indexDao.currentBuildId(id)))!.slices))
+          .singleSlices
           .single
           .orderKey;
       // A reader keyed on a different revision must see NO order (the guard),

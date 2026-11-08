@@ -1,5 +1,6 @@
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/check_content_type.dart';
+import 'package:iris/utils/name_tokens.dart';
 import 'package:path/path.dart' as path;
 
 /// The map key a listing uses to look up a video's subtitles: the video's own
@@ -11,21 +12,6 @@ import 'package:path/path.dart' as path;
 /// the sibling video it extends by the LONGEST dot-separated name prefix — see
 /// [getSubtitleMap].
 String subtitleMapKey(String fileName) => path.basenameWithoutExtension(fileName);
-
-/// Dot-separated name tokens of a file, lowercased for a case-insensitive
-/// comparison (Windows/NTFS and SMB are case-insensitive).
-List<String> _nameTokens(String fileName) =>
-    path.basenameWithoutExtension(fileName).toLowerCase().split('.');
-
-/// Number of leading tokens [a] and [b] share.
-int _leadingTokenMatch(List<String> a, List<String> b) {
-  final max = a.length < b.length ? a.length : b.length;
-  var n = 0;
-  while (n < max && a[n] == b[n]) {
-    n++;
-  }
-  return n;
-}
 
 /// Pairs every subtitle file in a listing with the video it belongs to.
 ///
@@ -63,7 +49,7 @@ Map<String, List<Subtitle>> getSubtitleMap<T>({
   for (final file in files) {
     final name = getName(file);
     if (isVideoFile_(name)) {
-      videos.add((key: subtitleMapKey(name), tokens: _nameTokens(name)));
+      videos.add((key: subtitleMapKey(name), tokens: nameTokens(name)));
     }
   }
 
@@ -74,17 +60,17 @@ Map<String, List<Subtitle>> getSubtitleMap<T>({
         path.extension(fileName).replaceFirst('.', '').toLowerCase();
     if (!subtitleExtensions.contains(fileExt)) continue;
 
-    final subtitleTokens = _nameTokens(fileName);
+    final subtitleTokens = nameTokens(fileName);
     var best = 0;
     for (final video in videos) {
-      final score = _leadingTokenMatch(subtitleTokens, video.tokens);
+      final score = leadingTokenMatch(subtitleTokens, video.tokens);
       if (score > best) best = score;
     }
     if (best == 0) continue; // Orphan: no video shares even one token.
 
     final subtitle = Subtitle(name: fileName, uri: getUri(file));
     for (final video in videos) {
-      if (_leadingTokenMatch(subtitleTokens, video.tokens) == best) {
+      if (leadingTokenMatch(subtitleTokens, video.tokens) == best) {
         subtitleMap.putIfAbsent(video.key, () => []).add(subtitle);
       }
     }

@@ -5,15 +5,15 @@ import 'package:iris/utils/path_conv.dart';
 // directory form source/merge rules store.
 void main() {
   test('strips a matching local base path', () {
-    expect(relativeToStoragePath('E:/yb/sub', ['E:/yb']), 'sub');
+    expect(relativeToStoragePath('E:/vault/sub', ['E:/vault']), 'sub');
   });
 
   test('a path equal to the base is the storage root (empty)', () {
-    expect(relativeToStoragePath('E:/yb', ['E:/yb']), '');
+    expect(relativeToStoragePath('E:/vault', ['E:/vault']), '');
   });
 
   test('base matching is case-insensitive', () {
-    expect(relativeToStoragePath('e:/YB/sub', ['E:/yb']), 'sub');
+    expect(relativeToStoragePath('e:/VAULT/sub', ['E:/vault']), 'sub');
   });
 
   test('decodes a SAF tree URI to a readable relative tail', () {
@@ -49,17 +49,17 @@ void main() {
     const base =
         'content://com.android.externalstorage.documents/tree/primary%3ADownload';
     expect(
-      relativeToStoragePath('$base/Movies/a.mp4', ['E:/yb']),
+      relativeToStoragePath('$base/Movies/a.mp4', ['E:/vault']),
       'Download/Movies/a.mp4',
     );
   });
 
   test('falls through unchanged under no registered base', () {
-    expect(relativeToStoragePath('other/dir', ['E:/yb']), 'other/dir');
+    expect(relativeToStoragePath('other/dir', ['E:/vault']), 'other/dir');
   });
 
   test('empty input stays empty', () {
-    expect(relativeToStoragePath('', ['E:/yb']), '');
+    expect(relativeToStoragePath('', ['E:/vault']), '');
   });
 
   test('overlapping bases take the LONGEST match', () {

@@ -546,6 +546,21 @@ void main() {
       expect(await readPlaybackProgress(file()), 0);
     });
 
+    test('a fake-cut source-timeline write may move backward', () async {
+      // 简播: out-of-order / repeated ranges project the virtual position onto an
+      // EARLIER source position. The live monotonic lock must not drop it, or
+      // the stored progress freezes at the first cut boundary.
+      await seedNode(positionMs: 60000);
+      await persistPlaybackProgress(
+        file: file(),
+        position: const Duration(milliseconds: 20000),
+        durationMs: 72661,
+        writeTag: 'timer',
+        sourceTimeline: true,
+      );
+      expect(await readPlaybackProgress(file()), 20000);
+    });
+
     test('completed write still clears stored progress', () async {
       await seedNode(positionMs: 60000);
       await persistPlaybackProgress(
@@ -555,7 +570,6 @@ void main() {
         writeTag: 'completed',
       );
       expect(await readPlaybackProgress(file()), 0);
-      expect(await readPlaybackCompleted(file()), isTrue);
-    });
+      expect(await readPlaybackCompleted(file()), isTrue);    });
   });
 }

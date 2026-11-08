@@ -8,6 +8,7 @@ import 'package:iris/features/scenario_playback/scan/model/scenario_source_refre
 import 'package:iris/features/scenario_playback/scan/store/scenario_source_refresh_store.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/path_conv.dart';
 
 /// Floating batch-progress bar for the scenario-source refresh, inserted into
 /// the Navigator's overlay.
@@ -200,7 +201,7 @@ class _ScenarioSourceRefreshOverlayManagerState
                       const SizedBox(height: 2),
                       ExcludeSemantics(
                         child: Text(
-                          state.currentPath!,
+                          displayScanPath(state.currentPath!),
                           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 color: colorScheme.onSurfaceVariant,
                               ),

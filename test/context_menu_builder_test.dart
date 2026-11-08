@@ -244,8 +244,7 @@ void main() {
       expect(items[seekStepIndex].hint, 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s');
     });
 
-    test('reveal-in-explorer is a top-level entry right after Open', () {
-      final entries = buildPotPlayerContextMenu(
+    test('reveal-in-explorer is a top-level entry right after Open', () {      final entries = buildPotPlayerContextMenu(
         isMediaKit: true,
         supportsSync: true,
         supportsTrack: true,
@@ -293,6 +292,61 @@ void main() {
         isFalse,
       );
       expect(entries.first, isA<ContextMenuSubmenu>());
+    });
+
+    test('new-window neighbour entries sit right after the step items', () {
+      final entries = buildPotPlayerContextMenu(
+        isMediaKit: true,
+        supportsSync: true,
+        supportsTrack: true,
+        isFullScreen: false,
+        isAlwaysOnTop: false,
+        seekStepLabel: 'Seek step',
+        seekStepHint: 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s',
+        canOpenNeighborInNewWindow: true,
+        openPrevInNewWindowLabel: 'Open previous in new window',
+        openNextInNewWindowLabel: 'Open next in new window',
+        openPrevInNewWindowHint: 'Shift + PageUp',
+        openNextInNewWindowHint: 'Shift + PageDown',
+      );
+      final playback = findSubmenu(entries, 'Playback')!;
+      final items = playback.children.whereType<ContextMenuItem>().toList();
+
+      final nextIndex =
+          items.indexWhere((i) => i.action == PotPlayerAction.nextItem);
+      final prevWindowIndex = items.indexWhere(
+          (i) => i.action == PotPlayerAction.openPreviousInNewWindow);
+      final nextWindowIndex = items.indexWhere(
+          (i) => i.action == PotPlayerAction.openNextInNewWindow);
+
+      expect(nextIndex, isNonNegative);
+      expect(prevWindowIndex, nextIndex + 1);
+      expect(nextWindowIndex, nextIndex + 2);
+      expect(items[prevWindowIndex].label, 'Open previous in new window');
+      expect(items[prevWindowIndex].hint, 'Shift + PageUp');
+      expect(items[nextWindowIndex].label, 'Open next in new window');
+      expect(items[nextWindowIndex].hint, 'Shift + PageDown');
+    });
+
+    test('new-window neighbour entries absent where no second window exists',
+        () {
+      final entries = buildPotPlayerContextMenu(
+        isMediaKit: true,
+        supportsSync: true,
+        supportsTrack: true,
+        isFullScreen: false,
+        isAlwaysOnTop: false,
+        seekStepLabel: 'Seek step',
+        seekStepHint: 'Ctrl+↑/↓ ±1s, Ctrl+Shift ±10s',
+      );
+
+      final items = flattenItems(entries);
+      expect(
+        items.any((i) =>
+            i.action == PotPlayerAction.openPreviousInNewWindow ||
+            i.action == PotPlayerAction.openNextInNewWindow),
+        isFalse,
+      );
     });
 
     test('includes exit at bottom', () {

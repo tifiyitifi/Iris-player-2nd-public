@@ -60,6 +60,17 @@ Widget _harness({required MediaPlayer player}) {
   );
 }
 
+/// Right-clicks at [position] and settles the menu-open animation.
+Future<void> _rightClick(WidgetTester tester, Offset position) async {
+  final gesture = await tester.createGesture(
+    kind: PointerDeviceKind.mouse,
+    buttons: kSecondaryButton,
+  );
+  await gesture.down(position);
+  await gesture.up();
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('GestureOverlay builds without error (desktop)', (tester) async {
     final player = _fakePlayer();
@@ -115,5 +126,41 @@ void main() {
 
     expect(find.text('Speed'), findsOneWidget);
     expect(find.text('A-B loop'), findsOneWidget);
+  });
+
+  testWidgets('left-click on the video dismisses the context menu', (tester) async {
+    final player = _fakePlayer();
+    await tester.pumpWidget(_harness(player: player));
+    await tester.pumpAndSettle();
+
+    final canvas = tester.getRect(find.byType(GestureOverlay));
+    // Open near the bottom-right: the panel grows right/down from the pointer
+    // (and is clamped inside the view), so the top-left corner stays outside
+    // the menu itself.
+    await _rightClick(tester, canvas.bottomRight - const Offset(120, 120));
+    expect(find.text('Playback'), findsOneWidget);
+
+    await tester.tapAt(canvas.topLeft + const Offset(10, 10));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Playback'), findsNothing);
+  });
+
+  testWidgets('right-click elsewhere reopens the closed menu', (tester) async {
+    final player = _fakePlayer();
+    await tester.pumpWidget(_harness(player: player));
+    await tester.pumpAndSettle();
+
+    final canvas = tester.getRect(find.byType(GestureOverlay));
+    await _rightClick(tester, canvas.center);
+    expect(find.text('Playback'), findsOneWidget);
+
+    // Dismiss, then right-click a different spot: the menu must come back.
+    await tester.tapAt(canvas.topLeft + const Offset(10, 10));
+    await tester.pumpAndSettle();
+    expect(find.text('Playback'), findsNothing);
+
+    await _rightClick(tester, canvas.topLeft + const Offset(200, 200));
+    expect(find.text('Playback'), findsOneWidget);
   });
 }

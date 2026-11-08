@@ -102,10 +102,17 @@ VmGroupsCacheAction vmGroupsCacheAction({
 /// The run-based derivation is retired; `vmNoMatchReport` survives as the
 /// diagnostic for "no rule matched anything", which the rule pipeline itself
 /// reports only as an empty result.
+///
+/// [excludedMediaKeys] carries the 简播 exclusion (a video with a sibling
+/// LosslessCut `.llc` never merges — see `vm_fake_cut_exclusions.dart`). It is
+/// injected rather than looked up here so this stays a PURE function: the
+/// filesystem answer is async, and every production caller resolves it once per
+/// stream (`vmFakeCutExclusionKeysForStream`) before grouping.
 VmStreamGroups resolveGroupsForStream(
   List<EffectivePlaybackItem> stream,
   List<VirtualMediaRule> rules, {
   AppLocalizations? l10n,
+  Set<String> excludedMediaKeys = const <String>{},
 }) {
   if (rules.isEmpty || stream.isEmpty) {
     return const VmStreamGroups(byKey: {}, inOrder: []);
@@ -119,7 +126,7 @@ VmStreamGroups resolveGroupsForStream(
     final f = item.media.maybeMap(file: (f) => f, orElse: () => null);
     if (f == null) continue;
     segments.add(VirtualSegment(
-      mediaKey: canonicalKey(f.storageId, f.occurrencePath),
+      mediaKey: canonicalMediaKey(f.storageId, f.path, uri: f.uri),
       storageId: f.storageId,
       path: f.path,
       name: f.name,
@@ -137,8 +144,12 @@ VmStreamGroups resolveGroupsForStream(
   }
 
   final l = l10n ?? vmLocalizations();
-  final rawItems =
-      resolveRuleGroups(rules: rules, library: segments, l10n: l);
+  final rawItems = resolveRuleGroups(
+    rules: rules,
+    library: segments,
+    excludedMediaKeys: excludedMediaKeys,
+    l10n: l,
+  );
   if (rawItems.isEmpty) {
     // Pure log line: a path-shape mismatch must stay visible in release logs.
     _log.w(vmNoMatchReport(rules: rules, streamOrdered: segments));

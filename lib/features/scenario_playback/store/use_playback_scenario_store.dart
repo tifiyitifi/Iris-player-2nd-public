@@ -41,6 +41,7 @@ import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/persistent_store.dart';
 import 'package:iris/utils/app_instance.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 
 final areaKeyLog = AreaKeyLog(ScenarioLogKeys.store);
@@ -624,7 +625,7 @@ class PlaybackScenarioStore
     int compare(Scenario a, Scenario b) {
       switch (state.scenarioSortBy) {
         case ScenarioListSortBy.name:
-          return a.name.compareTo(b.name);
+          return naturalCompare(a.name, b.name);
         case ScenarioListSortBy.createdAt:
           return cmpDate(a.createdAt, b.createdAt);
         case ScenarioListSortBy.updatedAt:
@@ -1710,11 +1711,13 @@ class PlaybackScenarioStore
     required Scenario workspace,
     Scenario? source,
     bool importPersistentExcludes = true,
+    bool importTemporaryExcludes = false,
   }) async {
     await ScenarioCommands.override(
       workspace: workspace,
       source: source,
       importPersistentExcludes: importPersistentExcludes,
+      importTemporaryExcludes: importTemporaryExcludes,
       repo: _repo,
     );
     // v6-D1: replacing the SystemPlaying scope invalidates any parked search

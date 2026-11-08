@@ -6,6 +6,7 @@ import 'package:iris/features/scenario_playback/model/db/dao/media_order_dao.dar
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_shared_index_dao.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/migration/v44_migration.dart';
+import 'package:iris/models/db/migration/v52_migration.dart';
 
 /// v44 adds the shared-order index tables (`media_orders`,
 /// `scenario_shared_index`). Like v43, the upgrade path runs hand-written DDL
@@ -52,6 +53,11 @@ void main() {
     }
 
     await MigrationV44(db).run(db.createMigrator());
+    // Later migrations extend these tables (v52 adds `media_orders.last_used_at`
+    // and `scenario_shared_index.element_order`), so a HEAD fresh install can
+    // only match after those have run too — the point of this test is that the
+    // migration PATH reaches the fresh shape, not that v44 alone did.
+    await MigrationV52(db).run(db.createMigrator());
 
     for (final t in tables) {
       expect(await tableShape(db, t), freshShapes[t], reason: '$t shape');

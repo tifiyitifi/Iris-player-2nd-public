@@ -207,14 +207,16 @@ FilesDbController useFilesDbController(
   }
 
   void startRecursiveScan() async {
-    // Scan options gate: null = cancelled by the user.
-    final probeEnabled =
-        await showScanOptionsDialog(context, storageType: storage.type);
-    if (probeEnabled == null) return;
-    if (!context.mounted) return;
-
     final scanStore = useRecursiveScanStore();
     final rootPath = currentPath.join('/');
+    // Scan options gate: null = cancelled by the user.
+    final probeEnabled = await showScanOptionsDialog(
+      context,
+      storage: storage,
+      rootPath: rootPath,
+    );
+    if (probeEnabled == null) return;
+    if (!context.mounted) return;
 
     final service = RecursiveScanService(
       storage: storage,

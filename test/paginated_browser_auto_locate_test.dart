@@ -21,15 +21,24 @@ class _FakePagedDS extends PaginatedBrowserDataSource<String> {
 
   int? currentIndex;
 
+  /// Identity of the current item, exactly like the real queue's occurrence key:
+  /// it changes when playback switches to another entry, and does not change for
+  /// content-only refreshes.
+  Object? currentToken;
+
   _FakePagedDS({
     required int totalItems,
     int pageSize = 5,
     this.supportCurrent = false,
     this.currentIndex,
+    this.currentToken,
   })  : _totalItems = totalItems,
         _pageSize = pageSize {
     fetchPage(0, _pageSize);
   }
+
+  @override
+  Object? get currentItemToken => currentToken;
 
   @override
   int get totalItems => _totalItems;
@@ -203,6 +212,139 @@ void main() {
     expect(ds.resolveCalls, 0);
     expect(ds.currentPage, 0);
     expect(ds.fetchedPages, [0]);
+  });
+
+  testWidgets('follows the playing item when auto-locate-on-switch is on',
+      (tester) async {
+    final ds = _FakePagedDS(
+      totalItems: 20,
+      pageSize: 5,
+      supportCurrent: true,
+      currentIndex: 0,
+      currentToken: 'a',
+    );
+    await tester.pumpWidget(_wrap(PaginatedBrowserPage<String>(
+      dataSource: ds,
+      controller: PaginatedBrowserController<String>(),
+      onClose: () {},
+      showHomePage: false,
+      showBackButton: false,
+      autoLocateOnCurrentChange: true,
+    )));
+    await tester.pumpAndSettle();
+    expect(ds.currentPage, 0);
+
+    // Playback auto-advances to an item on page 3.
+    ds.currentIndex = 17;
+    ds.currentToken = 'b';
+    ds.notifyListeners();
+    await tester.pumpAndSettle();
+
+    expect(ds.currentPage, 3,
+        reason: 'switching the playing item must bring its page into view');
+    expect(ds.items, contains('item17'));
+    expect(find.text('item17'), findsOneWidget);
+  });
+
+  testWidgets('a switch whose first locate misses is retried on the next notify',
+      (tester) async {
+    final ds = _FakePagedDS(
+      totalItems: 20,
+      pageSize: 5,
+      supportCurrent: true,
+      currentIndex: 0,
+      currentToken: 'a',
+    );
+    await tester.pumpWidget(_wrap(PaginatedBrowserPage<String>(
+      dataSource: ds,
+      controller: PaginatedBrowserController<String>(),
+      onClose: () {},
+      showHomePage: false,
+      showBackButton: false,
+      autoLocateOnCurrentChange: true,
+    )));
+    await tester.pumpAndSettle();
+    expect(ds.currentPage, 0);
+
+    // Playback switches while a media-content refresh is mid-flight: the token
+    // advances, but the new item is not resolvable yet.
+    ds.currentIndex = null;
+    ds.currentToken = 'b';
+    ds.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(ds.currentPage, 0);
+
+    // The same switch resolves a moment later with NO token change. Consuming
+    // the token on the failed attempt (the old behaviour) meant this notify was
+    // ignored and the queue stayed on the old page until the user switched
+    // again.
+    ds.currentIndex = 17;
+    ds.notifyListeners();
+    await tester.pumpAndSettle();
+
+    expect(ds.currentPage, 3,
+        reason: 'a missed locate must not consume the switch token');
+    expect(ds.items, contains('item17'));
+  });
+
+  testWidgets('ignores current-item changes when auto-locate-on-switch is off',
+      (tester) async {
+    final ds = _FakePagedDS(
+      totalItems: 20,
+      pageSize: 5,
+      supportCurrent: true,
+      currentIndex: 0,
+      currentToken: 'a',
+    );
+    await tester.pumpWidget(_wrap(PaginatedBrowserPage<String>(
+      dataSource: ds,
+      controller: PaginatedBrowserController<String>(),
+      onClose: () {},
+      showHomePage: false,
+      showBackButton: false,
+    )));
+    await tester.pumpAndSettle();
+
+    ds.currentIndex = 17;
+    ds.currentToken = 'b';
+    ds.notifyListeners();
+    await tester.pumpAndSettle();
+
+    expect(ds.currentPage, 0,
+        reason: 'the option is opt-in; existing browsers must not move');
+  });
+
+  testWidgets('a content refresh with the same current token never moves the '
+      'page', (tester) async {
+    final ds = _FakePagedDS(
+      totalItems: 20,
+      pageSize: 5,
+      supportCurrent: true,
+      currentIndex: 0,
+      currentToken: 'a',
+    );
+    await tester.pumpWidget(_wrap(PaginatedBrowserPage<String>(
+      dataSource: ds,
+      controller: PaginatedBrowserController<String>(),
+      onClose: () {},
+      showHomePage: false,
+      showBackButton: false,
+      autoLocateOnCurrentChange: true,
+    )));
+    await tester.pumpAndSettle();
+
+    // The reader moves away from the playing item's page.
+    await tester.runAsync(() => ds.fetchPage(1, ds.pageSize));
+    await tester.pumpAndSettle();
+    expect(ds.currentPage, 1);
+
+    // A duration write-back / background scan refreshes the list without
+    // changing what is playing.
+    ds.notifyListeners();
+    await tester.pumpAndSettle();
+
+    expect(ds.currentPage, 1,
+        reason: 'following the item must not fight manual navigation');
   });
 
   testWidgets('shows the Go to current button only when supported and taps '

@@ -7,14 +7,20 @@ import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart
 import 'package:iris/features/background_playback/model/enum/bg_seek_link.dart';
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/view/background_scope_dialog.dart';
 import 'package:iris/features/background_playback/view/control_target_indicator.dart';
 import 'package:iris/features/background_playback/view/manager/background_mapping_manager_page.dart';
 import 'package:iris/features/background_playback/view/media_ratio_dialog.dart';
+import 'package:iris/features/background_playback/hooks/use_foreground_scope_key.dart';
 import 'package:iris/features/control_group/model/enum/player_control_group.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/pages/player/control_bar/control_bar_widgets/control_bar_constants.dart';
 import 'package:iris/l10n/app_localizations.dart';
+import 'package:iris/models/store/app_state.dart';
+import 'package:iris/store/use_app_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/platform.dart';
 import 'package:iris/widgets/a11y_tooltip.dart';
@@ -39,7 +45,16 @@ List<PopupMenuEntry<Object>> buildBackgroundPlaybackMenuEntries({
   }
 
   final bool enabled = bg.state.enabled;
-  final bool livePair = bg.state.enabled && bg.state.gateOpen;
+  // 简播: a cut on screen suspends 副音 for that media, so the rows that drive
+  // the live pair (picture / control routing) grey out exactly like a closed
+  // gate. Preferences (作用范围/联动/音量比例/…) stay reachable: they are
+  // applied by the next activation, which is exactly what "not here" means.
+  final bool fakeCutActive = fakeCutBlocksBackgroundNow(currentScopeKey());
+  // The pair is "live" only while it actually applies to what is playing: a
+  // run that is out of 作用范围, exhausted or has run off the end of its queue
+  // must grey out the routing rows exactly like a closed gate — offering "切到
+  // 副音" would hand the bar to a silent engine.
+  final bool livePair = bg.state.bgPairInEffect && !fakeCutActive;
   final BgApplyScope applyScope = bg.state.applyScope;
   final ControlTarget displayTarget = bg.state.displayTarget;
   final ControlTarget controlTarget = bg.state.controlTarget;
@@ -333,13 +348,28 @@ class BackgroundPlaybackMenuButton extends HookWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!BackgroundPlaybackGate.enabled) return const SizedBox.shrink();
-
+    // The feature gate arrives through its OWN subscription (the gate needs
+    // both `useLegacyStoragePersistence` and `useMetadataSettings`, and the
+    // ancestors only subscribe to the latter). Read via a hook and BEFORE the
+    // early return so the hook order never depends on the gate's value.
+    final bool gateEnabled = useAppStore().select(
+      context,
+      (AppState s) => !s.useLegacyStoragePersistence && s.useMetadataSettings,
+    );
     final t = getLocalizations(context);
     final bg = useBackgroundPlaybackStore();
     // Only the icon's live tint needs build-time reactivity; the menu list is
-    // built at open time by the shared entry builder.
-    final bool livePair = bg.select(context, (s) => s.enabled && s.gateOpen);
+    // built at open time by the shared entry builder. Same predicate as the
+    // menu rows: an out-of-scope/exhausted/queue-ended run is not on the air.
+    final bool livePair = bg.select(context, (s) => s.bgPairInEffect);
+    // 简播 suspends the pair for the current media — the icon must not claim
+    // 副音 is live there.
+    final bool fakeCutActive = fakeCutBlocksBackground(
+      useForegroundScopeKey(context),
+      useFakeCutStore().select(
+          context, (FakeCutStoreState s) => s.playingKey),
+    );
+    if (!gateEnabled) return const SizedBox.shrink();
 
     return a11yTooltip(
       context: context,
@@ -351,7 +381,7 @@ class BackgroundPlaybackMenuButton extends HookWidget {
         icon: Icon(
           Icons.multitrack_audio_rounded,
           size: kIconSizeSecondary,
-          color: livePair ? kBackgroundTargetColor : color,
+          color: livePair && !fakeCutActive ? kBackgroundTargetColor : color,
         ),
         itemBuilder: (context) => buildBackgroundPlaybackMenuEntries(
           context: context,

@@ -370,7 +370,7 @@ class StoragesDbList extends HookWidget {
 
       // Scan options gate: null = cancelled by the user.
       final probeEnabled =
-          await showScanOptionsDialog(context, storageType: target.type);
+          await showScanOptionsDialog(context, storage: target);
       if (probeEnabled == null) return;
       if (!context.mounted) return;
 

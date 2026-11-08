@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/screen_lock/store/use_screen_lock_store.dart';
 import 'package:iris/features/speed/model/enum/speed_gesture_mode.dart';
@@ -11,6 +12,7 @@ import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
 import 'package:iris/globals.dart';
 import 'package:iris/features/windows/context_menu/controller/context_menu_builder.dart';
 import 'package:iris/features/windows/context_menu/view/potplayer_context_menu_anchor.dart';
+import 'package:iris/features/windows/desktop_keyboard/view/shortcut_hints.dart';
 import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/hooks/use_gesture.dart';
 import 'package:iris/hooks/use_gesture_mode.dart';
@@ -305,6 +307,16 @@ class GestureOverlay extends HookWidget {
     final bool canRevealForMenu = currentFileForMenu != null &&
         canRevealFileInExplorer(currentFileForMenu);
     final l10n = getLocalizations(context);
+    // Trailing hints follow the EFFECTIVE keybinds, so a remapped
+    // previous/next-in-new-window key never leaves a stale default in the menu.
+    final String? prevWindowHint = effectiveShortcutHintLabelFor(
+      context,
+      ShortcutHintKind.previousInNewWindow,
+    );
+    final String? nextWindowHint = effectiveShortcutHintLabelFor(
+      context,
+      ShortcutHintKind.nextInNewWindow,
+    );
     final menuEntries = useMemoized(
       () => buildPotPlayerContextMenu(
         isMediaKit: isMediaKitForMenu,
@@ -316,6 +328,13 @@ class GestureOverlay extends HookWidget {
         seekStepHint: l10n.context_menu_seek_step_hint,
         canRevealInExplorer: canRevealForMenu,
         revealInExplorerLabel: l10n.open_in_explorer,
+        // Store/MSIX builds are single-instance and phones have no second
+        // window: hide the entries instead of offering a dead action.
+        canOpenNeighborInNewWindow: NewWindowLauncher.isSupported,
+        openPrevInNewWindowLabel: l10n.keybind_act_open_prev_window,
+        openNextInNewWindowLabel: l10n.keybind_act_open_next_window,
+        openPrevInNewWindowHint: prevWindowHint,
+        openNextInNewWindowHint: nextWindowHint,
       ),
       [
         isMediaKitForMenu,
@@ -324,6 +343,8 @@ class GestureOverlay extends HookWidget {
         isFullScreenForMenu,
         isAlwaysOnTopForMenu,
         canRevealForMenu,
+        prevWindowHint,
+        nextWindowHint,
         // Rebuild the label/hint when the language changes. Deliberately NOT
         // keyed on seekStepSeconds: the label is static, so the full-screen
         // overlay never rebuilds on each held Ctrl+↑/↓ live update.
@@ -436,11 +457,29 @@ class GestureOverlay extends HookWidget {
       showControlForHover: effectiveShowControlForHover,
       showProgress: showProgress,
     );
+    // The menu anchor is deliberately ZERO-SIZED and sits beside the gesture
+    // surface instead of wrapping it. MenuAnchor puts its child and the menu
+    // panel in the same TapRegion group, so only pointer-downs outside the
+    // anchor close the menu; with the full-screen gesture surface as the anchor
+    // every click on the video counted as "inside" and the menu never closed.
+    // (`anchorTapClosesMenu` cannot help: it is deprecated and no longer wired
+    // into RawMenuAnchor.) Placement comes from `open(position:)`, so the
+    // anchor only has to keep its top-left at the player area's origin — the
+    // menu layout adds `anchorRect.topLeft` to the requested position.
     final Widget wrappedOverlay = isDesktop
-        ? MenuAnchor(
-            controller: menuController,
-            menuChildren: menuWidgets,
-            child: overlay,
+        ? Stack(
+            children: [
+              Positioned.fill(child: overlay),
+              Positioned(
+                left: 0,
+                top: 0,
+                child: MenuAnchor(
+                  controller: menuController,
+                  menuChildren: menuWidgets,
+                  child: const SizedBox.shrink(),
+                ),
+              ),
+            ],
           )
         : overlay;
     // fb/bg align edit mode: the full-screen gesture surface is switched off

@@ -59,6 +59,11 @@ abstract final class KvKeys {
   /// mode.
   static const String controlGroupState = 'control_group_state';
 
+  /// 简播: the LosslessCut plan each file is currently playing with
+  /// (`{ "<fileKey>": "<abs .llc path>" }`). Session-scoped: two windows may
+  /// watch the same file with different plans.
+  static const String fakeCutActivePlans = 'fake_cut_active_plans';
+
   // ── Internal markers (never imported, not part of `all`) ──
 
   /// One-shot import into this portable folder already completed.
@@ -95,6 +100,7 @@ abstract final class KvKeys {
     backgroundPlaybackState,
     backgroundPlaybackPosition,
     controlGroupState,
+    fakeCutActivePlans,
   ];
 
   /// Scope of every migratable key. Enforced for completeness by
@@ -119,6 +125,7 @@ abstract final class KvKeys {
     backgroundPlaybackState: KvScope.shared,
     backgroundPlaybackPosition: KvScope.session,
     controlGroupState: KvScope.shared,
+    fakeCutActivePlans: KvScope.session,
   };
 }
 

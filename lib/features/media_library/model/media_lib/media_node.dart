@@ -1,5 +1,6 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:iris/models/file.dart' show Subtitle;
+import 'package:iris/utils/natural_sort_key.dart';
 
 part 'media_node.freezed.dart';
 part 'media_node.g.dart';
@@ -28,6 +29,14 @@ abstract class MediaNode with _$MediaNode {
     @Default(0) int pathDepth,
     required String name,
     @Default(null) String? normalizedName,
+
+    /// BINARY-comparable natural sort key of [name] (see
+    /// `lib/utils/natural_sort_key.dart`).
+    ///
+    /// Rows read from the database carry the persisted `media_nodes.
+    /// natural_name`; a node built in memory leaves this null and
+    /// [naturalNameValue] encodes on demand.
+    @Default(null) String? naturalName,
     // Directory-specific aggregates
     @Default(0) int directMediaCount,
     @Default(0) int directDirCount,
@@ -58,6 +67,9 @@ abstract class MediaNode with _$MediaNode {
     @Default(0) int pathDepth,
     required String name,
     String? normalizedName,
+
+    /// BINARY-comparable natural sort key (see [MediaDirectory.naturalName]).
+    String? naturalName,
     required MediaType mediaType,
 
     /// File size in bytes.
@@ -111,6 +123,12 @@ abstract class MediaNode with _$MediaNode {
   String get displayPath => path.join('/');
   String get fullPath => [storageId, ...path].join('/');
   String get normalizedNameValue => normalizedName ?? name.toLowerCase();
+
+  /// The natural sort key of [name] — the column the SQL ORDER BY uses.
+  ///
+  /// Rows loaded from the database carry it; an in-memory node encodes it here,
+  /// so Dart and SQL always agree on the order (parity by construction).
+  String get naturalNameValue => naturalName ?? naturalSortKey(name);
 
   /// The occurrence path of this node — the `path` half of a file's
   /// [PlaybackOccurrenceId].

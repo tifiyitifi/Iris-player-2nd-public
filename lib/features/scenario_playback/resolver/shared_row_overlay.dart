@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_queue_index_dao.dart';
+import 'package:iris/features/scenario_playback/resolver/base_order_view.dart';
 import 'package:iris/features/scenario_playback/resolver/bit_vector.dart';
-import 'package:iris/features/scenario_playback/resolver/shared_base_order.dart';
 
 /// One merged group row: where it sits, which group it is, and its members in
 /// RULE order.
@@ -190,7 +190,7 @@ class SharedRowOverlay {
   }
 
   /// Rebuilds the visible rows, taking file node ids from [base].
-  List<QueueEntryRow> toEntries(SharedBaseOrder base) {
+  List<QueueEntryRow> toEntries(BaseOrderView base) {
     final out = <QueueEntryRow>[];
     for (var rank = 0; rank < baseCount; rank++) {
       final row = rowAt(base, rank);
@@ -203,8 +203,8 @@ class SharedRowOverlay {
   /// row anchored elsewhere (the read skips those slots).
   ///
   /// This is the read path's per-slot entry point: O(log groups) plus a
-  /// [SharedBaseOrder.nodeIdAt], never a walk over the whole scenario.
-  QueueEntryRow? rowAt(SharedBaseOrder base, int rank) {
+  /// [BaseOrderView.nodeIdAt], never a walk over the whole scenario.
+  QueueEntryRow? rowAt(BaseOrderView base, int rank) {
     if (rank < 0 || rank >= baseCount) return null;
     if (absorbed[rank]) return null;
     final group = groupAt(rank);
@@ -238,7 +238,7 @@ class SharedRowOverlay {
   }
 
   /// The visible rows for [ranks], in the same order, skipping absorbed slots.
-  List<QueueEntryRow> rowsAt(SharedBaseOrder base, List<int> ranks) => [
+  List<QueueEntryRow> rowsAt(BaseOrderView base, List<int> ranks) => [
         for (final rank in ranks)
           if (rowAt(base, rank) != null) rowAt(base, rank)!,
       ];

@@ -177,13 +177,89 @@ void main() {
     expect(find.byIcon(Icons.play_circle_rounded), findsNothing);
   });
 
+  /// The gate must describe the SAME pair the rest of the app does
+  /// (`bgPairInEffect`: scope + gate + the two terminal hand-backs). Every other
+  /// reader (title suffix, ducking, control authority, the 副音 menu) uses it, so
+  /// a bar that only looked at the 作用范围 advertised a live pair for a run the
+  /// engine had already handed back — and its press then went down the
+  /// `stopGate()` branch, latching the whole run closed instead of starting 副音
+  /// here (it took a SECOND press to re-activate).
+  for (final (String why, Map<String, bool> flags) in [
+    ('bg 播完 (stopRestoreFg 终态)', {'bgExhausted': true}),
+    ('队列走到头 (Repeat.none)', {'bgQueueEnded': true}),
+    ('智能范围落在没有配对的媒体', {'bgOutOfScope': true}),
+  ]) {
+    testWidgets('$why reads as NOT in use — the gate offers to start',
+        (tester) async {
+      final bg = useBackgroundPlaybackStore();
+      await bg.initialized;
+      await playForeground('fg.mp4');
+      bg.set(bg.state.copyWith(
+        enabled: true,
+        quickBarEnabled: true,
+        gateOpen: true,
+        bgAutoPlay: false,
+        bgExhausted: flags['bgExhausted'] ?? false,
+        bgQueueEnded: flags['bgQueueEnded'] ?? false,
+        bgOutOfScope: flags['bgOutOfScope'] ?? false,
+        scopeAnchorKey: await foregroundKey('fg.mp4'),
+      ));
+      await tester.pumpWidget(_harness());
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.play_circle_rounded), findsOneWidget,
+          reason: 'a handed-back pair is not on the air: the gate means '
+              '「在这片开启副音」, never 「关掉整个副音」');
+      expect(find.byIcon(Icons.stop_circle_rounded), findsNothing);
+      final controlBtn = tester.widget<IconButton>(
+        find.ancestor(
+          of: find.byIcon(Icons.settings_input_component_rounded),
+          matching: find.byType(IconButton),
+        ),
+      );
+      expect(controlBtn.onPressed, isNull,
+          reason: 'routing the bar to a silent engine is what greying prevents');
+    });
+  }
+
+  testWidgets('a gate press after bg 播完 re-activates instead of latching shut',
+      (tester) async {
+    final bg = useBackgroundPlaybackStore();
+    await bg.initialized;
+    await playForeground('fg.mp4');
+    bg.set(bg.state.copyWith(
+      enabled: true,
+      quickBarEnabled: true,
+      gateOpen: true,
+      bgAutoPlay: false,
+      bgExhausted: true,
+      // A loaded 副音 queue: the press must re-activate THIS track, not resolve
+      // candidates (which needs the DB).
+      queue: [_media('b1')],
+      currentIndex: 0,
+      scopeAnchorKey: await foregroundKey('fg.mp4'),
+    ));
+    await tester.pumpWidget(_harness());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.play_circle_rounded));
+    await tester.pumpAndSettle();
+
+    expect(bg.state.gateOpen, isTrue,
+        reason: 'one press re-activates; it must not need two');
+    expect(bg.state.bgExhausted, isFalse,
+        reason: 'the terminal hand-back is cleared by the new activation');
+  });
+
   testWidgets('仅当前: another media reads as NOT activated', (tester) async {
     final bg = useBackgroundPlaybackStore();
     await bg.initialized;
     await playForeground('B.mp4');
     // The run is anchored to A while B plays: 副音 is paused for B, so the
     // gate must offer "play 副音 for the current video" — not "stop", which
-    // would latch the whole run closed over a media switch.
+    // would latch the whole run closed over a media switch. Deliberately leaves
+    // `bgOutOfScope` false: the bar must not depend on the observer's cached
+    // verdict having landed, only on the scope rule itself.
     bg.set(bg.state.copyWith(
       enabled: true,
       quickBarEnabled: true,

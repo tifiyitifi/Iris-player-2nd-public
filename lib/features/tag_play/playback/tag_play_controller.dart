@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/domain/effective_playback_item.dart';
 import 'package:iris/features/scenario_playback/model/enum/playback_order.dart';
+import 'package:iris/features/scenario_playback/playback/mirror_target_policy.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
@@ -372,19 +373,40 @@ class TagPlayController {
   /// onto the return stack first. [scenarioId] overrides the coordinator's
   /// active id (tests / explicit switching). Returns the start entry; null
   /// when there is nothing to play.
+  ///
+  /// Two landing modes:
+  /// - [startIndex] (+ optional [startFileKey]) is an EXPLICIT decision made by
+  ///   another window: it outranks this window's bookmark entirely, never
+  ///   triggers the bookmark-lost path, and refuses to play when the shipped
+  ///   key does not match the entry resolved at that index.
+  /// - [startStep] is the bookmark-anchored step (the tag sheet's own use).
   Future<PlaybackEntry?> enterView(
     int tagId, {
     String? scenarioId,
     bool autoplay = true,
+    int startStep = 0,
+    int? startIndex,
+    String? startFileKey,
+    bool wrap = false,
   }) =>
       _enterView(tagId,
-          stashCurrent: true, scenarioId: scenarioId, autoplay: autoplay);
+          stashCurrent: true,
+          scenarioId: scenarioId,
+          autoplay: autoplay,
+          startStep: startStep,
+          startIndex: startIndex,
+          startFileKey: startFileKey,
+          wrap: wrap);
 
   Future<PlaybackEntry?> _enterView(
     int tagId, {
     required bool stashCurrent,
     String? scenarioId,
     bool autoplay = true,
+    int startStep = 0,
+    int? startIndex,
+    String? startFileKey,
+    bool wrap = false,
   }) async {
     if (!TagPlayGate.viewSwitchingEnabled) {
       _log.w('enterView ignored: feature unavailable');
@@ -398,8 +420,6 @@ class TagPlayController {
       _log.i('enterView($tagId): empty view');
       return null;
     }
-
-    final decision = await resolveStart(snap: snap, now: DateTime.now());
 
     final store = useTagPlayStore();
     final previous = store.state.activeViewTagId;
@@ -422,6 +442,43 @@ class TagPlayController {
     _boundScenarioId = sid;
     await _ensureTagName(tagId);
 
+    // Neighbour playback (multi-window) comes FIRST: an EXPLICIT target index
+    // is the SOURCE window's decision and does not depend on THIS window's
+    // bookmark at all. It therefore outranks the bookmark-lost verdict below —
+    // a bookmark whose file vanished describes a bookmarked RESUME, and letting
+    // it veto a valid neighbour made the gesture fail exactly in the "stale
+    // bookmark" situation the shipped index exists to survive (it also cleared
+    // the feed queue and parked autoplay on the way out).
+    if (startIndex != null) {
+      if (startIndex < 0 || startIndex >= snap.length) {
+        _log.w('enterView($tagId): target index $startIndex out of '
+            '${snap.length}');
+        return null;
+      }
+      // Only THIS entry's file identity is valid here: the bookmark's key
+      // belongs to whichever item it was recorded on. Refuse instead of
+      // feeding a different entry — the source already named one in its OSD.
+      final String actualKey = keyOf(snap.items[startIndex]);
+      if (!neighborTargetMatches(
+          expectedKey: startFileKey, actualKey: actualKey)) {
+        _log.w('enterView($tagId): index $startIndex resolves to $actualKey '
+            'but the source decided $startFileKey; not playing another entry');
+        return null;
+      }
+      final entry = _toEntry(snap.items[startIndex]);
+      await advanceEntry(entry, autoplay: autoplay, targetFileKey: startFileKey);
+      // Persist AFTER the feed, like the other landing paths, so the bookmark
+      // records the REAL segment that opened (a merged group may land deeper).
+      await _persistBookmark(snap, entry, virtualPos: startIndex);
+      _log.i('enterView($tagId): start=$startIndex/${snap.length} '
+          'key=${entry.key} target=${startFileKey ?? '-'} (source decision)');
+      return entry;
+    }
+
+    // Only the bookmark-anchored paths need the resume decision (and its
+    // `latestActiveMember` read); an explicit index never consults it.
+    final decision = await resolveStart(snap: snap, now: DateTime.now());
+
     if (decision.bookmarkLost) {
       // Keep the list but auto-play NOTHING: the stored file vanished, so
       // picking another video would betray the bookmark (user choice C). Stop
@@ -437,19 +494,40 @@ class TagPlayController {
     }
 
     _bookmarkLost = false;
-    final entry = _toEntry(snap.items[decision.index]);
-    await advanceEntry(entry,
-        autoplay: autoplay, targetFileKey: decision.fileKey);
+    // Bookmark-anchored landing: the step payload (`startStep`) is the only
+    // caller here, and it deliberately starts from the bookmark.
+    var landing = decision.index;
+    String? targetFileKey = decision.fileKey;
+    if (startStep != 0) {
+      final int stepped = landing + startStep;
+      if (stepped < 0 || stepped >= snap.length) {
+        if (!wrap) return null;
+        landing = stepped < 0 ? snap.length - 1 : 0;
+      } else {
+        landing = stepped;
+      }
+      targetFileKey = null;
+    }
+    final entry = _toEntry(snap.items[landing]);
+    await advanceEntry(entry, autoplay: autoplay, targetFileKey: targetFileKey);
     // Persist AFTER the feed so the bookmark records the REAL segment that
     // actually opened (a merged group may land deeper than the item entry).
-    await _persistBookmark(snap, entry, virtualPos: decision.index);
-    _log.i('enterView($tagId): start=${decision.index}/${snap.length} '
-        'key=${entry.key} target=${decision.fileKey ?? '-'}');
+    await _persistBookmark(snap, entry, virtualPos: landing);
+    _log.i('enterView($tagId): start=$landing/${snap.length} '
+        'key=${entry.key} target=${targetFileKey ?? '-'}');
     return entry;
   }
 
   /// Persists the currently playing REAL file onto the OUTGOING context's own
   /// bookmark before a view switch.
+  ///
+  /// A TAG's bookmark row is keyed by `tagId` alone: it is shared by every tag
+  /// view of that tag, in every window (unlike a scenario bookmark, which is
+  /// per workspace row). A mirror window that lands on the neighbour therefore
+  /// MOVES the tag's "last watched" for the other windows too. That is the data
+  /// model's intended semantics ("what did I last watch in this tag"), not a
+  /// leak to be fixed here — multi-window isolation is only guaranteed for the
+  /// scenario queue (`ScenarioMirrorActions.playMirroredNeighbor`).
   ///
   /// Must run while the outgoing context is still active. The active tag (if
   /// any) stores the live virtual segment in its view-state row; the no-tag
@@ -576,9 +654,17 @@ class TagPlayController {
 
     int targetIndex = 0;
     if (previous != null) {
+      // Prefer the ACTUAL playing file: a merged group's row identity is its
+      // anchor, so relocating by `previous.key` would snap a mid-group session
+      // back to segment 0 (visible when the VM master switch pauses mid-play
+      // and the list becomes plain). `itemIndexByFileKey` maps every segment
+      // key to its display row, so this also covers merged snapshots.
+      final targetKey = _realFileKeyFor(previous);
+      final byFile = snap.indexOfFileKey(targetKey);
       final byKey = snap.indexOfKey(previous.key);
-      targetIndex =
-          byKey ?? await resolveStartIndex(snap: snap, now: DateTime.now());
+      targetIndex = byFile ??
+          byKey ??
+          await resolveStartIndex(snap: snap, now: DateTime.now());
     } else {
       targetIndex = await resolveStartIndex(snap: snap, now: DateTime.now());
     }

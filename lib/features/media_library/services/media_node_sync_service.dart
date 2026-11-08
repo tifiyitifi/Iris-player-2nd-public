@@ -139,10 +139,22 @@ class MediaNodeSyncService {
                 // the browser — or whose set no longer matches the listing in
                 // hand (a subtitle added/removed beside an unchanged video is
                 // invisible to the size/mtime comparison).
+                //
+                // Size / mtime join the comparison because they are what the
+                // queue sorts by: a row written while the lane could not stat
+                // the file (size 0 / NULL mtime) is REPAIRED by simply browsing
+                // it, instead of staying wrong until a full rescan. Only a
+                // KNOWN fresh value counts as a difference — the weak lanes
+                // must never trigger a rewrite that would erase a probed one.
                 file: (file) =>
                     file.mediaType != mediaType ||
                     !MediaNodeDriftAdapter.sameSubtitleLists(
-                        file.subtitles, f.subtitles),
+                        file.subtitles, f.subtitles) ||
+                    (f.size > 0 && file.sizeInBytes != f.size) ||
+                    (f.lastModified != null &&
+                        (file.modifiedAt == null ||
+                            !file.modifiedAt!
+                                .isAtSameMomentAs(f.lastModified!))),
                 orElse: () => true,
               );
           if (needsUpdate) {

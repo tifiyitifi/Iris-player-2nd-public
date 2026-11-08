@@ -40,6 +40,16 @@ enum StepPressGate {
   /// A media switch is in flight (or this hook is advancing the queue): the
   /// press would be resolved against the previous file's state — drop it.
   dropMediaSwitching,
+
+  /// THIS media was already finished by a tail step and the queue advance has
+  /// not rebound the hook yet. A second finish here advances twice (field log:
+  /// `finish now` twice, `wrapToFirst` then `provider.next` — one segment
+  /// skipped), so every further FORWARD press of the same burst is dropped.
+  ///
+  /// A REWIND is not dropped: it leaves the tail by definition, and the hooks
+  /// reset the burst (which clears the latch) before calling this gate — see
+  /// [gateStepPress].
+  dropTailFinished,
 }
 
 /// The single entry decision for a step press (`←` / `→`, double-tap, dial).
@@ -48,12 +58,29 @@ enum StepPressGate {
 /// cannot drift between backends, and `test/step_switch_window_test.dart` drives
 /// the same function: removing the guard from a hook (or from here) fails that
 /// regression test instead of silently skipping episodes in the field.
+///
+/// [finishedUri] is the hook's tail-finish latch: the media a `finishItem` press
+/// already dispatched. `finishedDispatchInFlight` only covers the dispatch
+/// itself (cleared in its `finally`), while the hook keeps the OLD media until
+/// the queue rebinds it — the window in which a held key used to finish the
+/// same entry twice.
+///
+/// INVARIANT: both hooks release that latch BEFORE this gate when the press is a
+/// REWIND (`resetStepBurst()` at the top of `seekRelative`). The gate cannot
+/// tell directions apart from [finishedUri] alone, and a rewind must always be
+/// able to leave a finished item — otherwise a finish whose advance did nothing
+/// (single-entry queue or scenario tail) makes the item un-steppable in both
+/// directions and only an absolute scrub can get out.
 StepPressGate gateStepPress({
   required String? mediaUri,
   required String? openedUri,
   required bool dispatchInFlight,
+  String? finishedUri,
 }) {
   if (dispatchInFlight) return StepPressGate.dropMediaSwitching;
+  if (finishedUri != null && finishedUri == mediaUri) {
+    return StepPressGate.dropTailFinished;
+  }
   if (!shouldAcceptStepPress(mediaUri: mediaUri, openedUri: openedUri)) {
     return StepPressGate.dropMediaSwitching;
   }

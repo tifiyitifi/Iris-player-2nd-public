@@ -8,6 +8,7 @@ import 'package:iris/features/media_library/scan/model/recursive_scan_state.dart
     show ScanPhase;
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
+import 'package:iris/features/media_library/scan/view/scan_info_dialog.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
 import 'package:iris/features/scenario_playback/actions/explicit_file_probe.dart';
 import 'package:iris/features/scenario_playback/model/domain/scenario_explicit_item.dart';
@@ -108,8 +109,8 @@ List<String> collapseRootPaths(Iterable<String> rawPaths) {
 
 /// Whether [filePath] lies at or below [rootPath], comparing PATH SEGMENTS.
 ///
-/// A plain string prefix is not enough: the root `…/20260610/001` must not
-/// claim `…/20260610/0010/…` or `…/20260610/001-backup/…`. An empty root is the
+/// A plain string prefix is not enough: the root `…/002/001` must not
+/// claim `…/002/0010/…` or `…/002/001-backup/…`. An empty root is the
 /// storage root and covers everything.
 ///
 /// [foldCase] mirrors the platform's filesystem semantics (Windows drive / UNC
@@ -265,6 +266,19 @@ String _parentOf(String path) {
   return idx <= 0 ? '' : canonical.substring(0, idx);
 }
 
+/// Listing segments for the parent directory of a raw file path.
+///
+/// Uses [pathConv] (not `canonicalDbPath(...).split('/')`) because only
+/// [pathConv] preserves the path ROOT: a UNC path keeps `\\server`, a rooted
+/// POSIX path keeps `/`, and a SAF document keeps its full `content://` tree
+/// prefix. Losing the root produced a relative listing target, which every
+/// local storage reports as an empty directory.
+List<String> _listingSegmentsOf(String rawFilePath) {
+  final segments = pathConv(rawFilePath);
+  if (segments.isEmpty) return const [];
+  return segments.sublist(0, segments.length - 1);
+}
+
 /// Orchestrates the "扫描更新源数据" action for ONE scenario.
 ///
 /// Reuses the generic [RecursiveScanService] per storage (incremental diff,
@@ -378,7 +392,8 @@ class ScenarioSourceRefreshService {
     if (!context.mounted) return false;
     final probeEnabled = await showScanOptionsDialog(
       context,
-      storageType: prepared.first.storage.type,
+      storage: prepared.first.storage,
+      scope: ScanInfoScope.sources,
     );
     if (probeEnabled == null || !context.mounted) return false;
 
@@ -440,6 +455,7 @@ class ScenarioSourceRefreshService {
             probedExplicit += await probeUncoveredExplicitFiles(
               entry.unit,
               presentPaths: check.presentPaths,
+              presentFiles: check.presentFiles,
             );
           }
           batchStore.finishUnit(unitIndex);
@@ -483,6 +499,7 @@ class ScenarioSourceRefreshService {
           probedExplicit += await probeUncoveredExplicitFiles(
             entry.unit,
             presentPaths: check.presentPaths,
+            presentFiles: check.presentFiles,
           );
         }
         batchStore.finishUnit(unitIndex);
@@ -554,6 +571,7 @@ class ScenarioSourceRefreshService {
   Future<int> probeUncoveredExplicitFiles(
     ScenarioSourceRefreshUnitSpec unit, {
     required Set<String> presentPaths,
+    Map<String, FileItem> presentFiles = const <String, FileItem>{},
   }) async {
     final present = {for (final p in presentPaths) canonicalDbPath(p)};
     final targets = [
@@ -572,6 +590,13 @@ class ScenarioSourceRefreshService {
               unit.storage,
               pathConv(canonicalDbPath(item.path)),
             ),
+            // The listing that proved the file exists also stat-ed it; carrying
+            // those values through is what heals the row's size/mtime without a
+            // second round trip.
+            sizeInBytes:
+                presentFiles[canonicalDbPath(item.path)]?.size,
+            modifiedAt:
+                presentFiles[canonicalDbPath(item.path)]?.lastModified,
           ),
       ]);
       return outcome.written;
@@ -584,15 +609,23 @@ class ScenarioSourceRefreshService {
   }
 
   /// Existence-check explicit single files: list each file's PARENT directory
-  /// and delete the media node only when the listing succeeded and the file is
-  /// genuinely absent. Failed listings never delete (offline-safe).
+  /// and delete the media node only when the listing succeeded, is NOT empty,
+  /// and genuinely omits the file. A failed or EMPTY listing never deletes:
+  /// a missing/unreadable directory is reported as a non-error empty result on
+  /// desktop, so "empty" cannot prove that a specific file is gone.
   ///
-  /// Returns the number of files confirmed missing (and removed) plus the
-  /// canonical paths confirmed present (the only ones worth probing).
-  Future<({int missing, Set<String> presentPaths})> checkExplicitFiles(
-      ScenarioSourceRefreshUnitSpec unit) async {
+  /// Returns the number of files confirmed missing (and removed), the
+  /// canonical paths confirmed present (the only ones worth probing), and the
+  /// listing entry behind each of those paths — its size/mtime are the physical
+  /// facts a rescan writes back even when probing is off.
+  Future<({int missing, Set<String> presentPaths, Map<String, FileItem> presentFiles})>
+      checkExplicitFiles(ScenarioSourceRefreshUnitSpec unit) async {
     if (unit.explicitItems.isEmpty) {
-      return (missing: 0, presentPaths: const <String>{});
+      return (
+        missing: 0,
+        presentPaths: const <String>{},
+        presentFiles: const <String, FileItem>{},
+      );
     }
     final byParent = <String, List<ScenarioExplicitItem>>{};
     for (final item in unit.explicitItems) {
@@ -600,13 +633,15 @@ class ScenarioSourceRefreshService {
     }
 
     final presentPaths = <String>{};
+    final presentFiles = <String, FileItem>{};
     var missing = 0;
     for (final entry in byParent.entries) {
       final parent = entry.key;
       final items = entry.value;
-      final segments = parent.isEmpty
-          ? <String>[]
-          : (isSafPath(parent) ? safSegmentsOf(parent) : parent.split('/'));
+      // Derive the LISTING segments from the item's own path: canonicalDbPath
+      // strips the root marker, so feeding it to the lister turned a UNC share
+      // (`//server/share/dir`) into the relative `server/share/dir`.
+      final segments = _listingSegmentsOf(items.first.path);
 
       List<FileItem> listed;
       try {
@@ -619,19 +654,28 @@ class ScenarioSourceRefreshService {
         areaKeyLog.e('Explicit check listing failed at $parent: $e');
         continue;
       }
+      if (listed.isEmpty) {
+        // Ambiguous: an absent directory lists as an empty, error-free result.
+        // Never turn that into a delete (and never into a missing count).
+        areaKeyLog.w('Explicit check skipped empty listing at $parent');
+        continue;
+      }
 
-      final present = <String>{
-        for (final f in listed) f.name.toLowerCase(),
+      final present = <String, FileItem>{
+        for (final f in listed) f.name.toLowerCase(): f,
       };
 
       final toDelete = <String>[];
       for (final item in items) {
         final name = canonicalDbPath(item.path).split('/').last;
-        if (!present.contains(name.toLowerCase())) {
+        final hit = present[name.toLowerCase()];
+        if (hit == null) {
           toDelete.add(item.path);
           missing++;
         } else {
-          presentPaths.add(canonicalDbPath(item.path));
+          final canonical = canonicalDbPath(item.path);
+          presentPaths.add(canonical);
+          presentFiles[canonical] = hit;
         }
       }
       if (toDelete.isNotEmpty) {
@@ -643,7 +687,7 @@ class ScenarioSourceRefreshService {
         }
       }
     }
-    return (missing: missing, presentPaths: presentPaths);
+    return (missing: missing, presentPaths: presentPaths, presentFiles: presentFiles);
   }
 
   /// Best-effort weight estimate for one storage, from the top-level node

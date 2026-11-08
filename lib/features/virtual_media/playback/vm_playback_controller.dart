@@ -23,6 +23,7 @@ import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart'
 import 'package:iris/features/media_library/model/db/repositories/sub/progress_write_guard.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/playback/vm_duration_backfill.dart';
+import 'package:iris/features/virtual_media/playback/vm_timeline_ownership.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/virtual_media/vm_l10n.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -391,6 +392,17 @@ class VirtualMediaController {
 
   /// True while [_feedCurrent] is awaiting its async node lookup / queue push.
   bool get feedInFlight => _feedInFlight;
+
+  /// True while VM owns — or is about to own — the player timeline.
+  ///
+  /// [isActive] alone is NOT enough for callers that must not stack on a VM
+  /// segment: a legitimate switch keeps it false until its own feed lands. See
+  /// [vmOwnsTimeline].
+  bool get ownsTimeline => vmOwnsTimeline(
+        isActive: isActive,
+        feedInFlight: _feedInFlight,
+        transitioning: state.transitioning,
+      );
 
   /// Clears a STALE session: the store still holds an item but the play queue
   /// is no longer on [_expectedSegmentKey] (e.g. the user opened a normal file
@@ -823,10 +835,11 @@ class VirtualMediaController {
   ///
   /// [localMs] carries a slider-computed intra-segment offset so a
   /// cross-segment scrub lands mid-segment; null/omitted lands on start.
-  /// [finishAtEnd] marks an explicit "finish this item" (tail step / release at
+  /// [finishAtEnd] marks an explicit "finish this item" (a scrub release at
   /// 100%): the feed then lands ON the segment end and the hooks finish it,
   /// instead of the usual `segDur - kSeekTailGuardMs` clamp that can never
-  /// raise `completed`.
+  /// raise `completed`. A tail STEP does not use it — the hooks finish the
+  /// virtual item directly (see `decideStepTail`).
   Future<void> jumpToSegment(
     int index, {
     int? localMs,

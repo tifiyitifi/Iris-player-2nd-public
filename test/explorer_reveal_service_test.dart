@@ -12,8 +12,8 @@ void main() {
         isExplorerRevealVisible(
           onWindows: true,
           storageType: StorageType.internal,
-          segments: const ['E:', 'yb', 'a.mp4'],
-          persistedUri: 'E:\\yb\\a.mp4',
+          segments: const ['E:', 'vault', 'a.mp4'],
+          persistedUri: 'E:\\vault\\a.mp4',
         ),
         isTrue,
       );
@@ -114,7 +114,7 @@ void main() {
         isExplorerRevealVisible(
           onWindows: true,
           storageType: StorageType.internal,
-          segments: const ['E:', 'yb'],
+          segments: const ['E:', 'vault'],
           persistedUri: null,
         ),
         isTrue,
@@ -125,8 +125,8 @@ void main() {
   group('explorerRevealPath', () {
     test('drive-letter segments are joined as a Windows path', () {
       expect(
-        explorerRevealPath(segments: const ['E:', 'yb', 'a.mp4']),
-        'E:/yb/a.mp4',
+        explorerRevealPath(segments: const ['E:', 'vault', 'a.mp4']),
+        'E:/vault/a.mp4',
       );
       expect(
         explorerRevealPath(segments: const ['c:', 'Users', 'me', 'a.mkv']),
@@ -192,21 +192,21 @@ void main() {
       expect(
         explorerRevealPath(
           segments: const [],
-          persistedUri: 'file:///E:/yb/a.mp4',
+          persistedUri: 'file:///E:/vault/a.mp4',
         ),
-        'E:/yb/a.mp4',
+        'E:/vault/a.mp4',
       );
       expect(
         explorerRevealPath(
           segments: const [],
-          persistedUri: 'E:\\yb\\a.mp4',
+          persistedUri: 'E:\\vault\\a.mp4',
         ),
-        'E:/yb/a.mp4',
+        'E:/vault/a.mp4',
       );
       // Legacy pre-fix shape '/E:/...' is repaired, not rejected.
       expect(
-        explorerRevealPath(segments: const [], persistedUri: '/E:/yb/a.mp4'),
-        'E:/yb/a.mp4',
+        explorerRevealPath(segments: const [], persistedUri: '/E:/vault/a.mp4'),
+        'E:/vault/a.mp4',
       );
     });
 
@@ -229,24 +229,24 @@ void main() {
   group('explorerRevealRequest', () {
     test('existing file selects it with a raw /select parameter', () {
       final request = explorerRevealRequest(
-        'E:/yb/a.mp4',
+        'E:/vault/a.mp4',
         targetExists: true,
         isDir: false,
       );
       expect(request.selectsFile, isTrue);
-      expect(request.parameters, '/select,"E:\\yb\\a.mp4"');
-      expect(request.folderPath, 'E:\\yb');
+      expect(request.parameters, '/select,"E:\\vault\\a.mp4"');
+      expect(request.folderPath, 'E:\\vault');
     });
 
     test('missing file opens its parent folder', () {
       final request = explorerRevealRequest(
-        'E:/yb/a.mp4',
+        'E:/vault/a.mp4',
         targetExists: false,
         isDir: false,
       );
       expect(request.selectsFile, isFalse);
       expect(request.parameters, isNull);
-      expect(request.folderPath, 'E:\\yb');
+      expect(request.folderPath, 'E:\\vault');
     });
 
     test('missing file at a drive root opens the drive', () {
@@ -260,12 +260,12 @@ void main() {
 
     test('existing directory opens itself', () {
       final request = explorerRevealRequest(
-        'E:/yb',
+        'E:/vault',
         targetExists: true,
         isDir: true,
       );
       expect(request.selectsFile, isFalse);
-      expect(request.folderPath, 'E:\\yb');
+      expect(request.folderPath, 'E:\\vault');
     });
 
     test('UNC file keeps the double-backslash form', () {
@@ -295,14 +295,14 @@ void main() {
       final requests = <ExplorerRevealRequest>[];
       final outcome = await revealInExplorer(
         storageType: StorageType.internal,
-        segments: const ['E:', 'yb', 'a.mp4'],
+        segments: const ['E:', 'vault', 'a.mp4'],
         onWindows: true,
-        exists: (path) => path == 'E:/yb/a.mp4',
+        exists: (path) => path == 'E:/vault/a.mp4',
         launcher: (request) async => requests.add(request),
       );
       expect(outcome, ExplorerRevealOutcome.launched);
       expect(requests, hasLength(1));
-      expect(requests.single.parameters, '/select,"E:\\yb\\a.mp4"');
+      expect(requests.single.parameters, '/select,"E:\\vault\\a.mp4"');
     });
 
     test('split UNC network row launches a select request', () async {
@@ -323,22 +323,22 @@ void main() {
       final requests = <ExplorerRevealRequest>[];
       final outcome = await revealInExplorer(
         storageType: StorageType.internal,
-        segments: const ['E:', 'yb', 'a.mp4'],
+        segments: const ['E:', 'vault', 'a.mp4'],
         onWindows: true,
         // File gone, parent still there.
-        exists: (path) => path == 'E:/yb',
+        exists: (path) => path == 'E:/vault',
         launcher: (request) async => requests.add(request),
       );
       expect(outcome, ExplorerRevealOutcome.launched);
       expect(requests.single.selectsFile, isFalse);
-      expect(requests.single.folderPath, 'E:\\yb');
+      expect(requests.single.folderPath, 'E:\\vault');
     });
 
     test('missing parent reports folderMissing without launching', () async {
       var launched = false;
       final outcome = await revealInExplorer(
         storageType: StorageType.internal,
-        segments: const ['E:', 'yb', 'a.mp4'],
+        segments: const ['E:', 'vault', 'a.mp4'],
         onWindows: true,
         exists: (_) => false,
         launcher: (_) async => launched = true,
@@ -350,9 +350,9 @@ void main() {
     test('a throwing launcher reports launchFailed', () async {
       final outcome = await revealInExplorer(
         storageType: StorageType.internal,
-        segments: const ['E:', 'yb', 'a.mp4'],
+        segments: const ['E:', 'vault', 'a.mp4'],
         onWindows: true,
-        exists: (path) => path == 'E:/yb/a.mp4',
+        exists: (path) => path == 'E:/vault/a.mp4',
         launcher: (_) async => throw StateError('explorer unavailable'),
       );
       expect(outcome, ExplorerRevealOutcome.launchFailed);

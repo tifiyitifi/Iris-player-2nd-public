@@ -645,6 +645,19 @@ abstract class AppState with _$AppState {
     @JsonKey(includeToJson: false, includeFromJson: false)
     double dropAppendZonePercent,
 
+    /// Desktop drag-and-drop scan policy: when true, dropping folders starts the
+    /// recursive scan immediately with no "scan first?" prompt (the drop IS the
+    /// play request, and a modern local scan is only a few seconds). Persisted
+    /// ONLY as a `playback.dropAutoScan` Drift row (JsonKey-excluded); the drop
+    /// path exists only in the metadata era, so gate-OFF runs never read it.
+    ///
+    /// Kept as a bool on purpose: a "no-ask / ask" switch is all the UI needs.
+    /// If a third policy (e.g. still ask for errored roots) is ever required,
+    /// this becomes a small enum and the gate's policy read grows a switch.
+    @Default(true)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    bool dropAutoScan,
+
     /// media_kit (mpv) demuxer cache sizing preset, controlling
     /// `demuxer-max-bytes` / `demuxer-max-back-bytes`. Metadata-only AUX row
     /// (`playback.videoCachePreset`, JsonKey-excluded); legacy mode degrades
@@ -856,6 +869,16 @@ abstract class AppState with _$AppState {
     @Default(false)
     @JsonKey(includeToJson: false, includeFromJson: false)
     bool scenarioQueueShowBreadcrumb,
+
+    /// Whether the scenario play queue follows the playing item: when playback
+    /// switches to another entry (next/previous, auto-advance, a play started
+    /// from another surface), the open queue flips to that entry's page and
+    /// centers its row. Persisted as the `window.scenarioQueueAutoLocate` AUX
+    /// row. Defaults to true; opening the queue on the current item and the
+    /// "Go to current" button stay available when it is off.
+    @Default(true)
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    bool scenarioQueueAutoLocate,
 
     /// Right-edge activation strip width as a percentage of the playback-area
     /// width, for the picture-fullscreen side-dock hover peek. Persisted as

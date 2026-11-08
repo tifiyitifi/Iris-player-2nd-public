@@ -22,9 +22,10 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.
 import 'package:iris/features/scenario_playback/resolver/scenario_resolver.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_source_provider.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_base_order.dart';
-import 'package:iris/features/scenario_playback/resolver/shared_index_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_media_order.dart';
 import 'package:iris/models/db/app_database.dart';
+
+import 'helpers/shared_index_decode.dart';
 
 /// The shared-order base order must reproduce the per-scenario permutation
 /// exactly — the whole point is that rank/select over bitmaps is a DROP-IN for the
@@ -157,17 +158,26 @@ void main() {
       expect(buildId, greaterThan(0));
       final blobs = await sharedDao.read(buildId);
       expect(blobs, isNotNull, reason: 'the scenario must be representable');
-      final slices = <SharedOrderSlice>[];
-      for (final s in SharedIndexCodec.decodeSlices(blobs!.slices)) {
-        final order = await orderDao.read(s.orderKey, mediaRev: s.mediaRev);
-        expect(order, isNotNull, reason: 'the shared order must persist');
-        slices.add(
-            SharedOrderSlice(orderKey: s.orderKey, order: order!, bits: s.bits));
-      }
-      return SharedBaseOrder(
-        slices: slices,
-        accepted: SharedIndexCodec.decodeBitmap(blobs.accepted),
-      ).materialize().toList();
+      final decoded = await decodeSharedIndex(blobs: blobs!, orderDao: orderDao);
+      return [
+        for (var i = 0; i < decoded.base.count; i++) decoded.base.nodeIdAt(i)!,
+      ];
+    }
+
+    /// The order the resolver's WALK serves. For a multi-source scenario the
+    /// persisted representation is the merged GLOBAL order (not the
+    /// per-source concatenation), so this is the oracle the index must match.
+    Future<List<int>> walkOrder(String scenarioId) async {
+      final page = await resolver().resolvePage(
+          scenarioId: scenarioId, page: 0, pageSize: 10000);
+      return [
+        for (final item in page.items)
+          int.tryParse(item.media.maybeMap(
+                file: (f) => f.id,
+                orElse: () => '',
+              )) ??
+              -1,
+      ];
     }
 
     /// The shared-order view of the same scenario.
@@ -235,7 +245,7 @@ void main() {
       expect(shared.materialize(), persisted);
     });
 
-    test('overlapping sources + exclude: shared == persisted', () async {
+    test('overlapping sources + exclude: persisted == walk', () async {
       await seed();
       final r = resolver();
       final scenario = await repo.createScenario(name: 'S');
@@ -273,14 +283,9 @@ void main() {
       expect(persisted.any((id) => paths[id] == 'A/x.mp4'), isFalse);
       expect(persisted.toSet().length, lessThan(persisted.length));
 
-      final shared = await sharedBaseOrder(
-        const [
-          (storageId: 'st1', path: 'A', recursive: true),
-          (storageId: 'st1', path: 'A/sub', recursive: true),
-        ],
-        excludePath: (p) => p == 'A/x.mp4',
-      );
-      expect(shared.materialize(), persisted);
+      // The persisted order is the GLOBAL one (merged base order), so the walk
+      // is the oracle — not a per-source concatenation.
+      expect(persisted, await walkOrder(scenario.id));
     });
 
     test('dedup policy collapses the overlap in both views', () async {
@@ -317,7 +322,11 @@ void main() {
         ],
         dedup: true,
       );
-      expect(shared.materialize(), persisted);
+      // Both views agree that the overlap collapsed to ONE row; the ORDER is
+      // the global one now, so only the SET is compared against the
+      // concatenation reference.
+      expect(shared.materialize().toSet(), persisted.toSet());
+      expect(persisted, await walkOrder(scenario.id));
     });
   });
 }

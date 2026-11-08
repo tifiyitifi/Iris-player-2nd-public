@@ -8,6 +8,7 @@ import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/db/storage_scope.dart';
 import 'package:iris/models/file.dart' show Subtitle;
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyDb);
@@ -31,6 +32,7 @@ extension MediaNodeDriftAdapter on MediaNode {
         pathDepth: row.pathDepth,
         name: row.name,
         normalizedName: row.normalizedName,
+        naturalName: row.naturalName,
         //
         directMediaCount: row.directMediaCount,
         directDirCount: row.directDirCount,
@@ -58,6 +60,7 @@ extension MediaNodeDriftAdapter on MediaNode {
       pathDepth: row.pathDepth,
       name: row.name,
       normalizedName: row.normalizedName,
+      naturalName: row.naturalName,
       mediaType: row.mediaType ?? MediaType.unknown,
       sizeInBytes: row.sizeInBytes,
       durationMs: row.durationMs,
@@ -147,6 +150,7 @@ extension MediaNodeDriftAdapter on MediaNode {
           pathDepth: Value(dir.pathDepth),
           name: dir.name,
           normalizedName: Value(dir.normalizedName ?? dir.name.toLowerCase()),
+          naturalName: Value(naturalSortKey(dir.name)),
           nodeKind: MediaNodeKind.directory,
           mediaType: const Value(null),
           sizeInBytes: const Value(null),
@@ -189,9 +193,15 @@ extension MediaNodeDriftAdapter on MediaNode {
           pathDepth: Value(file.pathDepth),
           name: file.name,
           normalizedName: Value(file.normalizedName ?? file.name.toLowerCase()),
+          naturalName: Value(naturalSortKey(file.name)),
           nodeKind: MediaNodeKind.file,
           mediaType: Value(file.mediaType),
-          sizeInBytes: Value(file.sizeInBytes),
+          // A list-level size is the WEAKEST source: 0 means "the lane could
+          // not stat it" (SAF, WebDAV, FTP), never "this playable file is
+          // empty". Writing that 0 erased a size a probe had already learned,
+          // and the queue's size sort then ranked the file as the smallest.
+          // Unknown must therefore be absent (keep the stored value).
+          sizeInBytes: _sizeValue(file.sizeInBytes),
           // Deep-probe fields are written ONLY when the incoming node
           // actually carries values; absent keeps whatever is already stored
           // (rescan-preserving rule — a plain rescan never wipes probe data).
@@ -212,7 +222,10 @@ extension MediaNodeDriftAdapter on MediaNode {
           totalSizeInBytes: const Value(0),
           totalDurationMs: const Value(0),
           //
-          modifiedAt: Value(file.modifiedAt),
+          // A missing mtime is "unknown", not "epoch NULL": an unconditional
+          // write let one listing lane without mtime support wipe the timestamp
+          // the queue sorts (and displays) by.
+          modifiedAt: _timeValue(file.modifiedAt),
           createdAt: Value(file.createdAt),
           isPresent: Value(file.isPresent),
           lastSeenAt: Value(file.lastSeenAt),
@@ -228,6 +241,18 @@ extension MediaNodeDriftAdapter on MediaNode {
   /// otherwise. This lets probed scanner nodes persist their values while
   /// plain rescans never clobber existing ones.
   static Value<int?> _probeValue(int? v) =>
+      v == null ? const Value.absent() : Value(v);
+
+  /// Size write funnel: a non-positive size from a LISTING is "unknown"
+  /// (SAF/WebDAV/FTP lanes cannot stat), so it must not overwrite a known
+  /// value. A real playable file is never 0 bytes, so treating 0 as unknown
+  /// cannot hide a legitimate size.
+  static Value<int?> _sizeValue(int? v) =>
+      (v == null || v <= 0) ? const Value.absent() : Value(v);
+
+  /// mtime write funnel: null is "this lane cannot see mtimes", so keep the
+  /// stored one instead of turning the column into NULL.
+  static Value<DateTime?> _timeValue(DateTime? v) =>
       v == null ? const Value.absent() : Value(v);
 
   /// Text counterpart of [_probeValue] (keeps a stored SAF document URI

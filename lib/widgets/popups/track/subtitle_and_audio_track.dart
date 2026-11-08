@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:iris/features/fake_cut/view/fake_cut_tab.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/widgets/popups/track/audio_track_list.dart';
 import 'package:iris/widgets/popups/track/subtitle_list.dart';
@@ -23,15 +24,18 @@ class SubtitleAndAudioTrack extends HookWidget {
   @override
   Widget build(BuildContext context) {
     final t = getLocalizations(context);
+    final player = Provider.of<MediaPlayer>(context);
 
     List<ITab> tabs = [
       ITab(title: t.subtitle, child: SubtitleList()),
       ITab(title: t.audio_track, child: AudioTrackList()),
+      // 简播 is mpv-EDL only: the tab is absent on fvp rather than offering a
+      // half-working feature (see fake_cut_preflight.dart).
+      if (player is MediaKitPlayer)
+        ITab(title: t.fake_cut, child: const FakeCutTab()),
     ];
 
     final tabController = useTabController(initialLength: tabs.length);
-
-    final player = Provider.of<MediaPlayer>(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,

@@ -16,6 +16,7 @@ import 'package:iris/models/db/db_module.dart';
 import 'package:iris/store/persistent_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:uuid/uuid.dart';
 
 final areaKeyLog = AreaKeyLog(LogKeys.legacyStore);
@@ -240,7 +241,7 @@ class MediaLibsPageStore extends PersistentStore<MediaLibsPageState> {
     ) {
       switch (sortBy) {
         case MediaLibsListSortBy.name:
-          return a.name.compareTo(b.name);
+          return naturalCompare(a.name, b.name);
 
         case MediaLibsListSortBy.createdAt:
           return a.createdAt.compareTo(

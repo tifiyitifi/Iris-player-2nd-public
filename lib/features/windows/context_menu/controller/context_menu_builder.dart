@@ -21,6 +21,16 @@ List<ContextMenuEntry> buildPotPlayerContextMenu({
   // calls (tests, callers without l10n) usable.
   bool canRevealInExplorer = false,
   String revealInExplorerLabel = 'Open in Explorer',
+  // Multi-window neighbour entries (Shift+PageUp/Down as menu items). Hidden
+  // where a second window cannot exist at all (Store/MSIX build, phones) so the
+  // menu never offers an entry that can only explain why it is impossible.
+  bool canOpenNeighborInNewWindow = false,
+  String openPrevInNewWindowLabel = 'Open previous in new window',
+  String openNextInNewWindowLabel = 'Open next in new window',
+  // Effective shortcut labels (user keybinds win over the defaults); null
+  // renders no trailing hint, e.g. the legacy scheme binds neither.
+  String? openPrevInNewWindowHint,
+  String? openNextInNewWindowHint,
 }) {
   // ── Capability-gated submenus ──
   final bool showSyncSubmenus = supportsSync;
@@ -155,6 +165,23 @@ List<ContextMenuEntry> buildPotPlayerContextMenu({
           icon: Icons.skip_next_rounded,
           action: PotPlayerAction.nextItem,
         ),
+        // Multi-window neighbour: same resolves as the keys, but the two
+        // windows step independently afterwards — hence a separate entry
+        // instead of a modifier on the items above.
+        if (canOpenNeighborInNewWindow) ...[
+          ContextMenuItem(
+            label: openPrevInNewWindowLabel,
+            icon: Icons.skip_previous_rounded,
+            action: PotPlayerAction.openPreviousInNewWindow,
+            hint: openPrevInNewWindowHint,
+          ),
+          ContextMenuItem(
+            label: openNextInNewWindowLabel,
+            icon: Icons.skip_next_rounded,
+            action: PotPlayerAction.openNextInNewWindow,
+            hint: openNextInNewWindowHint,
+          ),
+        ],
         const ContextMenuItem(
           label: 'Jump to time (G)',
           icon: Icons.schedule_rounded,

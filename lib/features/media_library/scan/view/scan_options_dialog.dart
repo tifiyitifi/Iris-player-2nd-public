@@ -3,21 +3,48 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/features/media_library/scan/probe/scan_probe_preference.dart';
+import 'package:iris/features/media_library/scan/view/scan_info_dialog.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/utils/get_localizations.dart';
+
+/// Which pre-scan prompt a recursive scan shows.
+///
+/// `false` (current): the explainer dialog — scope, measured cost, caveats and
+/// the silent-completion option.
+///
+/// `true`: the legacy "read media info?" checkbox. KEPT ON PURPOSE, not dead
+/// code: it is the only way to start a scan that skips the media-info pass, and
+/// the whole path (preference persistence included) still works. Flipping this
+/// constant is the entire change needed to bring it back.
+const bool kShowScanProbeOption = false;
 
 /// Shown before a recursive scan starts.
 ///
 /// Returns:
 /// - `null`  → user cancelled, do not start the scan;
-/// - `true`  → start with deep media-info probe enabled;
-/// - `false` → start plain scan.
-Future<bool?> showScanOptionsDialog(BuildContext context,
-    {required StorageType storageType}) {
+/// - `true`  → start with the deep media-info probe enabled;
+/// - `false` → start plain scan (only reachable from the legacy dialog while
+///   [kShowScanProbeOption] is true: the explainer always probes).
+Future<bool?> showScanOptionsDialog(
+  BuildContext context, {
+  required Storage storage,
+  String? rootPath,
+  ScanInfoScope? scope,
+}) {
+  if (kShowScanProbeOption) {
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => ScanOptionsDialog(storageType: storage.type),
+    );
+  }
   return showDialog<bool>(
     context: context,
-    builder: (_) => ScanOptionsDialog(storageType: storageType),
+    builder: (_) => ScanInfoDialog(
+      storage: storage,
+      rootPath: rootPath,
+      scope: scope,
+    ),
   );
 }
 
@@ -44,6 +71,12 @@ String scanProbeEstimateText({
   return t.scan_estimate_none;
 }
 
+/// The legacy pre-scan prompt (probe checkbox).
+///
+/// Only reachable when [kShowScanProbeOption] is flipped to `true`; the widget
+/// itself stays fully functional so that flip is a one-line change. Restored
+/// verbatim from the pre-explainer version: the checkbox is always visible,
+/// the choice is always persisted, and the dialog returns it.
 class ScanOptionsDialog extends HookWidget {
   const ScanOptionsDialog({super.key, required this.storageType});
 
@@ -56,7 +89,6 @@ class ScanOptionsDialog extends HookWidget {
     final probe = useState(true);
     final loaded = useState(false);
 
-    // Restore last confirmed choice once.
     useEffect(() {
       var cancelled = false;
       ScanProbePreference.load().then((v) {
@@ -90,8 +122,7 @@ class ScanOptionsDialog extends HookWidget {
               controlAffinity: ListTileControlAffinity.leading,
               value: loaded.value ? probe.value : null,
               tristate: true,
-              onChanged: (v) =>
-                  probe.value = v == true,
+              onChanged: (v) => probe.value = v == true,
               title: Text(t.scan_probe_label),
             ),
             const SizedBox(height: 8),

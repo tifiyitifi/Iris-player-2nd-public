@@ -5,7 +5,6 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/model/db/dao/media_nodes_dao.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/media_node_repository.dart';
-import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/db/dao/media_order_dao.dart';
 import 'package:iris/features/scenario_playback/model/db/dao/scenario_excludes_dao.dart';
@@ -97,8 +96,8 @@ void main() {
     }
   });
 
-  test('a v44 database upgrades: the row tables go, the generation stays, and '
-      'the queue keeps serving', () async {
+  test('a v44 database upgrades: the retired row tables go, and the queue '
+      'still serves (v52 rebuilds the derived index)', () async {
     final dir = Directory.systemTemp.createTempSync('iris_v45_probe');
     addTearDown(() => dir.deleteSync(recursive: true));
     final file = File('${dir.path}/iris_storages.db');
@@ -157,6 +156,7 @@ void main() {
     // ── Reopen at the new version: drift runs MigrationV45 on the way in.
     final upgraded = AppDatabase(NativeDatabase(file));
     addTearDown(upgraded.close);
+    // The retired row tables are gone for good.
     final tables = await names(upgraded, 'table');
     for (final table in MigrationV45.droppedTables) {
       expect(tables, isNot(contains(table)), reason: '$table must be dropped');
@@ -167,11 +167,14 @@ void main() {
         .getSingle();
     expect(row.read<int>('user_version'), greaterThanOrEqualTo(46));
 
-    // The generation survived: the shared blob is still there and the reads
-    // still resolve from it, with no rebuild.
+    // The DERIVED generation does NOT survive to HEAD any more: schema v52
+    // resets `scenario_shared_index` / `scenario_queue_builds` because the blob
+    // format and the base order changed (a stale blob would serve the old,
+    // broken order). Nothing user-owned lives there, so the next build recreates
+    // it; the read below therefore exercises the (still correct) walk fallback.
     final upgradedShared = ScenarioSharedIndexDao(upgraded);
-    expect(await upgradedShared.read(buildId), isNotNull);
-    expect(await countOf(upgraded, 'scenario_queue_builds'), 1);
+    expect(await upgradedShared.read(buildId), isNull);
+    expect(await countOf(upgraded, 'scenario_queue_builds'), 0);
     final after = await ScenarioResolver(
       repo: repoOf(upgraded),
       nodeRepo: MediaNodeRepository(MediaNodesDao(upgraded)),

@@ -447,9 +447,9 @@ void main() {
           pageSize: 2);
     });
 
-    test('a scenario the representation cannot express has no index and the '
-        'walk still serves it', () async {
+    test('an explicit item joins the indexed queue in global order', () async {
       await seedA(5);
+      await seedFiles(['B/0009.mp4']);
       final scenario = await repo.createScenario(name: 'S');
       await repo.addSource(
           scenarioId: scenario.id,
@@ -459,18 +459,48 @@ void main() {
       await repo.addExplicitItem(
           scenarioId: scenario.id,
           storageId: 'st1',
-          path: 'A/0000.mp4',
-      );
+          path: 'B/0009.mp4');
       final buildId =
           await buildResolver(shared: false).buildQueueIndex(scenario.id);
-      expect(await sharedDao.read(buildId), isNull,
-          reason: 'an explicit item is not representable');
+      expect(await sharedDao.read(buildId), isNotNull,
+          reason: 'an explicit item is representable now');
 
-      // The switch is ON but there is no shared index: the read must fall back
-      // to the walk and still serve the explicit item.
       final page = await buildResolver(shared: true).resolvePageIndexed(
           scenarioId: scenario.id, page: 0, pageSize: 50);
-      expect(page.items.where((i) => i.explicit), isNotEmpty);
+      expect(page.items.map((i) => i.media.name).toList(), [
+        '0000.mp4',
+        '0001.mp4',
+        '0002.mp4',
+        '0003.mp4',
+        '0004.mp4',
+        '0009.mp4',
+      ]);
+      expect(page.items.last.explicit, isTrue);
+    });
+
+    test('a vanished explicit file becomes the placeholder tail', () async {
+      await seedA(3);
+      final scenario = await repo.createScenario(name: 'S');
+      await repo.addSource(
+          scenarioId: scenario.id,
+          storageId: 'st1',
+          path: 'A',
+          recursive: true);
+      await repo.addExplicitItem(
+          scenarioId: scenario.id,
+          storageId: 'st1',
+          path: 'B/gone.mp4');
+      final buildId =
+          await buildResolver(shared: false).buildQueueIndex(scenario.id);
+      expect(await sharedDao.read(buildId), isNotNull,
+          reason: 'a missing explicit file is a placeholder row, not a gap');
+
+      final page = await buildResolver(shared: true).resolvePageIndexed(
+          scenarioId: scenario.id, page: 0, pageSize: 50);
+      expect(page.totalItems, 4);
+      expect(page.items.take(3).every((i) => i.available), isTrue);
+      expect(page.items.last.available, isFalse);
+      expect(page.items.last.virtualIndex, 3);
     });
 
     test('a STALE shared order is refused, never served', () async {
@@ -704,7 +734,7 @@ void main() {
       // nodes.
       final blobs = (await sharedDao.read(buildId))!;
       final orderKeys = [
-        for (final s in SharedIndexCodec.decodeSlices(blobs.slices)) s.orderKey,
+        for (final s in SharedIndexCodec.decodeSlices(blobs.slices).singleSlices) s.orderKey,
       ];
       expect(orderKeys, isNotEmpty);
       for (final orderKey in orderKeys) {

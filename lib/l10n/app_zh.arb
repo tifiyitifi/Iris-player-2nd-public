@@ -106,7 +106,7 @@
   "storage": "存储",
   "stretch": "拉伸",
   "subtitle": "字幕",
-  "subtitle_and_audio_track": "字幕和音轨",
+  "subtitle_and_audio_track": "字幕 / 音轨 / 简播",
   "subtitle_file_does_not_exist": "字幕文件不存在",
   "system": "系统",
   "test_connection": "测试连接",
@@ -371,6 +371,7 @@
   },
   "search_origin_explicit": "显式",
   "search_origin_source": "来源",
+  "search_origin_virtual": "虚拟",
   "search_meta_video": "视频",
   "search_meta_audio": "音频",
   "search_excludes_label": "排除规则（尊重排除）",
@@ -468,6 +469,10 @@
   "keybind_act_play_pause": "播放 / 暂停",
   "keybind_act_previous": "上一个",
   "keybind_act_next": "下一个",
+  "keybind_act_open_prev_window": "在新窗口播放上一个",
+  "keybind_act_open_next_window": "在新窗口播放下一个",
+  "keybind_act_toggle_bg_gate": "对当前视频播放/停止副音",
+  "keybind_act_toggle_bg_control": "切换前台 / 副音控制",
   "keybind_act_frame_backward": "后退一帧",
   "keybind_act_frame_forward": "前进一帧",
   "keybind_act_seek_backward": "后退",
@@ -703,6 +708,8 @@
   "desktop_hover_show_control_bar": "控制栏",
   "desktop_hover_show_control_bar_desc": "移动鼠标时同时显示完整控制栏（包含标题）。两者都不勾选时，鼠标移动只保留光标显示。",
   "set_scan_auto_close": "扫描自动关闭",
+  "set_scan_completion_prompt": "扫描完成倒计时",
+  "set_scan_completion_prompt_desc": "关闭：扫描一结束就收起进度面板；开启：先显示倒计时。",
   "set_webdav_scan_mode": "WebDAV 主机查找",
   "set_webdav_scan_mode_discovery": "自动发现",
   "set_webdav_scan_mode_legacy": "旧版逐个扫描",
@@ -758,6 +765,7 @@
   "set_side_fullscreen_behavior": "全屏时的侧边面板",
   "set_playlist_popup_theme": "浮动队列主题",
   "set_playlist_dock_theme": "侧边队列主题",
+  "set_scenario_queue_auto_locate": "切换视频时自动定位",
   "set_scenario_queue_layout": "播放队列布局",
   "scn_queue_layout_v1": "V1（经典）",
   "scn_queue_layout_v2": "V2（单行）",
@@ -814,6 +822,7 @@
   "set_fs_isolation_linear_desc": "为普通长条控制栏保留的隔离高度＝控制栏高度 + 该比例×屏高；画面全屏时，右缘悬停在此范围内不呼出侧边队列。默认 25%",
   "set_playlist_popup_theme_desc": "浮动队列主题：跟随系统 / 深色 / 白色（仅桌面）",
   "set_playlist_dock_theme_desc": "侧边队列主题：PotPlayer 深色 / 跟随系统 / 白色（仅桌面）",
+  "set_scenario_queue_auto_locate_desc": "播放队列中切换到新一集（上一集/下一集、自动连播或从别处开始播放）时，自动翻到它所在的页并滚动到该行。关闭后仅停止自动跳转：打开队列仍会定位到当前项，「定位到当前」按钮照常可用",
   "set_scenario_queue_layout_desc": "V1 保留经典多行工具栏；V2 压缩为一行，其余功能收进「更多」菜单；V3 干脆去掉底栏，把控件做成半透明的可拖动方格悬浮在列表上。默认：手机横屏用 V3，其余用 V2。也可随时用工具栏上的按钮切换",
   "set_video_display_mode_desc": "视频画面适配：铺满/填充/裁剪/原始比例（桌面含自适应/强制原始；控制栏 Fit 按钮同步切换）",
   "set_osd_enabled_desc": "为键盘快捷键显示浮动提示",
@@ -982,7 +991,7 @@
   "vm_editor_match_pattern_recursive": "匹配目录（递归）",
   "vm_editor_sort": "排序",
   "vm_editor_sort_field": "排序字段",
-  "vm_editor_sort_filename": "文件名（自然序）",
+  "vm_editor_sort_filename": "文件名",
   "vm_editor_sort_duration": "时长",
   "vm_editor_sort_resolution": "分辨率（宽×高）",
   "vm_editor_sort_aspect": "宽高比",
@@ -1103,6 +1112,9 @@
   "vm_mgr_new_rule": "新建规则",
   "vm_mgr_close_escape": "关闭（Esc）",
   "vm_mgr_title": "虚拟媒体管理",
+  "vm_master_title": "虚拟合并",
+  "vm_master_subtitle_on": "已开启 · 播放列表中合并显示",
+  "vm_master_subtitle_off": "已关闭 · 列表按普通文件显示，规则保留",
   "vm_mgr_empty_title": "暂无虚拟媒体规则",
   "vm_mgr_empty_body": "创建规则后，情景播放中匹配目录的多个视频将合并为一个虚拟视频显示。",
   "vm_mgr_limit_min": "{count}分",
@@ -1566,6 +1578,7 @@
   "lib_open_in_new_window": "在新窗口打开",
   "new_window_play_failed_title": "新窗口未能开始播放",
   "new_window_play_failed_body": "新窗口的队列没有解析出可播放的媒体。请先扫描该存储，再在原窗口重试。",
+  "new_window_mirror_failed_body": "镜像队列无法定位到目标条目，本窗口继续播放当前内容。",
   "new_window_unavailable_title": "无法打开新窗口",
   "new_window_unavailable_body": "当前版本只运行单窗口（Microsoft Store 版为单实例），或新进程启动失败。",
   "new_window_too_many_files_title": "项目过多，无法打开新窗口",
@@ -1875,22 +1888,88 @@
   "scan_title": "扫描选项",
   "scan_probe_label": "尝试读取媒体信息（时长 / 分辨率）",
   "scan_purpose": "用途：为按时长分组、分辨率排序与总时长统计提供数据；播放视频时也会自动补录缺失信息。",
-  "scan_strategy_win": "电脑：直接读取文件属性（与资源管理器详情页同源，不解码，速度很快）。",
+  "scan_strategy_win": "电脑：直接解析容器头部（MP4/MOV 读时长与分辨率，不解码，约每文件 1 毫秒）；其它格式回落到资源管理器属性来源。",
   "scan_strategy_android": "手机：调用系统媒体探查器读取，支持存储路径与 SAF 内容地址。",
   "scan_strategy_none": "当前平台暂无探测方案，可稍后播放时自动补录。",
-  "scan_estimate_remote": "网络存储不支持探测时长：扫描只建目录索引，深层信息缺失的文件排在后面，时长在播放时自动补录；可随时暂停或停止扫描。",
-  "scan_estimate_win": "预计耗时：电脑本地直接读取文件属性，不解码，一般每文件几十毫秒——百级文件多几秒，千级约半分钟；可随时暂停或停止扫描。",
-  "scan_estimate_android": "预计耗时：手机本地逐个调用系统探查器，一般每文件约 50–200ms，千级文件约 1–3 分钟，文件很多时明显变慢；可随时暂停或停止扫描。",
+  "scan_estimate_remote": "网络存储会在后台低并发探测：先列出目录并可播放，时长随后补齐；可随时暂停或停止扫描。",
+  "scan_estimate_win": "预计耗时：本地封装格式（MP4/MKV/AVI/MP3/FLAC/WAV/OGG/AMR）直接读文件头，每文件约 1 毫秒——千级文件几秒；其余格式回落到较慢的属性读取。可随时暂停或停止扫描。",
+  "scan_estimate_android": "预计耗时：本地常见的封装格式（MP4/MKV/AVI/MP3/FLAC/WAV/OGG/AMR）直接读文件头，每文件约 1 毫秒；其余格式才会回落到系统探查器，每文件约 50–200ms。可随时暂停或停止扫描。",
   "scan_estimate_none": "当前平台暂无探测方案：时长在播放时自动补录；可随时暂停或停止扫描。",
   "scan_caveat": "注意：不支持的封装格式、损坏文件或受限存储可能读不到信息——这些文件会统一排在有信息的后面（无论升序降序），并在播放时自动补录。",
+  "scan_info_title": "扫描前说明",
+  "scan_info_scope_storage": "范围：整个存储「{name}」，包含全部子目录。",
+  "@scan_info_scope_storage": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "scan_info_scope_folder": "范围：目录「{name}」及其全部子目录。",
+  "@scan_info_scope_folder": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "scan_info_scope_sources": "范围：本场景的全部来源目录及其子目录。",
+  "scan_info_reads": "会读取目录结构，以及每个音频/视频的时长与分辨率（只读文件头，约 1 毫秒/文件）；不会修改、移动或删除任何文件。",
+  "scan_info_cost_local": "本地扫描参考：桌面端单个媒体目录 5,500 个媒体文件约 5 秒（约每 1 万个 10 秒）；手机端全盘 2.1 万个媒体文件约 91 秒（约每 1 万个 45 秒），空库首次扫描约为 1.5–2 倍。",
+  "scan_info_remote": "网络存储：目录先可浏览，时长在后台补齐；速度取决于带宽。",
+  "scan_info_cost_dirs": "目录本身也要花时间：桌面和手机上每 1 万个文件夹约多花 20 秒，即使里面没有媒体文件。",
+  "scan_info_estimate_caveat": "以上估算按媒体文件数折算。目录特别多、媒体文件很少时（整盘、开发目录、缓存目录）会明显更慢，这种情况下以目录数量为准。",
+  "scan_info_win_whole_disk": "不建议扫描整个磁盘：系统盘、开发盘动辄十几万目录，还夹着权限受限的目录和超过 260 字符的路径（Windows 上会直接列不出来）。请只扫描媒体目录。",
+  "scan_info_known": "本存储已记录 {files} 个媒体文件，预计约 {time}。",
+  "@scan_info_known": {
+    "placeholders": {
+      "files": {"type": "String"},
+      "time": {"type": "String"}
+    }
+  },
+  "scan_info_known_folder": "本目录已记录 {files} 个媒体文件，预计约 {time}。",
+  "@scan_info_known_folder": {
+    "placeholders": {
+      "files": {"type": "String"},
+      "time": {"type": "String"}
+    }
+  },
+  "scan_info_advice": "进入存储 → 在特定目录里「递归扫描」。",
+  "scan_info_note_pause": "可随时暂停或停止，已扫描的结果会保留。",
+  "scan_info_note_resume": "应用被杀掉时，下次启动会显示「已中断」，可以从断点继续。",
+  "scan_info_note_unreadable": "读不到信息的文件会排在有信息的后面，播放时自动补录。",
+  "scan_info_silent_label": "取消扫描完成倒计时（静默完成）",
+  "scan_info_silent_hint": "扫描一结束就关闭进度面板。可在 设置 › 通用 › 媒体库扫描 中重新开启。",
+  "scan_info_silent_current": "当前倒计时：{seconds} 秒",
+  "@scan_info_silent_current": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_auto_close_immediate": "立即关闭",
+  "scan_auto_close_seconds": "{seconds} 秒",
+  "@scan_auto_close_seconds": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_auto_close_slider_immediate": "立即",
+  "scan_auto_close_slider_seconds": "{seconds} 秒",
+  "@scan_auto_close_slider_seconds": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_error_title": "扫描失败",
+  "scan_error_unknown": "扫描器未给出具体原因。",
+  "scan_cannot_start": "无法为本次拖入启动扫描（对应存储不可用），因此没有播放。",
+  "scan_error_ack": "知道了",
   "scan_cancel": "取消",
   "scan_start": "开始扫描",
   "scan_status_scanning": "扫描中…",
   "scan_status_done": "任务完成。",
   "scan_status_stopped": "已停止。",
   "scan_status_error": "错误：{error}",
+  "scan_interrupted_reason": "上次扫描因应用重启而中断。",
   "scan_discovering": "正在发现 {total} 个目录 · 已扫描 {scanned} — {path}",
   "scan_progress_dirs": "{percent}% · {scanned}/{total} 个目录",
+  "scan_discovering_unknown": "正在发现目录 · 已扫描 {scanned} 个 — {path}",
   "scan_progress_percent": "{percent}%",
   "scan_closing_in": "将在 {seconds} 秒后关闭",
   "scan_elapsed": "已耗时：{time}",
@@ -2000,9 +2079,6 @@
       "count": {"type": "int"}
     }
   },
-  "gate_resume_title": "扫描完成",
-  "gate_resume_body": "是否继续播放刚才的内容？",
-  "gate_resume_continue": "继续播放",
   "gate_storage_root": "存储根目录",
   "gate_stale_hm": "{h}小时{m}分",
   "@gate_stale_hm": {
@@ -2235,8 +2311,24 @@
   "osd_moved_recycle": "已移入回收站",
   "osd_previous": "上一个",
   "osd_next": "下一个",
+  "osd_open_in_new_window": "已在新窗口播放",
+  "osd_no_previous": "没有上一个",
+  "osd_no_next": "没有下一个",
+  "osd_new_window_unavailable": "当前播放模式下无法在新窗口打开",
   "osd_paused": "已暂停",
   "osd_playing": "播放中",
+  "osd_bg_gate_on": "副音已开启",
+  "osd_bg_gate_off": "副音已停止",
+  "osd_control_bg": "控制：副音",
+  "osd_control_fg": "控制：前台",
+  "osd_control_unavailable": "副音未开启",
+  "tooltip_with_shortcut": "{label}（{shortcut}）",
+  "@tooltip_with_shortcut": {
+    "placeholders": {
+      "label": {"type": "String"},
+      "shortcut": {"type": "String"}
+    }
+  },
   "disp_contain": "适应窗口",
   "disp_fill": "拉伸填充",
   "disp_cover": "裁剪填充",
@@ -2698,10 +2790,10 @@
   "dlg_known_issues_vm_delete_body": "在电脑端删除虚拟文件内包含的真实文件时，可能导致整个虚拟文件项目无法播放。修复完成前，请勿对属于虚拟文件的真实文件使用删除功能。",
   "dlg_known_issues_vm_multiselect_header": "虚拟合并条目不支持多选",
   "dlg_known_issues_vm_multiselect_body": "场景播放队列中，虚拟合并条目（带 [vm] 前缀的行）不参与多选：不显示勾选框，批量排除、从 Tag 移除与键盘批量移除都会跳过它，点击播放不受影响。需要排除或取消打标签时，请改对组成该合并项的单个真实文件操作。",
-  "dlg_known_issues_scenario_sort_header": "场景播放队列：按修改时间排序会先按目录分组",
-  "dlg_known_issues_scenario_sort_body": "场景播放队列开启「同目录连续」时，会先按目录、再按所选字段排序，因此按修改时间排序并不是整条队列的全局时间顺序：只有同一文件夹内的文件才按时间排序，而 PotPlayer 的播放列表是整张列表按日期排序——这就是两者顺序不一致的原因。在排序菜单里取消勾选「同目录连续」即可改为整表的扁平排序。时间取扫描时记录的文件修改时间（毫秒精度），从未扫描、没有时间的条目恒排在最后。",
+  "dlg_known_issues_scenario_sort_header": "场景播放队列：整条队列统一排序",
+  "dlg_known_issues_scenario_sort_body": "排序作用于整条队列，而不是逐个来源：来自所有来源、所有存储的文件与手动添加的条目一起按所选字段排序。「同目录连续」在保持这一整体顺序的前提下，先把整条队列按目录分块（方向同样作用于目录）。大小和时长取扫描/探测得到的值；仍未取到（从未探测，或存储不支持读取而报 0）的条目在升序和降序下都恒排最后，不会再被当成「最小的文件」。虚拟媒体（VM）合并行按它显示的总和排序，而不是按第一个成员的位置。修改时间取扫描时记录的文件修改时间（毫秒精度），未扫描的条目没有时间，同样排在最后。",
   "dlg_known_issues_seek_step_header": "步进定位按关键帧量化（media_kit / mpv）",
-  "dlg_known_issues_seek_step_body": "快速步进（← / →、双击）使用 mpv 原生的 relative + keyframes 定位——也就是 mpv 方向键自己所走的寻址路径：落点为最近的关键帧，因此步进秒数是“最小目标”而非精确距离。当视频的关键帧间隔大于步长时，按一下会前进一个完整的关键帧间隔（如关键帧间隔 4s 的视频，3s 步长实际跳约 4s）。mpv 的行为完全相同。若要求“精确 N 秒”，只能使用精确定位——它会从上一个关键帧开始逐帧解码，画面明显卡顿；IRIS 有意选择播放体验优先于定位精确。\n\n唯一例外是片尾：目标到达片尾的前进无法真正落点（最后一个关键帧更靠前），因此由 IRIS 直接判定——播放中视为本集看完并自动跳下一集，暂停时保留该次按键。距片尾多近算“看完”由「片尾步进」设置决定。",
+  "dlg_known_issues_seek_step_body": "快速步进（← / →、双击）使用 mpv 原生的 relative + keyframes 定位——也就是 mpv 方向键自己所走的寻址路径：落点为最近的关键帧，因此步进秒数是“最小目标”而非精确距离。当视频的关键帧间隔大于步长时，按一下会前进一个完整的关键帧间隔（如关键帧间隔 4s 的视频，3s 步长实际跳约 4s）。mpv 的行为完全相同。若要求“精确 N 秒”，只能使用精确定位——它会从上一个关键帧开始逐帧解码，画面明显卡顿；IRIS 有意选择播放体验优先于定位精确。\n\n片尾是例外：最后约 10 秒内关键帧无法落到目标，会自动改用精确跳转（不再把画面退回关键帧）；目标到达片尾时，播放中视为本集看完并自动跳下一集，暂停时保留该次按键。距片尾多近算“看完”由「片尾步进」设置决定。",
   "dlg_known_issues_bg_anchor_header": "副音对齐的自动锚定规则",
   "dlg_known_issues_bg_anchor_body": "开启副音、或在副音列表/面板切换到另一个副音文件时，锚定由两个真实时长自动决定：副音比视频长 → 同刻度（视频 10:00 ↔ 副音 10:00，副音会一直播到视频结束之后）；副音比视频短、且视频剩余时间能装进副音 → 把副音末尾对齐视频末尾（副音不会再提前播完，代价是跳过副音开头相应的时长，可能从文件中间开始）；其余情况 → 副音从 00:00 对齐视频当前位置。默认锚定不再提供选项，对齐弹窗只说明这条规则，其中的手动方案均为即时更新；手动「更新对齐」只对当前会话生效，重启后回到自动规则。尾部锚定同时会跳过「副音即将播完」的提示，因为此时副音与视频同时结束。",
   "dlg_known_issues_bg_anchor_vm_header": "副音尾部锚定与虚拟媒体段切换",
@@ -2918,6 +3010,8 @@
   "bg_switch_off": "关闭副音",
   "bg_gate_play": "对当前视频播放副音",
   "bg_gate_stop": "对当前视频停止副音（功能保持开启）",
+  "bg_gate_fake_cut": "该视频正在简播，副音已暂停",
+  "bg_blocked_by_fake_cut_body": "当前视频正在简播，简播接管了副音要对齐的时间轴。离开该视频后副音会自动恢复。",
   "bg_feature_on": "开启副音功能",
   "bg_feature_off": "关闭副音功能",
   "bg_apply_on_current": "对当前视频使用副音",
@@ -3417,15 +3511,165 @@
   "drop_zone_play_label": "播放",
   "set_drop_append_zone_percent": "拖放区域分割",
   "set_drop_append_zone_percent_desc": "播放器顶部该比例高度用于把拖入内容追加到播放列表，其余区域直接播放",
+  "set_drop_auto_scan": "拖入文件夹直接扫描",
+  "set_drop_auto_scan_desc": "拖入的文件夹立即开始扫描，不再询问；扫描失败仍会提示。是否重扫取决于“重扫提醒”窗口。",
   "set_playback_cache_preset": "视频缓存大小",
   "set_playback_cache_preset_desc": "缓存越大，快退越顺畅，但占用更多内存。仅对 Media Kit 后端生效。",
   "set_cache_preset_low": "低",
   "set_cache_preset_balanced": "均衡",
   "set_cache_preset_high": "高",
   "set_step_tail_finish": "片尾步进",
-  "set_step_tail_finish_desc": "前进到片尾时的行为：播放中视为本集看完并自动跳下一集；暂停时保留（不跳集、不写入）。片尾几秒本来就无法精确落点——最后一个关键帧更靠前，引擎只会把画面回退到那里。",
+  "set_step_tail_finish_desc": "前进到片尾时的行为：播放中视为本集看完并自动跳下一集；暂停时保留（不跳集、不写入）。片尾附近的关键帧无法直接落到目标，会自动改用精确跳转，不再把画面回退到最后一个关键帧。",
   "set_step_tail_finish_strict": "到达或越过片尾",
   "set_step_tail_finish_window": "距片尾一个步长内",
+  "fake_cut": "简播",
+  "fake_cut_off": "播放原片（不剪切）",
+  "fake_cut_empty": "此视频没有 .llc 简播计划",
+  "fake_cut_loading": "正在查找 .llc 计划…",
+  "fake_cut_unmatched_section": "无匹配计划（{count}）",
+  "@fake_cut_unmatched_section": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_unmatched_hint": "这些计划记录的源文件已不在本文件夹（可能改名或移动），因此不能应用到本视频。",
+  "fake_cut_hint": "按 LosslessCut 的剪切合并结果播放，源视频文件不会被修改。",
+  "fake_cut_segments": "{count} 段",
+  "@fake_cut_segments": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_duration": "剪辑长度 {duration}",
+  "@fake_cut_duration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_markers_ignored": "已忽略 {count} 个标记",
+  "@fake_cut_markers_ignored": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_deselected_ignored": "已忽略 {count} 个未选中片段",
+  "@fake_cut_deselected_ignored": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_selected_fallback": "没有任何片段被选中，已使用全部片段",
+  "fake_cut_invalid_dropped": "已丢弃 {count} 个无效片段",
+  "@fake_cut_invalid_dropped": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_clamped": "{count} 个片段被截断到视频结尾",
+  "@fake_cut_clamped": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_too_short": "{count} 个片段短于 0.2 秒",
+  "@fake_cut_too_short": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_file_mismatch": "此计划是为「{name}」制作的",
+  "@fake_cut_file_mismatch": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_parse_failed": "无法读取「{name}」：项目文件不支持或已损坏",
+  "@fake_cut_parse_failed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_unsupported_version": "不支持的项目版本",
+  "fake_cut_no_playable_segment": "此计划没有可播放的片段",
+  "fake_cut_activate_failed": "无法启用此计划",
+  "fake_cut_blocked_backend": "简播需要 media_kit 播放后端",
+  "fake_cut_blocked_storage": "简播仅支持本地文件",
+  "fake_cut_blocked_not_video": "简播仅适用于视频",
+  "fake_cut_bg_pause_notice": "启用简播会暂停本视频的副音，离开该视频后会自动恢复。",
+  "fake_cut_vm_merged_notice": "当前为虚拟合并播放，简播仅在该视频单独播放时生效。",
+  "fake_cut_sync_title": "选择同步点",
+  "fake_cut_sync_body": "上次进度（{position}）出现在这个剪辑的多段中。",
+  "@fake_cut_sync_body": {
+    "placeholders": {
+      "position": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_sync_candidate": "第 {index} 段 · 从 {time} 开始",
+  "@fake_cut_sync_candidate": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_sync_use": "使用这一段",
+  "fake_cut_subtitle_unsupported": "「{name}」：该字幕格式无法为剪辑重新计时",
+  "@fake_cut_subtitle_unsupported": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_failed": "「{name}」：无法为该剪辑重新计时字幕",
+  "@fake_cut_subtitle_failed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_empty": "「{name}」：所有字幕都落在被剪掉的部分",
+  "@fake_cut_subtitle_empty": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_remote": "「{name}」：网络存储上的字幕无法为剪辑重新计时——请把它下载到视频旁边后再试",
+  "@fake_cut_subtitle_remote": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "startup_failed_title": "启动失败",
   "startup_failed_body": "IRIS 无法完成启动。你的数据没有被修改。\n\n$error",
   "@startup_failed_body": {

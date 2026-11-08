@@ -106,6 +106,10 @@ void main() {
       expect(const AppState().scenarioQueueShowBreadcrumb, isFalse);
     });
 
+    test('following the playing item is ON by default', () {
+      expect(const AppState().scenarioQueueAutoLocate, isTrue);
+    });
+
     test('the V3 bar starts at the shared default in every profile', () {
       const state = AppState();
       expect(state.scenarioQueueBarOffsetFor(ScenarioQueueProfile.desktop),
@@ -148,6 +152,7 @@ void main() {
         'scenarioQueueBarOffsetPortrait',
         'scenarioQueueBarOffsetLandscape',
         'scenarioQueueShowBreadcrumb',
+        'scenarioQueueAutoLocate',
       ]) {
         expect(json.containsKey(key), isFalse, reason: '$key must not persist');
       }
@@ -206,6 +211,14 @@ void main() {
       expect(app.state.scenarioQueueShowBreadcrumb, isTrue);
       await app.updateScenarioQueueShowBreadcrumb(false);
       expect(app.state.scenarioQueueShowBreadcrumb, isFalse);
+    });
+
+    test('updateScenarioQueueAutoLocate writes the state', () async {
+      final app = useAppStore();
+      await app.updateScenarioQueueAutoLocate(false);
+      expect(app.state.scenarioQueueAutoLocate, isFalse);
+      await app.updateScenarioQueueAutoLocate(true);
+      expect(app.state.scenarioQueueAutoLocate, isTrue);
     });
   });
 
@@ -320,6 +333,31 @@ void main() {
       expect(raw['window.scenarioQueueLayoutPortrait'], isNotNull);
       expect(raw.containsKey('window.scenarioQueueLayout'), isFalse,
           reason: 'the pre-split row is a read-only migration seed');
+    });
+
+    test('auto-locate persists as its own window row', () async {
+      final store = useAppStore();
+      await store.setMetadataGate(true);
+      await store.updateScenarioQueueAutoLocate(false);
+
+      final rows = await MetaSettingsModule.loadWindowRows();
+      expect(rows['scenarioQueueAutoLocate'], '0');
+
+      final restored = await store.applyWindowRows(
+        const AppState(useMetadataSettings: true),
+        prefetched: rows,
+      );
+      expect(restored.scenarioQueueAutoLocate, isFalse);
+
+      await store.updateScenarioQueueAutoLocate(true);
+    });
+
+    test('a missing auto-locate row keeps the default ON', () async {
+      final state = await useAppStore().applyWindowRows(
+        const AppState(useMetadataSettings: true),
+        prefetched: const {},
+      );
+      expect(state.scenarioQueueAutoLocate, isTrue);
     });
   });
 

@@ -111,6 +111,11 @@ class ScenarioQueuePage extends HookWidget {
         appStore.select(context, (s) => s.scenarioQueueLayoutFor(profile));
     final showBreadcrumb =
         appStore.select(context, (s) => s.scenarioQueueShowBreadcrumb);
+    // Follow the playing item when playback switches to another entry. Read
+    // here (not in the data source) so flipping it restyles the mounted queue
+    // without a reopen.
+    final autoLocateOnCurrentChange =
+        appStore.select(context, (s) => s.scenarioQueueAutoLocate);
     final compact = queueLayout == ScenarioQueueLayout.v2;
     final floating = queueLayout == ScenarioQueueLayout.v3;
     // Only V2 and V3 have an overflow button to host the checkbox.
@@ -146,6 +151,7 @@ class ScenarioQueuePage extends HookWidget {
           listKeyboard: listKeyboard,
           toolbarLayout: _toolbarLayout(queueLayout),
           showBreadcrumb: showBreadcrumb,
+          autoLocateOnCurrentChange: autoLocateOnCurrentChange,
           overflowActions: withOverflow
               ? [buildQueueBreadcrumbAction(context)]
               : const [],
@@ -167,6 +173,7 @@ class ScenarioQueuePage extends HookWidget {
       listKeyboard: listKeyboard,
       toolbarLayout: _toolbarLayout(queueLayout),
       showBreadcrumb: showBreadcrumb,
+      autoLocateOnCurrentChange: autoLocateOnCurrentChange,
       overflowActions:
           withOverflow ? [buildQueueBreadcrumbAction(context)] : const [],
       floatingBarOffset: barOffset,

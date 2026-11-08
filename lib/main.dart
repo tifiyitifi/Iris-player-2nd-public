@@ -164,7 +164,7 @@ void main(List<String> arguments) async {
     // Multi-instance playback: per-window session identity (queue/history/
     // active scenario scoping) and per-file progress ownership so two windows
     // never overwrite each other's resume point. Portable mode decides where
-    // both lock directories live, hence after AppPaths.init().
+    // both lock directories live, hence after AppPaths.init(). 
     await AppInstance.init();
     MediaProgressClaim.instance = await MediaProgressClaim.createFileBacked();
     ScanLease.instance = await ScanLease.createFileBacked();

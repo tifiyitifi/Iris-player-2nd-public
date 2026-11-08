@@ -45,10 +45,34 @@ int? clampResumePosition(int? positionMs, int durationMs) {
 /// Head-window guard thresholds and the head write guard itself live in
 /// progress_write_guard.dart (re-exported above).
 
-/// Position-lock landing tolerance: after a seek, the player must be
-/// OBSERVED once within this window of the locked target before progress
-/// writes resume.
+/// Landing tolerance: after a seek, the player must be OBSERVED once within
+/// this window of the locked target before progress writes resume.
 const int positionLockLandingToleranceMs = 2000;
+
+/// How far PAST the locked target the position must have played before the
+/// landing counts as REAL.
+///
+/// A sample sitting on the target is not proof: mpv reports `last_seek_pts`
+/// (the requested position) through `time-pos` as soon as a seek is queued,
+/// before a single frame is decoded. Accepting that echo is what let a media
+/// which restarted at the head — the Android video output attaches ~1s after
+/// the resume seek and re-inits the track — unlock its write window and then
+/// persist the head position. Real decoding is only proven once playback has
+/// moved past the intent (the end of the media counts too, see
+/// [isLandingConfirmed]).
+const int positionLockLandingAdvanceMs = 400;
+
+/// A sample this far BEHIND the locked target, AFTER a landing-shaped sample
+/// was already observed, means the engine restarted the media from the head
+/// instead of playing on from the seek target (field log: `lock landed
+/// pos=319799ms` then `watch t=2 pos=580ms playing=true` with the picture back
+/// at the beginning while the DB still held 319799).
+const int positionLockRestartDropMs = 3000;
+
+/// How many times a detected restart may be answered with a re-issued intent
+/// seek before the lock gives up. Bounded on purpose: a save must never stay
+/// frozen for the rest of the session.
+const int positionLockMaxRestartSeeks = 3;
 
 /// Landing window for a head target (a from-the-beginning open starts at 0
 /// and its first ticks report a few hundred ms).
@@ -60,6 +84,14 @@ const int positionLockHeadLandingMaxMs = 2500;
 /// after another window without a landing.
 const Duration positionLockPendingTimeout = Duration(seconds: 8);
 const Duration positionLockLockedTimeout = Duration(seconds: 5);
+
+/// How long a restart is watched for after an intent is armed.
+///
+/// The Android video output attaches ~1s after the resume seek, so the watch
+/// only has to outlive that attach plus a stalled seek landing. It must NOT be
+/// tied to the write lock: the lock releases on a paused landing (immediately)
+/// and the captured restart happened while paused.
+const Duration positionLockWatchWindow = Duration(seconds: 12);
 
 /// Pure decision: has the player been observed at/near the locked target?
 bool isLandingAt({
@@ -75,6 +107,28 @@ bool isLandingAt({
   }
   return posMs >= targetMs - positionLockLandingToleranceMs &&
       posMs <= targetMs + positionLockLandingToleranceMs;
+}
+
+/// Whether a tolerated sample CONFIRMS the landing, i.e. proves that the
+/// player is really decoding from the intent rather than merely echoing the
+/// seek request (`last_seek_pts`).
+///
+/// * a head intent (target within the landing tolerance) has nothing to
+///   decode past — the first tolerated sample confirms it;
+/// * the very end of the media confirms any target (see [isLandingAt]);
+/// * otherwise playback must have advanced past the target by
+///   [positionLockLandingAdvanceMs].
+bool isLandingConfirmed({
+  required int posMs,
+  required int targetMs,
+  required int durationMs,
+}) {
+  if (!isLandingAt(posMs: posMs, targetMs: targetMs, durationMs: durationMs)) {
+    return false;
+  }
+  if (durationMs > 0 && posMs >= durationMs - 500) return true;
+  if (targetMs <= positionLockLandingToleranceMs) return true;
+  return posMs >= targetMs + positionLockLandingAdvanceMs;
 }
 
 /// Whether a `completed` event that was suppressed during a scrub may be
@@ -116,8 +170,22 @@ int sanePlaybackPos(
   int? inFlightTargetMs,
 }) {
   final int clamped = raw.clamp(0, dur);
-  if (userSeeked || lastSane == null) return clamped;
+  if (userSeeked) return clamped;
   final int? target = inFlightTargetMs;
+  if (lastSane == null) {
+    // First sample of a media. While an intent is in flight the player is still
+    // reporting its pre-land head position (the seek target is echoed only
+    // later), so this sample must never become the anchor: it used to seed
+    // `lastSane` with ~580ms, and every following tick then followed it — the
+    // progress UI reset to 0 while the DB row still held the real position
+    // (field log: `t=1 pos=277156ms`, `t=2 pos=580ms`, no glitch line at all).
+    if (target != null &&
+        target > 0 &&
+        clamped < target - positionLockLandingToleranceMs) {
+      return target;
+    }
+    return clamped;
+  }
   if (target != null) {
     final int lo = lastSane < target ? lastSane : target;
     final int hi = lastSane < target ? target : lastSane;
@@ -149,10 +217,52 @@ class PlaybackPositionLock {
   int? _targetMs;
   DateTime? _phaseSince;
   bool _retryUsed = false;
+  /// Restart-watch target and its window start.
+  ///
+  /// Deliberately independent of [_phase]: a paused open parks ON the target
+  /// and never advances, so the write lock can only be released by the paused
+  /// rule below — yet the engine still restarts the media about a second later
+  /// (the Android video output attaches after the resume seek). Tying the watch
+  /// to the write lock would either miss that restart or freeze saves for the
+  /// whole fail-open window.
+  int? _watchTargetMs;
+  DateTime? _watchSince;
+  /// The intent has been ANSWERED at least once (a sample inside the landing
+  /// tolerance was seen). Only then can a far-behind sample be read as "the
+  /// engine restarted", instead of "the seek has not landed yet".
+  bool _landingSeen = false;
+  /// Pending re-issue request, drained by [takeRestartSeek].
+  bool _restartPending = false;
+  int _restartSeeks = 0;
 
   PositionLockPhase get phase => _phase;
   int? get targetMs => _targetMs;
+  /// The target a drained [takeRestartSeek] request must re-issue.
+  ///
+  /// Unlike [targetMs] this survives the write-lock release, which is exactly
+  /// when a paused restart is detected.
+  int? get restartSeekTargetMs => _watchTargetMs;
+  /// The position the progress sanitizer should anchor on: the write-lock
+  /// target, or the restart-watch target once the lock released but the engine
+  /// is still being watched.
+  ///
+  /// The paused rule releases the write lock on the target echo, before any
+  /// frame is decoded, so the sanitizer must keep anchoring on the resume point
+  /// — otherwise a restarted head sample would seed the high-water mark.
+  int? get intentTargetMs => _targetMs ?? _watchTargetMs;
+  bool get watchingRestart => _watchTargetMs != null;
   bool get blocksWrites => _phase != PositionLockPhase.unlocked;
+
+  void _resetLanding() {
+    _landingSeen = false;
+    _restartPending = false;
+    _restartSeeks = 0;
+  }
+
+  void _clearWatch() {
+    _watchTargetMs = null;
+    _watchSince = null;
+  }
 
   /// Open started, intent target not yet decided (DB read pending). Writes
   /// are blocked from this moment so a pre-decision sample can never land.
@@ -161,17 +271,26 @@ class PlaybackPositionLock {
     _targetMs = null;
     _phaseSince = now ?? DateTime.now();
     _retryUsed = false;
+    _clearWatch();
+    _resetLanding();
   }
 
   /// The intent target is known (resume decision, VM pre-write, user seek,
   /// drag release). Writes stay blocked until a landing is observed.
   void armTarget(int targetMs, {DateTime? now}) {
+    final at = now ?? DateTime.now();
     _phase = PositionLockPhase.locked;
     _targetMs = targetMs;
-    _phaseSince = now ?? DateTime.now();
+    _phaseSince = at;
     _retryUsed = false;
+    _watchTargetMs = targetMs;
+    _watchSince = at;
+    _resetLanding();
   }
 
+  /// Releases the write lock. The restart WATCH deliberately survives: the
+  /// engine can restart AFTER the write window is gone (a paused open releases
+  /// on the paused rule and is restarted a second later).
   void unlock() {
     _phase = PositionLockPhase.unlocked;
     _targetMs = null;
@@ -179,28 +298,130 @@ class PlaybackPositionLock {
     _retryUsed = false;
   }
 
-  /// Returns true when THIS call observed the landing and unlocked.
-  bool checkLanding(int posMs, int durationMs) {
+  /// A user-initiated seek that does NOT arm the write lock (a ←/→ step: its
+  /// keyframe landing is deliberately off-target) takes over the position
+  /// intent.
+  ///
+  /// The write lock is released — the user's landing is authoritative — and the
+  /// restart watch is dropped: a step lands on the PREVIOUS keyframe, seconds
+  /// behind the pre-seek position, so "far behind the anchor" no longer proves
+  /// an engine restart. Keeping the watch made a rewind inside the resume
+  /// window get answered with a re-seek back to the old target (the rewind
+  /// silently undid itself).
+  void noteUserSeek() {
+    _phase = PositionLockPhase.unlocked;
+    _targetMs = null;
+    _phaseSince = null;
+    _retryUsed = false;
+    _clearWatch();
+    _resetLanding();
+  }
+
+  /// Returns true when THIS observation proved the landing and unlocked.
+  ///
+  /// A sample merely sitting on the target is NOT accepted while playing (see
+  /// [isLandingConfirmed]): mpv echoes the requested position before decoding
+  /// a frame, and accepting the echo let a media that restarted at the head
+  /// unlock its write window. A PAUSED player can never advance past the
+  /// target, so there a tolerated sample is the best proof available — the
+  /// restart watch (not the lock) then guards the late restart.
+  bool checkLanding(int posMs, int durationMs,
+      {bool playing = true, DateTime? now}) {
+    final at = now ?? DateTime.now();
+    // The restart watch runs FIRST and independently of the write lock: it is
+    // the only protection once the lock has been released.
+    _detectRestart(posMs, durationMs, at);
+
     final target = _targetMs;
     if (_phase != PositionLockPhase.locked || target == null) return false;
-    if (!isLandingAt(
+    if (isLandingAt(
         posMs: posMs, targetMs: target, durationMs: durationMs)) {
-      return false;
+      _landingSeen = true;
+      if (playing &&
+          !isLandingConfirmed(
+              posMs: posMs, targetMs: target, durationMs: durationMs)) {
+        return false;
+      }
+      unlock();
+      return true;
     }
-    unlock();
+    return false;
+  }
+
+  /// Restart-watch half of [checkLanding]: once the intent has been ANSWERED,
+  /// a sample far BEHIND the watched target means the engine restarted the
+  /// media instead of playing on from it (the Android video output attaches
+  /// after the resume seek and re-inits the track). Ask the caller to re-issue
+  /// the intent seek rather than letting the restart stand.
+  void _detectRestart(int posMs, int durationMs, DateTime at) {
+    final watch = _watchTargetMs;
+    final since = _watchSince;
+    if (watch == null || since == null) return;
+    // Fail-open: an unreachable target must not re-seek for the whole session.
+    if (at.difference(since) > positionLockWatchWindow) {
+      _clearWatch();
+      return;
+    }
+    // The very end of the media counts as reached-or-passed for any target.
+    if (durationMs > 0 && posMs >= durationMs - 500) {
+      _clearWatch();
+      return;
+    }
+    if (isLandingAt(posMs: posMs, targetMs: watch, durationMs: durationMs)) {
+      _landingSeen = true;
+      // A head intent has nothing to fall behind, and once playback really
+      // moved past the target there is no restart left to catch.
+      if (watch <= positionLockLandingToleranceMs ||
+          posMs >= watch + positionLockLandingAdvanceMs) {
+        _clearWatch();
+      }
+      return;
+    }
+    if (!_landingSeen) return; // the seek has not been answered yet
+    if (watch <= positionLockLandingToleranceMs) {
+      _clearWatch();
+      return;
+    }
+    if (posMs < watch - positionLockRestartDropMs &&
+        _restartSeeks < positionLockMaxRestartSeeks) {
+      _restartSeeks++;
+      _landingSeen = false;
+      _restartPending = true;
+      // Give the re-seek a fresh window to be observed in.
+      _watchSince = at;
+      if (_phase == PositionLockPhase.locked) {
+        // The re-seek IS this window's retry: keep the fail-open window fresh
+        // and stop [tickTimeout] from firing a second seek on top of it.
+        _phaseSince = at;
+        _retryUsed = true;
+      }
+    }
+  }
+
+  /// Consumes a "the engine restarted from the head — re-issue the intent
+  /// seek" request. True exactly once per detected restart.
+  bool takeRestartSeek() {
+    if (!_restartPending) return false;
+    _restartPending = false;
     return true;
   }
 
   /// Bounded fail-open: a pending lock releases after
   /// [positionLockPendingTimeout]; a locked lock re-issues its seek once
   /// ([PositionLockTimeoutAction.retrySeek]) and releases after another
-  /// window without a landing.
+  /// window without a landing. Also expires the restart watch.
   PositionLockTimeoutAction tickTimeout({DateTime? now}) {
+    final at = now ?? DateTime.now();
+    final watchSince = _watchSince;
+    if (_watchTargetMs != null &&
+        watchSince != null &&
+        at.difference(watchSince) > positionLockWatchWindow) {
+      _clearWatch();
+    }
     final since = _phaseSince;
     if (_phase == PositionLockPhase.unlocked || since == null) {
       return PositionLockTimeoutAction.none;
     }
-    final at = now ?? DateTime.now();
     if (_phase == PositionLockPhase.pending) {
       if (at.difference(since) < positionLockPendingTimeout) {
         return PositionLockTimeoutAction.none;
@@ -296,6 +517,12 @@ enum OpenResumeDecision {
 /// [ProgressWriteIntent.userSeek] so the funnel's monotonic lock lets the
 /// smaller target land, and it makes an explicit seek-to-0 actually clear the
 /// stored position instead of being dropped by the spurious-zero guard.
+///
+/// [sourceTimeline] marks a 简播 write: [position] was projected from the VIRTUAL
+/// cut timeline onto the SOURCE axis. Such a value may legitimately move
+/// BACKWARD (out-of-order / repeated ranges), so the funnel's live monotonic
+/// lock must not drop it; it is treated like an explicit user decision (verbatim
+/// landing) without touching the completed flag.
 Future<bool> persistPlaybackProgress({
   required FileItem file,
   required Duration position,
@@ -304,6 +531,7 @@ Future<bool> persistPlaybackProgress({
   int? durationMs,
   bool userSeekToHead = false,
   bool userSeek = false,
+  bool sourceTimeline = false,
   String? writeTag,
 }) async {
   final dbPath = file.path.join('/');
@@ -327,7 +555,7 @@ Future<bool> persistPlaybackProgress({
     return true;
   }
   final bool takeover = claim == ProgressClaimResult.takeover;
-  final explicitUserSeek = userSeek || userSeekToHead;
+  final explicitUserSeek = userSeek || userSeekToHead || sourceTimeline;
   try {
     final node = await DbModule.mediaNodeRepo.getNodeByPath(
       storageId: file.storageId,

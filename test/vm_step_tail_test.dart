@@ -55,7 +55,24 @@ void main() {
     const int total = 20000;
     const int lastOffset = 10000;
 
-    test('a press inside the item stays an ordinary step', () {
+    test('a press far from the item tail stays an ordinary step', () {
+      // 2 s + 5 s = 7 s of a 20 s item: outside the 10 s exact window (capped
+      // at half the merged runtime).
+      expect(
+        decideStepTail(
+          reportedMs: 2000,
+          deltaMs: 5000,
+          durationMs: total,
+          mode: StepTailFinishMode.strict,
+          playing: true,
+        ),
+        StepTailAction.step,
+      );
+    });
+
+    test('a press into the item final GOP exact-steps', () {
+      // 14 s + 5 s = 19 s of 20 s: inside the final GOP, so the press must not
+      // be served by a keyframe landing, but it is not the end either.
       expect(
         decideStepTail(
           reportedMs: lastOffset + 4000,
@@ -64,7 +81,7 @@ void main() {
           mode: StepTailFinishMode.strict,
           playing: true,
         ),
-        StepTailAction.step,
+        StepTailAction.exactStep,
       );
     });
 
@@ -107,9 +124,10 @@ void main() {
       );
     });
 
-    test('a mid-item press into the next segment is not a finish', () {
+    test('a mid-item press into the next segment is never a finish', () {
       // Segment 0's tail (10 s) is not the ITEM's tail: the hook resolves it
-      // through `jumpToSegment`, never through the finish path.
+      // through `jumpToSegment`, never through the finish path. It may take the
+      // exact path when it lands inside the merged item's final window.
       expect(
         decideStepTail(
           reportedMs: 9000,
@@ -118,7 +136,7 @@ void main() {
           mode: StepTailFinishMode.window,
           playing: true,
         ),
-        StepTailAction.step,
+        StepTailAction.exactStep,
       );
     });
   });

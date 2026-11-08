@@ -107,7 +107,7 @@
   "storage": "Storage",
   "stretch": "Stretch",
   "subtitle": "Subtitle",
-  "subtitle_and_audio_track": "Subtitle and audio track",
+  "subtitle_and_audio_track": "Subtitles / Audio / Fake cut",
   "subtitle_file_does_not_exist": "Subtitle file does not exist",
   "system": "System",
   "test_connection": "Test connection",
@@ -445,6 +445,7 @@
   },
   "search_origin_explicit": "Explicit",
   "search_origin_source": "Source",
+  "search_origin_virtual": "Virtual",
   "search_meta_video": "Video",
   "search_meta_audio": "Audio",
   "search_excludes_label": "Exclude rules (respect excludes)",
@@ -542,6 +543,10 @@
   "keybind_act_play_pause": "Play / Pause",
   "keybind_act_previous": "Previous item",
   "keybind_act_next": "Next item",
+  "keybind_act_open_prev_window": "Open previous in new window",
+  "keybind_act_open_next_window": "Open next in new window",
+  "keybind_act_toggle_bg_gate": "Sub Audio for this video (play / stop)",
+  "keybind_act_toggle_bg_control": "Switch control between the video and Sub Audio",
   "keybind_act_frame_backward": "Frame backward",
   "keybind_act_frame_forward": "Frame forward",
   "keybind_act_seek_backward": "Seek backward",
@@ -794,6 +799,8 @@
   "desktop_hover_show_control_bar": "Control bar",
   "desktop_hover_show_control_bar_desc": "Moving the mouse also reveals the full control bar (which includes the title). With both unchecked, a mouse move only keeps the cursor visible.",
   "set_scan_auto_close": "Scan auto-close",
+  "set_scan_completion_prompt": "Completion countdown",
+  "set_scan_completion_prompt_desc": "Off: close the progress panel as soon as the scan finishes. On: show the countdown first.",
   "set_webdav_scan_mode": "WebDAV host lookup",
   "set_webdav_scan_mode_discovery": "Automatic discovery",
   "set_webdav_scan_mode_legacy": "Legacy serial scan",
@@ -849,6 +856,7 @@
   "set_side_fullscreen_behavior": "Side panel in fullscreen",
   "set_playlist_popup_theme": "Floating queue theme",
   "set_playlist_dock_theme": "Side queue theme",
+  "set_scenario_queue_auto_locate": "Auto-locate on switch",
   "set_scenario_queue_layout": "Play queue layout",
   "scn_queue_layout_v1": "V1 (classic)",
   "scn_queue_layout_v2": "V2 (single row)",
@@ -911,6 +919,7 @@
   "set_fs_isolation_linear_desc": "Band kept clear for the normal long-strip control bar: isolation height = bar height + this percentage of the screen height. In picture fullscreen, hovering the right edge inside this band does not summon the side queue. Default 25%",
   "set_playlist_popup_theme_desc": "Floating queue theme: follow system / dark / light (desktop only)",
   "set_playlist_dock_theme_desc": "Side queue theme: PotPlayer dark / follow system / light (desktop only)",
+  "set_scenario_queue_auto_locate_desc": "When a new episode starts (previous/next, auto-advance or a play from another surface), flip the play queue to its page and scroll to that row. Off only stops the automatic jump: opening the queue still locates the current item and Go to current keeps working",
   "set_scenario_queue_layout_desc": "V1 keeps the classic multi-row toolbar; V2 condenses it into one row and moves the rest into the more menu; V3 removes the bottom bar entirely and floats the controls over the list as a translucent grid of tiles you can drag anywhere. Defaults: V3 in phone landscape, V2 elsewhere. The toolbar button switches at any time",
   "set_video_display_mode_desc": "Video fit: fill/stretch/crop/original (desktop adds auto/force-original; Fit button in control bar switches too)",
   "set_osd_enabled_desc": "Show floating info for keyboard shortcuts",
@@ -1079,7 +1088,7 @@
   "vm_editor_match_pattern_recursive": "Matched dirs (recursive)",
   "vm_editor_sort": "Sort",
   "vm_editor_sort_field": "Sort field",
-  "vm_editor_sort_filename": "File name (natural)",
+  "vm_editor_sort_filename": "File name",
   "vm_editor_sort_duration": "Duration",
   "vm_editor_sort_resolution": "Resolution (W x H)",
   "vm_editor_sort_aspect": "Aspect ratio",
@@ -1200,6 +1209,9 @@
   "vm_mgr_new_rule": "New rule",
   "vm_mgr_close_escape": "Close (Escape)",
   "vm_mgr_title": "Virtual media management",
+  "vm_master_title": "Virtual merge",
+  "vm_master_subtitle_on": "On · merged videos appear as one item in playback lists",
+  "vm_master_subtitle_off": "Off · lists show single files; rules are kept",
   "vm_mgr_empty_title": "No virtual media rules yet",
   "vm_mgr_empty_body": "After creating a rule, multiple videos in matched directories merge into one virtual video in scenario playback.",
   "vm_mgr_limit_min": "{count} min",
@@ -1681,6 +1693,7 @@
   "lib_open_in_new_window": "Open in new window",
   "new_window_play_failed_title": "The new window could not start playback",
   "new_window_play_failed_body": "Its queue resolved to no playable media. Scan the storage, then try again from the original window.",
+  "new_window_mirror_failed_body": "The mirrored queue could not resolve the requested entry. This window keeps playing the current item.",
   "new_window_unavailable_title": "Cannot open a new window",
   "new_window_unavailable_body": "This build runs a single window (the Microsoft Store package is single-instance), or the new process failed to start.",
   "new_window_too_many_files_title": "Too many items for a new window",
@@ -1990,14 +2003,78 @@
   "scan_title": "Scan options",
   "scan_probe_label": "Try reading media info (duration / resolution)",
   "scan_purpose": "Purpose: feeds duration grouping, resolution sorting and total-duration stats; missing info is also backfilled automatically during playback.",
-  "scan_strategy_win": "Desktop: reads file attributes directly (same source as the Explorer details tab, no decoding, very fast).",
+  "scan_strategy_win": "Desktop: reads the container header directly (MP4/MOV duration and frame size, no decoding, ~1 ms per file); other containers fall back to the Explorer property source.",
   "scan_strategy_android": "Phone: queries the system media prober; supports storage paths and SAF content URIs.",
   "scan_strategy_none": "No probing available on this platform yet; info is backfilled automatically during playback.",
-  "scan_estimate_remote": "Network storages skip duration probing: the scan only builds a directory index, files missing deep info sort last, durations backfill during playback; pause or stop anytime.",
-  "scan_estimate_win": "Estimate: desktop reads file attributes directly without decoding, usually tens of ms per file — seconds for hundreds of files, ~half a minute for thousands; pause or stop anytime.",
-  "scan_estimate_android": "Estimate: phones query the system prober one by one, usually ~50–200ms per file, ~1–3 min for a thousand files, noticeably slower with many files; pause or stop anytime.",
+  "scan_estimate_remote": "Network storages probe in the background at low concurrency: the folder is listed and playable first, durations fill in afterwards; pause or stop anytime.",
+  "scan_estimate_win": "Estimate: local containers (MP4/MKV/AVI/MP3/FLAC/WAV/OGG/AMR) are read from their header at ~1 ms per file — a few seconds for thousands; anything else falls back to the slower property source. Pause or stop anytime.",
+  "scan_estimate_android": "Estimate: most local containers (MP4/MKV/AVI/MP3/FLAC/WAV/OGG/AMR) are read from their header at ~1 ms per file; anything else falls back to the system prober at ~50–200 ms per file. Pause or stop anytime.",
   "scan_estimate_none": "No probing on this platform: durations backfill during playback; pause or stop anytime.",
   "scan_caveat": "Unsupported containers, corrupt files or restricted storages may yield no info — such files sort after informed ones (ascending or descending) and backfill during playback.",
+  "scan_info_title": "Before scanning",
+  "scan_info_scope_storage": "Scope: the entire storage \"{name}\", every subfolder included.",
+  "@scan_info_scope_storage": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "scan_info_scope_folder": "Scope: the folder \"{name}\" and all of its subfolders.",
+  "@scan_info_scope_folder": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "scan_info_scope_sources": "Scope: every source folder of this scenario and its subfolders.",
+  "scan_info_reads": "Reads the folder tree plus each audio/video duration and resolution (headers only, about 1 ms per file). Nothing is modified, moved or deleted.",
+  "scan_info_cost_local": "Local scan reference: desktop, a single media folder with 5,500 media files in about 5 s (about 10 s per 10,000); phone, a whole-storage scan of 21,000 media files in about 91 s (about 45 s per 10,000), and roughly 1.5–2× longer for a first scan of an empty database.",
+  "scan_info_remote": "Network storage: folders become browsable first and durations fill in afterwards in the background; the speed follows your link.",
+  "scan_info_cost_dirs": "Folders cost time too: about 20 s per 10,000 folders on both desktop and phone, even if they hold no media files.",
+  "scan_info_estimate_caveat": "These figures are scaled by media-file count. A tree with far more folders than media files (a whole drive, a development or cache directory) runs noticeably slower — folder count wins there.",
+  "scan_info_win_whole_disk": "Scanning a whole drive is not recommended: system and development drives hold hundreds of thousands of folders, plus permission-restricted folders and paths longer than 260 characters that Windows cannot list at all. Scan media folders only.",
+  "scan_info_known": "This storage already records {files} media files — estimated about {time}.",
+  "@scan_info_known": {
+    "placeholders": {
+      "files": {"type": "String"},
+      "time": {"type": "String"}
+    }
+  },
+  "scan_info_known_folder": "This folder already records {files} media files — estimated about {time}.",
+  "@scan_info_known_folder": {
+    "placeholders": {
+      "files": {"type": "String"},
+      "time": {"type": "String"}
+    }
+  },
+  "scan_info_advice": "Open the storage, then run \"Scan recursively\" on that folder.",
+  "scan_info_note_pause": "Pause or stop at any time; what was already scanned is kept.",
+  "scan_info_note_resume": "If the app is killed mid-scan, the next launch reports an interrupted scan and can resume from where it stopped.",
+  "scan_info_note_unreadable": "Files whose information cannot be read sort after informed ones and are filled in during playback.",
+  "scan_info_silent_label": "Skip the completion countdown (close silently)",
+  "scan_info_silent_hint": "The progress panel closes as soon as the scan finishes. Re-enable it in Settings › General › Library scan.",
+  "scan_info_silent_current": "Current countdown: {seconds} s",
+  "@scan_info_silent_current": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_auto_close_immediate": "Close immediately",
+  "scan_auto_close_seconds": "{seconds} seconds",
+  "@scan_auto_close_seconds": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_auto_close_slider_immediate": "Immediate",
+  "scan_auto_close_slider_seconds": "{seconds}s",
+  "@scan_auto_close_slider_seconds": {
+    "placeholders": {
+      "seconds": {"type": "String"}
+    }
+  },
+  "scan_error_title": "Scan failed",
+  "scan_error_unknown": "The scanner reported no details.",
+  "scan_cannot_start": "The scan could not be started for this drop (its storage is unavailable). Nothing was played.",
+  "scan_error_ack": "OK",
   "scan_cancel": "Cancel",
   "scan_start": "Start scan",
   "scan_status_scanning": "Scanning...",
@@ -2009,6 +2086,7 @@
       "error": {"type": "String"}
     }
   },
+  "scan_interrupted_reason": "The scan was interrupted because the app restarted.",
   "scan_discovering": "Discovering {total} dirs · {scanned} scanned — {path}",
   "@scan_discovering": {
     "placeholders": {
@@ -2018,6 +2096,13 @@
     }
   },
   "scan_progress_dirs": "{percent}% · {scanned}/{total} dirs",
+  "scan_discovering_unknown": "Discovering directories · {scanned} scanned — {path}",
+  "@scan_discovering_unknown": {
+    "placeholders": {
+      "scanned": {"type": "int"},
+      "path": {"type": "String"}
+    }
+  },
   "@scan_progress_dirs": {
     "placeholders": {
       "percent": {"type": "String"},
@@ -2174,9 +2259,6 @@
       "count": {"type": "int"}
     }
   },
-  "gate_resume_title": "Scan finished",
-  "gate_resume_body": "Continue playing what you started?",
-  "gate_resume_continue": "Continue playing",
   "gate_storage_root": "Storage root",
   "gate_stale_hm": "{h}h {m}m",
   "@gate_stale_hm": {
@@ -2409,8 +2491,24 @@
   "osd_moved_recycle": "Moved to Recycle Bin",
   "osd_previous": "Previous",
   "osd_next": "Next",
+  "osd_open_in_new_window": "Playing in a new window",
+  "osd_no_previous": "No previous item",
+  "osd_no_next": "No next item",
+  "osd_new_window_unavailable": "Not available in the current playback mode",
   "osd_paused": "Paused",
   "osd_playing": "Playing",
+  "osd_bg_gate_on": "Sub Audio on",
+  "osd_bg_gate_off": "Sub Audio off",
+  "osd_control_bg": "Controls: Sub Audio",
+  "osd_control_fg": "Controls: video",
+  "osd_control_unavailable": "Sub Audio is not running",
+  "tooltip_with_shortcut": "{label} ({shortcut})",
+  "@tooltip_with_shortcut": {
+    "placeholders": {
+      "label": {"type": "String"},
+      "shortcut": {"type": "String"}
+    }
+  },
   "disp_contain": "Fit window",
   "disp_fill": "Stretch fill",
   "disp_cover": "Crop fill",
@@ -2918,10 +3016,10 @@
   "dlg_known_issues_vm_delete_body": "On desktop, deleting a real file that is part of a merged Virtual Media item can leave the entire merged item unplayable. Until this is fixed, do not use the delete function on physical files that belong to a virtual item.",
   "dlg_known_issues_vm_multiselect_header": "Virtual merged items cannot be multi-selected",
   "dlg_known_issues_vm_multiselect_body": "In the scenario play queue, a merged virtual item (the [vm]-prefixed row) does not take part in multi-select: it shows no checkbox, and bulk operations (exclude, remove from tag, and the keyboard bulk-remove keys) skip it. Tapping to play is unaffected. To exclude or un-tag its media, act on the individual real files that make up the merge instead.",
-  "dlg_known_issues_scenario_sort_header": "Scenario play queue: sorting by modified date groups by folder first",
-  "dlg_known_issues_scenario_sort_body": "When the scenario play queue has 同目录连续 (same-directory-contiguous) enabled, it sorts by DIRECTORY first and by the selected field second, so a modified-time sort is not one global time order: only files inside the same folder are ordered by time, whereas PotPlayer's playlist sorts the whole list by date. This is why the queue can look differently ordered from PotPlayer. Untick same-directory-contiguous in the sort menu for a flat, whole-list sort. The timestamp is the file's modification time captured at scan time (millisecond precision); entries that were never scanned carry no timestamp and always sort last.",
+  "dlg_known_issues_scenario_sort_header": "Scenario play queue: one global sort across every source",
+  "dlg_known_issues_scenario_sort_body": "The sort applies to the WHOLE queue, not source by source: files from every source and every storage, plus manually added items, are ordered together by the selected field. Same-directory-contiguous keeps that one order but groups the whole queue into directory blocks first (its direction applies to the directory too). Sizes and durations are the values learned during scanning/probing; a value that is still unknown (never probed, or reported as 0 by a storage that cannot stat files) always sorts last in BOTH directions instead of looking like the smallest file. A Virtual Media merged row sorts by the totals it displays, not by its first member. The modified time is the file's modification time captured at scan time (millisecond precision); entries that were never scanned carry no timestamp and sort last.",
   "dlg_known_issues_seek_step_header": "Step seek is keyframe-quantised (media_kit / mpv)",
-  "dlg_known_issues_seek_step_body": "Fast step seek (left/right, double-tap) uses mpv's native relative keyframe seek, the same one mpv's own arrow keys use. It lands on the nearest keyframe, so the setting's seconds are a minimum rather than an exact distance: on a file whose keyframe interval is larger than the step, one press jumps a whole keyframe interval (e.g. a 3 s step lands ≈ 4 s on a 4 s-GOP file). mpv behaves identically. Seeking to exactly N seconds would require a precise seek, which decodes frame-by-frame from the previous keyframe and visibly freezes the picture; IRIS deliberately prioritises smooth playback over seek precision.\n\nThe very end is the one exception: a forward step whose target reaches the tail cannot land at all (the last key frame sits earlier), so IRIS decides it — while playing it finishes the item and playback advances to the next entry, while paused the press is kept. The「Step at the end」row picks how close to the end counts as finished.",
+  "dlg_known_issues_seek_step_body": "Fast step seek (left/right, double-tap) uses mpv's native relative keyframe seek, the same one mpv's own arrow keys use. It lands on the nearest keyframe, so the setting's seconds are a minimum rather than an exact distance: on a file whose keyframe interval is larger than the step, one press jumps a whole keyframe interval (e.g. a 3 s step lands ≈ 4 s on a 4 s-GOP file). mpv behaves identically. Seeking to exactly N seconds would require a precise seek, which decodes frame-by-frame from the previous keyframe and visibly freezes the picture; IRIS deliberately prioritises smooth playback over seek precision.\n\nThe very end is the exception: inside the last ~10 s a keyframe step cannot land where it asks, so the seek switches to an exact landing (no rollback); a forward step whose target reaches the end finishes the item while playing and playback advances to the next entry, while paused the press is kept. The「Step at the end」row picks how close to the end counts as finished.",
   "dlg_known_issues_bg_anchor_header": "Automatic anchoring for Sub Audio alignment",
   "dlg_known_issues_bg_anchor_body": "When Sub Audio starts, or when you switch to another Sub Audio file (from the list, or with the previous/next buttons), the anchor is decided automatically from the two real durations: Sub Audio LONGER than the video → same clock (video 10:00 ↔ Sub Audio 10:00, and the Sub Audio keeps playing past the video's end); Sub Audio SHORTER and the video's remaining time fits inside it → the Sub Audio's END is aligned with the video's END (the Sub Audio can no longer run out early, but its opening is skipped by that difference, so it may start mid-file); otherwise → Sub Audio 00:00 at the video's current position. Default anchoring is no longer a selectable option — the alignment dialog only explains this rule, and its manual modes are live updates: a manual \"update alignment\" lasts for the current session only, and the automatic rule returns after a restart. A tail-anchored pair also skips the \"Sub Audio is about to run out\" prompt, because it runs out exactly when the video does.",
   "dlg_known_issues_bg_anchor_vm_header": "Tail-anchored Sub Audio and Virtual Media segment switches",
@@ -3132,6 +3230,8 @@
   "bg_switch_off": "Turn off Sub Audio",
   "bg_gate_play": "Play Sub Audio for this video",
   "bg_gate_stop": "Stop Sub Audio for this video (the feature stays on)",
+  "bg_gate_fake_cut": "Sub Audio is paused while this video plays its fake cut",
+  "bg_blocked_by_fake_cut_body": "This video is playing its fake cut, which owns the timeline Sub Audio is aligned to. Sub Audio resumes by itself once you leave this video.",
   "bg_feature_on": "Turn on Sub Audio",
   "bg_feature_off": "Turn off Sub Audio",
   "bg_apply_on_current": "Apply Sub Audio to this video",
@@ -3637,15 +3737,165 @@
   "drop_zone_play_label": "Play",
   "set_drop_append_zone_percent": "Drop-zone split",
   "set_drop_append_zone_percent_desc": "Share of the player height that adds dropped items to the queue; the rest plays immediately",
+  "set_drop_auto_scan": "Scan dropped folders immediately",
+  "set_drop_auto_scan_desc": "Dropped folders are scanned right away instead of asking first. Scan failures still show an error. Re-checks follow the rescan-reminder window.",
   "set_playback_cache_preset": "Video cache size",
   "set_playback_cache_preset_desc": "Larger caches make rewinding smoother at the cost of memory. Applies to the Media Kit backend only.",
   "set_cache_preset_low": "Low",
   "set_cache_preset_balanced": "Balanced",
   "set_cache_preset_high": "High",
   "set_step_tail_finish": "Step at the end",
-  "set_step_tail_finish_desc": "What a forward step does when it reaches the end of the media. While playing, the item is finished and playback moves to the next entry; while paused, the press is kept (nothing advances). A step cannot land in the final seconds anyway: the last key frame sits earlier and the engine would only roll the picture back there.",
+  "set_step_tail_finish_desc": "What a forward step does when it reaches the end of the media. While playing, the item is finished and playback moves to the next entry; while paused, the press is kept (nothing advances). Near the end, a keyframe step cannot land where it asks, so the seek switches to an exact landing instead of rolling the picture back to the last key frame.",
   "set_step_tail_finish_strict": "At or past the end",
   "set_step_tail_finish_window": "Within one step of the end",
+  "fake_cut": "Fake cut",
+  "fake_cut_off": "Source (uncut)",
+  "fake_cut_empty": "No .llc project for this video",
+  "fake_cut_loading": "Looking for .llc projects…",
+  "fake_cut_unmatched_section": "Unmatched projects ({count})",
+  "@fake_cut_unmatched_section": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_unmatched_hint": "The source file these projects name is not in this folder any more (renamed or moved), so they cannot be applied to this video.",
+  "fake_cut_hint": "Plays the LosslessCut cut/merge result. The video file itself is never modified.",
+  "fake_cut_segments": "{count, plural, =1{1 segment} other{{count} segments}}",
+  "@fake_cut_segments": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_duration": "Cut length {duration}",
+  "@fake_cut_duration": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_markers_ignored": "{count, plural, =1{1 marker ignored} other{{count} markers ignored}}",
+  "@fake_cut_markers_ignored": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_deselected_ignored": "{count, plural, =1{1 deselected range ignored} other{{count} deselected ranges ignored}}",
+  "@fake_cut_deselected_ignored": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_selected_fallback": "Nothing was selected, so every range is used",
+  "fake_cut_invalid_dropped": "{count, plural, =1{1 invalid range dropped} other{{count} invalid ranges dropped}}",
+  "@fake_cut_invalid_dropped": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_clamped": "{count, plural, =1{1 range shortened to the video end} other{{count} ranges shortened to the video end}}",
+  "@fake_cut_clamped": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_too_short": "{count, plural, =1{1 range shorter than 0.2 s} other{{count} ranges shorter than 0.2 s}}",
+  "@fake_cut_too_short": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "fake_cut_file_mismatch": "This project was made for “{name}”",
+  "@fake_cut_file_mismatch": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_parse_failed": "Cannot read “{name}”: unsupported or damaged project",
+  "@fake_cut_parse_failed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_unsupported_version": "Unsupported project version",
+  "fake_cut_no_playable_segment": "This project has no playable range",
+  "fake_cut_activate_failed": "Cannot start this project",
+  "fake_cut_blocked_backend": "Fake cut needs the media_kit backend",
+  "fake_cut_blocked_storage": "Fake cut only supports local files",
+  "fake_cut_blocked_not_video": "Fake cut only applies to video",
+  "fake_cut_bg_pause_notice": "Enabling fake cut pauses Sub Audio for this video; it resumes when you leave.",
+  "fake_cut_vm_merged_notice": "This video is playing as a virtual merge; the fake cut applies when it plays on its own.",
+  "fake_cut_sync_title": "Choose the sync point",
+  "fake_cut_sync_body": "The saved position ({position}) appears in several ranges of this cut.",
+  "@fake_cut_sync_body": {
+    "placeholders": {
+      "position": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_sync_candidate": "Range {index} · starts at {time}",
+  "@fake_cut_sync_candidate": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_sync_use": "Use this range",
+  "fake_cut_subtitle_unsupported": "“{name}”: this subtitle format cannot be re-timed for a cut",
+  "@fake_cut_subtitle_unsupported": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_failed": "“{name}”: cannot re-time this subtitle for the cut",
+  "@fake_cut_subtitle_failed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_empty": "“{name}”: every subtitle line falls in a removed part",
+  "@fake_cut_subtitle_empty": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "fake_cut_subtitle_remote": "“{name}”: a subtitle on a network storage cannot be re-timed for a cut — download it next to the video and try again",
+  "@fake_cut_subtitle_remote": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "startup_failed_title": "Startup failed",
   "startup_failed_body": "IRIS could not finish starting up. Your data has not been modified.\n\n$error",
   "@startup_failed_body": {

@@ -6,6 +6,8 @@ import 'package:iris/features/background_playback/model/domain/media_ratio.dart'
 import 'package:iris/features/background_playback/services/background_ratio_resolver.dart';
 import 'package:iris/features/background_playback/services/background_volume_policy.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 
 /// Build-phase snapshot of the 副音 volume policy inputs (sub_media §5.5).
@@ -49,6 +51,8 @@ BackgroundVolumeContext useBackgroundVolumeContext(
         enabled: s.enabled,
         gateOpen: s.gateOpen,
         bgExhausted: s.bgExhausted,
+        outOfScope: s.bgOutOfScope,
+        queueEnded: s.bgQueueEnded,
         fgMuted: s.fgMuted,
         bgMuted: s.bgMuted,
         ratioEnabled: s.volumeRatioEnabled,
@@ -62,7 +66,15 @@ BackgroundVolumeContext useBackgroundVolumeContext(
         draftFg: s.segmentEditDraft?.fgPercent,
         draftBg: s.segmentEditDraft?.bgPercent,
       ));
+  // 简播 (fake cut): the cut owns the picture and a virtual timeline that no
+  // 副音 pairing describes, so the pair is inactive for THIS media even though
+  // the gate stays open. Without it the foreground stayed ducked to 30% during
+  // a cut.
   final fgKey = fgKeyOverride ?? useForegroundRatioKey(context);
+  final bool fakeCutActive = fakeCutBlocksBackground(
+    fgKey,
+    useFakeCutStore().select(context, (FakeCutStoreState s) => s.playingKey),
+  );
   // The most specific split wins: the segment being EDITED (so the align
   // panel's sliders are audible), else the active mapping segment's own pair;
   // then the per-media / global fallback.
@@ -85,13 +97,17 @@ BackgroundVolumeContext useBackgroundVolumeContext(
     segmentOverride: segmentOverride,
   );
   return (
-    // 副音 mixes (and ducks the foreground) only while the user gate is OPEN.
-    // Feature-armed-but-stopped and a terminal "exhausted" run both read as
-    // inactive: the foreground plays at master again.
+    // 副音 mixes (and ducks the foreground) only while the user gate is OPEN
+    // AND the pair actually applies to what is playing. Feature-armed-but-
+    // stopped, the terminal "exhausted" run, a queue that ran off its end, a
+    // media outside the 作用范围 and a 简播 cut all read as inactive: the
+    // foreground plays at master again.
     active: BackgroundVolumePolicy.active(
       enabled: snapshot.enabled,
       gateOpen: snapshot.gateOpen,
       exhausted: snapshot.bgExhausted,
+      queueEnded: snapshot.queueEnded,
+      outOfScope: snapshot.outOfScope || fakeCutActive,
     ),
     fgMuted: snapshot.fgMuted,
     bgMuted: snapshot.bgMuted,

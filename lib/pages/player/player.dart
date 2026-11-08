@@ -12,6 +12,9 @@ import 'package:iris/features/scenario_playback/actions/drag_drop_gate.dart';
 import 'package:iris/features/scenario_playback/actions/drag_drop_play_handler.dart';
 import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
+import 'package:iris/features/background_playback/hooks/use_foreground_scope_key.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/pages/player/title_prefix.dart';
 import 'package:iris/hooks/use_cover.dart';
 import 'package:iris/hooks/use_global_keyboard.dart';
@@ -268,26 +271,40 @@ class Player extends HookWidget {
     // the accent color so the on-state is visible at a glance. The foreground
     // title, queue prefix and tag suffix stay exactly as they are — this is an
     // additive marker, never a replacement.
+    //
+    // Reads [BackgroundPlaybackState.bgPairInEffect]: a run that is out of
+    // 作用范围, exhausted, or has walked off the end of its queue is NOT on the
+    // air, so advertising it would frame a silent engine.
+    //
+    // 简播 is the exception the state cannot know about: a cut suspends the pair
+    // for THIS media while the gate stays open, so the suffix must be suppressed
+    // exactly like the menu rows and the ducking (the volume hook, the menu and
+    // the icon all test the same flag).
+    final bool bgTitleFakeCut = fakeCutBlocksBackground(
+      useForegroundScopeKey(context),
+      useFakeCutStore().select(
+          context, (FakeCutStoreState s) => s.playingKey),
+    );
     final bgTitleState = useBackgroundPlaybackStore().select(
       context,
       (s) => (
-        enabled: s.enabled,
+        active: s.bgPairInEffect && !bgTitleFakeCut,
         name: s.currentIndex >= 0 && s.currentIndex < s.queue.length
             ? s.queue[s.currentIndex].name
             : null,
       ),
     );
     final String? bgTitleSuffix = useMemoized(
-      () => bgTitleState.enabled
+      () => bgTitleState.active
           ? getLocalizations(context).bg_title_bar_sub(bgTitleState.name ?? '—')
           : null,
-      [bgTitleState.enabled, bgTitleState.name],
+      [bgTitleState.active, bgTitleState.name],
     );
     // 副音 is on but no media is loaded: the marker renders muted (gray)
     // instead of the accent color so the placeholder "—" never reads as a
     // live sub-audio.
     final bool bgTitleNoMedia =
-        bgTitleState.enabled && bgTitleState.name == null;
+        bgTitleState.active && bgTitleState.name == null;
 
     void startControlHideTimer() {
       controlHideTimer.value = Timer(

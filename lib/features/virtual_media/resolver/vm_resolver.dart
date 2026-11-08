@@ -2,7 +2,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/rule/vm_chunk_numbering.dart';
-import 'package:iris/features/virtual_media/rule/vm_natural_compare.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/features/virtual_media/rule/vm_sorter.dart';
 import 'package:iris/features/virtual_media/rule/vm_title_composer.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
@@ -18,9 +18,15 @@ import 'package:iris/utils/dir_match.dart';
 /// Rules never claim files from each other — overlapping rules simply
 /// produce overlapping virtual items and the user avoids duplicates by
 /// shaping the rules ("有多条合并规则，就当成多条视频").
+///
+/// [excludedMediaKeys] are files that must stay OUT of every group (简播: a
+/// video with a sibling `.llc`, see `vm_fake_cut_exclusions.dart`). They are
+/// removed from the candidate set BEFORE matching, so they simply never become
+/// members and keep their ordinary single row downstream.
 List<VirtualMediaItem> resolveVirtualMedia({
   required List<VirtualMediaRule> rules,
   required List<VirtualSegment> library,
+  Set<String> excludedMediaKeys = const <String>{},
   AppLocalizations? l10n,
   /// When false the delete-time boundary freeze ([VmMembershipPin]) is ignored
   /// and every rule re-derives normally. The full-library MANAGEMENT PREVIEW
@@ -31,15 +37,22 @@ List<VirtualMediaItem> resolveVirtualMedia({
   final items = <VirtualMediaItem>[];
   final t = l10n ?? vmLocalizations();
   final pin = VmMembershipPin.instance;
+  final eligible = excludedMediaKeys.isEmpty
+      ? library
+      : [
+          for (final seg in library)
+            if (!excludedMediaKeys.contains(seg.mediaKey)) seg,
+        ];
+  if (eligible.isEmpty) return const <VirtualMediaItem>[];
   for (final rule in rules) {
     if (!rule.enabled) continue;
     // A rule whose boundaries a physical delete froze this session emits its
     // pinned chunks instead of re-deriving them (see VmMembershipPin).
     final pinned = applyPin ? pin.chunksFor(rule.id) : null;
     if (pinned != null) {
-      items.addAll(_resolveFromPinned(rule, pinned, library, t));
+      items.addAll(_resolveFromPinned(rule, pinned, eligible, t));
     } else {
-      items.addAll(_resolveRule(rule, library, t));
+      items.addAll(_resolveRule(rule, eligible, t));
     }
   }
   return items;
@@ -109,6 +122,7 @@ List<VirtualMediaItem> resolveRuleGroups({
   required List<VirtualMediaRule> rules,
   required List<VirtualSegment> library,
   Set<String>? membership,
+  Set<String> excludedMediaKeys = const <String>{},
   AppLocalizations? l10n,
   bool applyPin = true,
 }) {
@@ -121,7 +135,11 @@ List<VirtualMediaItem> resolveRuleGroups({
         ];
   if (scoped.isEmpty) return const [];
   return resolveVirtualMedia(
-      rules: rules, library: scoped, l10n: l10n, applyPin: applyPin);
+      rules: rules,
+      library: scoped,
+      excludedMediaKeys: excludedMediaKeys,
+      l10n: l10n,
+      applyPin: applyPin);
 }
 
 List<VirtualMediaItem> _resolveRule(
@@ -268,7 +286,7 @@ List<List<VirtualSegment>> _group(
       for (final seg in sorted) {
         (byRoot[seg.parentPath] ??= []).add(seg);
       }
-      final keys = byRoot.keys.toList()..sort(vmNaturalCompare);
+      final keys = byRoot.keys.toList()..sort(naturalCompare);
       final groups = <List<VirtualSegment>>[];
       for (final k in keys) {
         groups.addAll(_chunkByLimits(byRoot[k]!, rule));

@@ -16,6 +16,7 @@ class ScenarioSharedIndexBlobs {
     required this.placeholders,
     required this.occurrence,
     required this.flags,
+    this.elementOrder,
   });
 
   final int baseCount;
@@ -26,6 +27,10 @@ class ScenarioSharedIndexBlobs {
   final Uint8List placeholders;
   final Uint8List occurrence;
   final Uint8List flags;
+
+  /// Element-axis permutation (VM rows sorted by their displayed totals), or
+  /// null for the identity permutation.
+  final Uint8List? elementOrder;
 }
 
 /// Persistence for the shared-order derived index (schema v44).
@@ -48,30 +53,48 @@ class ScenarioSharedIndexDao extends DatabaseAccessor<AppDatabase>
     required Uint8List placeholders,
     required Uint8List occurrence,
     required Uint8List flags,
+    Uint8List? elementOrder,
   }) async {
+    final base = <Object>[
+      buildId,
+      baseCount,
+      slices,
+      accepted,
+      absorbed,
+      groupRows,
+      placeholders,
+      occurrence,
+      flags,
+    ];
+    if (elementOrder == null) {
+      await customInsert(
+        'INSERT OR REPLACE INTO scenario_shared_index '
+        '(build_id, base_count, slices, accepted, absorbed, group_rows, '
+        'placeholders, occurrence, flags) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [for (final v in base) _variableOf(v)],
+      );
+      return;
+    }
     await customInsert(
       'INSERT OR REPLACE INTO scenario_shared_index '
       '(build_id, base_count, slices, accepted, absorbed, group_rows, '
-      'placeholders, occurrence, flags) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      variables: [
-        Variable.withInt(buildId),
-        Variable.withInt(baseCount),
-        Variable.withBlob(slices),
-        Variable.withBlob(accepted),
-        Variable.withBlob(absorbed),
-        Variable.withBlob(groupRows),
-        Variable.withBlob(placeholders),
-        Variable.withBlob(occurrence),
-        Variable.withBlob(flags),
-      ],
+      'placeholders, occurrence, flags, element_order) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      variables: [for (final v in base) _variableOf(v), Variable.withBlob(elementOrder)],
     );
   }
+
+  static Variable<Object> _variableOf(Object value) => switch (value) {
+        final int v => Variable.withInt(v),
+        final Uint8List v => Variable.withBlob(v),
+        _ => throw ArgumentError('unsupported variable: $value'),
+      };
 
   Future<ScenarioSharedIndexBlobs?> read(int buildId) async {
     final row = await customSelect(
       'SELECT base_count, slices, accepted, absorbed, group_rows, '
-      'placeholders, occurrence, flags FROM scenario_shared_index '
+      'placeholders, occurrence, flags, element_order FROM scenario_shared_index '
       'WHERE build_id = ?',
       variables: [Variable.withInt(buildId)],
     ).getSingleOrNull();
@@ -85,6 +108,7 @@ class ScenarioSharedIndexDao extends DatabaseAccessor<AppDatabase>
       placeholders: row.read<Uint8List>('placeholders'),
       occurrence: row.read<Uint8List>('occurrence'),
       flags: row.read<Uint8List>('flags'),
+      elementOrder: row.read<Uint8List?>('element_order'),
     );
   }
 

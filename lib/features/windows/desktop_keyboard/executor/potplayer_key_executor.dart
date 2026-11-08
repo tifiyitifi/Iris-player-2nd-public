@@ -9,11 +9,19 @@ import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/features/scenario_playback/playback/scenario_playback_provider.dart';
+import 'package:iris/features/app_instance/services/neighbor_window_request.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/playback_tools/services/screenshot_service.dart';
 import 'package:iris/features/playback_tools/view/screenshot_capture_flow.dart';
 import 'package:iris/features/playback_tools/view/screenshot_feedback.dart';
 import 'package:iris/models/store/app_state.dart';
+import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
+import 'package:iris/features/background_playback/engine/background_scope_logic.dart';
+import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/background_playback/services/segment_edit_guard.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
 import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/ab_loop_engine.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/seek_tiers.dart';
@@ -188,12 +196,13 @@ class PotPlayerKeyExecutor {
     }
     if (bufferStore.state.isBuffering) return; // stay armed, no-op
 
-    final combo = KeyCombo(
+    final rawCombo = KeyCombo(
       input.key,
       ctrl: input.ctrl,
       alt: input.alt,
       shift: input.shift,
     );
+    final combo = canonicalKeyCombo(rawCombo);
     final overrides = KeybindCodec.decodeOverrides(
       useAppStore().state.keybindOverridesJson,
     );
@@ -264,6 +273,76 @@ class PotPlayerKeyExecutor {
   }
 
   int get _stepSeconds => useAppStore().state.seekStepSeconds;
+
+  /// Multi-window neighbour playback (Shift+PageUp/Down): keep THIS player in
+  /// place, paused, and open the previous/next entry in a fresh window that
+  /// mirrors the same playback context.
+  ///
+  /// The neighbour is resolved (and the boundary decided) BEFORE anything is
+  /// paused, and a failed spawn restores the paused player — an unsupported
+  /// build or a failed launch must never park the current playback.
+  Future<void> _openNeighborInNewWindow({required bool forward}) async {
+    if (!isDesktop) return;
+    if (SegmentEditGuard.transportFrozen) return;
+    final t = getLocalizations(context);
+
+    // This mirrors the FOREGROUND scenario. While 副音 owns the transport the
+    // keys belong to the background engine, and a legacy in-memory queue has no
+    // scenario definition to clone — both are explicitly unsupported.
+    if (isBackgroundControlTarget(context) ||
+        !PlaybackProviderRegistry.scenarioModeActive) {
+      _showOsd(OsdTexts.newWindowUnavailable(t));
+      return;
+    }
+    if (!NewWindowLauncher.isSupported) {
+      await showNewWindowUnavailableDialog(context);
+      return;
+    }
+
+    // Resolving the neighbour touches the scenario/tag stores and the database;
+    // a failure there must surface as "no neighbour" for this keypress instead
+    // of escaping the key handler as an unhandled zone error.
+    final NeighborWindowTarget? target;
+    try {
+      target = await buildNeighborWindowTarget(forward: forward);
+    } catch (e) {
+      _log.w('neighbour resolution failed: $e');
+      _showOsd(forward ? OsdTexts.noNext(t) : OsdTexts.noPrevious(t));
+      return;
+    }
+    if (target == null) {
+      _showOsd(forward ? OsdTexts.noNext(t) : OsdTexts.noPrevious(t));
+      return;
+    }
+
+    final wasPlaying = player.isPlaying;
+    if (wasPlaying) {
+      // AutoPlay FIRST: the scenario resume effect watches
+      // `autoPlay && !playing`, so pausing while autoPlay is still true would
+      // immediately restart the very player we are parking.
+      await useAppStore().updateAutoPlay(false);
+      await player.pause();
+    }
+    bool launched = false;
+    try {
+      // A mirror payload carries one scenario id and two small numbers, so the
+      // `payloadTooLong` branch inside [launchNewWindow] (the "too many files"
+      // dialog) is unreachable here: it only exists for large selections.
+      launched = await launchNewWindow(context, target.request);
+    } catch (e) {
+      _log.w('new window launch failed: $e');
+    }
+    if (!launched) {
+      if (wasPlaying) {
+        await useAppStore().updateAutoPlay(true);
+        await player.play();
+      }
+      return;
+    }
+    // The source player stays parked exactly where it is: paused, same frame,
+    // same queue position.
+    _showOsd(OsdTexts.openInNewWindow(target.label, t));
+  }
 
   /// Direct base-step adjust (Ctrl+↑/↓ ±1s, Ctrl+Shift+↑/↓ ±10s) with OSD.
   ///
@@ -786,6 +865,11 @@ class PotPlayerKeyExecutor {
   }
 
   Future<void> perform(PotPlayerAction action, bool isRepeat) async {
+    // Single choke point for the auto-repeat guard: a held key must not run a
+    // one-shot action. The idle dispatch already checks this, but `perform` is
+    // also reached from the `;` sequence path (and the context menu); keeping
+    // the guard here means no caller can reintroduce the held-key repeat.
+    if (isRepeat && !kRepeatablePotPlayerActions.contains(action)) return;
     // Captured once per action for OSD/dialog text; the context itself must
     // not cross async gaps (file carries use_build_context_synchronously
     // ignore for pre-existing patterns).
@@ -842,6 +926,50 @@ class PotPlayerKeyExecutor {
       case PotPlayerAction.playPause:
         _togglePlayPause();
         break;
+      case PotPlayerAction.toggleBackgroundGate:
+        {
+          // The quick bar's T0 play/stop button in keyboard form: apply 副音
+          // to the CURRENT foreground under the run's 作用范围 (a scope that
+          // does not cover this media hands it back on its own). OSD only when
+          // the pair actually flipped — a refused press (feature off, no
+          // candidates, 简播, …) already showed its own dialog.
+          final bg = useBackgroundPlaybackStore();
+          final bool wasActive = bg.state.bgPairInEffect;
+          await BackgroundPlaybackActions.toggleGateForCurrent(context);
+          if (!context.mounted) break;
+          final bool nowActive = bg.state.bgPairInEffect;
+          if (nowActive != wasActive) {
+            _showOsd(OsdTexts.backgroundGate(nowActive, t));
+          }
+        }
+        break;
+      case PotPlayerAction.toggleControlTarget:
+        {
+          // The quick bar's T0 "control fg/bg" button in keyboard form. Same
+          // liveness rule the button renders its enabled state from
+          // (`bgPairInEffect` + the pure 作用范围 verdict + 简播), so the
+          // shortcut can never retarget the shared controls onto a 副音 that
+          // is not actually sounding for this media.
+          final bg = useBackgroundPlaybackStore();
+          final String? fgKey = currentScopeKey();
+          final bool live = bg.state.bgPairInEffect &&
+              resolveApplyToCurrent(
+                enabled: bg.state.enabled,
+                applyScope: bg.state.applyScope,
+                anchorKey: bg.state.scopeAnchorKey,
+                offMediaKeys: bg.state.bgOffMediaKeys,
+                fgKey: fgKey,
+                fakeCutActive: fakeCutBlocksBackgroundNow(fgKey),
+              );
+          if (!live) {
+            _showOsd(OsdTexts.controlTargetUnavailable(t));
+            break;
+          }
+          await bg.cycleTarget();
+          if (!context.mounted) break;
+          _showOsd(OsdTexts.controlTarget(bg.state.bgOwnsControls, t));
+        }
+        break;
       case PotPlayerAction.previousItem:
         PlaybackProviderRegistry.step(forward: false);
         AbLoopEngine.instance.reset();
@@ -851,6 +979,12 @@ class PotPlayerKeyExecutor {
         PlaybackProviderRegistry.step(forward: true);
         AbLoopEngine.instance.reset();
         _showOsd(OsdTexts.next(t));
+        break;
+      case PotPlayerAction.openPreviousInNewWindow:
+        await _openNeighborInNewWindow(forward: false);
+        break;
+      case PotPlayerAction.openNextInNewWindow:
+        await _openNeighborInNewWindow(forward: true);
         break;
       case PotPlayerAction.frameBackward:
         await player.stepBackward();

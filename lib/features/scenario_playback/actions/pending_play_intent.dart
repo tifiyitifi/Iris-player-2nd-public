@@ -7,9 +7,9 @@ import 'package:flutter/foundation.dart';
 /// intent — "play this" — must survive the gap. This captures that intent and is
 /// bound to the scan run THIS action started (see
 /// `ensureDirsScannedDetailed`); the resume runs once that run settles.
-/// The browse/library surfaces confirm once before resuming; the desktop
-/// drag-drop path resumes straight into playback (the drop was already an
-/// explicit gesture).
+/// Every playback surface resumes straight into playback: the request was
+/// already explicit, so no "continue playing?" step stands between the finished
+/// scan and the play.
 ///
 /// In-memory only, deliberately: a process restart must not silently resume a
 /// playback the user never re-requested, and stale parameters must not be

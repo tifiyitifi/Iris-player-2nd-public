@@ -496,8 +496,8 @@ void main() {
           'zz-empty');
     });
 
-    test('an EXPLICIT item is not representable: no shared index is persisted '
-        'and the placeholder still surfaces through the walk', () async {
+    test('an explicit row is representable: a vanished file is the tail '
+        'placeholder and the indexed read serves it', () async {
       await seedMedia(2);
       final resolver = buildResolver();
       final id = await scenarioWithSource();
@@ -508,26 +508,24 @@ void main() {
       );
       final buildId = await resolver.buildQueueIndex(id);
 
-      // The shared representation cannot express an explicit item, so the gate
-      // refuses the build and there is NO persisted row to serve: the reads take
-      // the legacy walk (page window = raw slots). This is the accepted
-      // degradation — see `_logUnrepresentable`, which warns only when such a
-      // scenario is non-trivial.
-      expect(await sharedDao.read(buildId), isNull);
-      expect(await resolver.indexedTotalCount(buildId), isNull);
+      // Explicit items are part of the base order now, so the generation HAS a
+      // persisted representation; only the missing node becomes a placeholder.
+      expect(await sharedDao.read(buildId), isNotNull);
+      expect(await resolver.indexedTotalCount(buildId), 3);
 
       final page = await resolver.resolvePageIndexed(
           scenarioId: id, page: 0, pageSize: 50);
       final unavailable = page.items.singleWhere((i) => !i.available);
       expect(unavailable.media.name, 'ghost.mp4');
       expect(unavailable.explicit, isTrue);
+      expect(unavailable.virtualIndex, 2, reason: 'placeholders are the tail');
 
-      // The slot seek is part of the indexed representation, so it degrades too;
-      // its callers fall back to materializing the prefix.
-      expect(
-        await resolver.resolveItemAtIndex(id, unavailable.virtualIndex),
-        isNull,
-      );
+      // The slot seek is index-backed too, and it serves the placeholder row.
+      final byOrdinal = await resolver.resolveItemAtIndex(
+          id, unavailable.virtualIndex);
+      expect(byOrdinal, isNotNull);
+      expect(byOrdinal!.available, isFalse);
+      expect(byOrdinal.media.name, 'ghost.mp4');
     });
 
     test('group title follows the rule\'s own titleTags', () async {

@@ -5,6 +5,7 @@ import 'package:iris/store/kv/kv_keys.dart';
 import 'package:iris/store/kv/use_kv_store.dart';
 import 'package:flutter_zustand/flutter_zustand.dart' as zustand;
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/storages/storage_scope_key.dart';
 import 'package:iris/models/store/storage_state.dart';
@@ -306,9 +307,60 @@ class UnifiedStorageStore extends PersistentStore<StorageState> {
         nodeStorageId: nodeStorageId,
       );
 
-  Future<void> addStorage(Storage storage) async {
+  /// The persisted local entry that already owns [candidate]'s disk root.
+  ///
+  /// Two rows can name the SAME root because the id formula changed: a legacy
+  /// entry keeps `sha1(type:name:base)` while today's volume-keyed formula uses
+  /// `sha1(type:volumeId[:rel])`. Adding the same root again (manual "add
+  /// folder", drop, re-enumeration) must reuse the entry the library /
+  /// scenarios / tags are keyed on instead of appending a twin.
+  ///
+  /// Requires BOTH a non-empty volume id and an identical root: folding a
+  /// different base (`E:` vs `E:/movies`) would re-interpret every stored
+  /// relative path.
+  LocalStorage? existingLocalRoot(LocalStorage candidate) {
+    final volumeId = candidate.volumeId;
+    if (volumeId == null || volumeId.isEmpty) return null;
+    for (final storage in state.storages) {
+      if (storage is! LocalStorage) continue;
+      if (storage.id == candidate.id) continue;
+      if (storage.volumeId != volumeId) continue;
+      if (!StoragePathCodec.sameBasePath(
+        storage.basePath,
+        candidate.basePath,
+      )) {
+        continue;
+      }
+      return storage;
+    }
+    return null;
+  }
+
+  /// Adds [storage], returning the entry the store actually keeps.
+  ///
+  /// The id is the identity: an entry with the same id is replaced in place
+  /// (never appended twice), and a local row whose volume+root an existing
+  /// entry already owns is a no-op that returns the survivor. Callers that key
+  /// further work on the id (drop/scan) must use the returned entry.
+  Future<Storage> addStorage(Storage storage) async {
+    final index = state.storages.indexWhere((s) => s.id == storage.id);
+    if (index >= 0) {
+      final newList = [...state.storages]..[index] = storage;
+      set(state.copyWith(storages: newList));
+      await _persistStorageUpsert([storage]);
+      return storage;
+    }
+    if (storage is LocalStorage) {
+      final twin = existingLocalRoot(storage);
+      if (twin != null) {
+        areaKeyLog.i('addStorage: ${storage.id} names the disk root already '
+            'owned by ${twin.id}; keeping the existing entry');
+        return twin;
+      }
+    }
     set(state.copyWith(storages: [...state.storages, storage]));
     await _persistStorageAdd(storage);
+    return storage;
   }
 
   Future<void> updateStorage(int index, Storage storage) async {

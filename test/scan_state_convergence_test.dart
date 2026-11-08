@@ -186,15 +186,19 @@ void main() {
         sourcesDao: DbModule.mediaLibSourcesDao,
         listDir: (s, p) async {
           if (p.join('/') == 's') {
+            // The user stops the scan while the root is listing, so neither
+            // child is ever walked by this run and their old `scanDone`
+            // stamps are stale evidence, not proof of completeness.
+            // (Stopping inside one child is racy under bounded child
+            // concurrency — a sibling worker may already have claimed the
+            // next child — so the stop is issued here, deterministically
+            // before any child starts.)
+            await scanStore.stopScan();
             return FileListResult([
               FileItem(name: 'kidA', uri: 's/kidA', isDir: true),
               FileItem(name: 'kidB', uri: 's/kidB', isDir: true),
             ]);
           }
-          // ... but the user stops the scan inside the first child, so `kidB`
-          // is never walked by this run and its old `scanDone` stamp is stale
-          // evidence, not proof of completeness.
-          await scanStore.stopScan();
           return const FileListResult(<FileItem>[]);
         },
       );

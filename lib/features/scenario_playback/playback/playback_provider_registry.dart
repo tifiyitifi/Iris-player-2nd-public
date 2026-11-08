@@ -308,31 +308,41 @@ class PlaybackProviderRegistry {
   /// Advances playback when the current media completes.
   ///
   /// In scenario-driven mode, repeat handling is done here; the legacy path
-  /// returns false so callers keep the existing queue-based behavior.
-  static Future<bool> advanceOnComplete(Repeat repeat) async {
+  /// returns `handled: false` so callers keep the existing queue-based behavior.
+  ///
+  /// [advanced] is NOT the same as [handled]: a handled advance can still have
+  /// nowhere to go (the A-B editor freeze, or the last scenario entry with
+  /// repeat off). The caller must tell them apart — it holds a per-item
+  /// tail-finish latch that may only stay armed while something is actually
+  /// coming to rebind the media, otherwise every later step press is dropped.
+  static Future<({bool handled, bool advanced})> advanceOnComplete(
+      Repeat repeat) async {
     // A-中心-B editor open: playback reaching its end must PAUSE, not advance
-    // to the next entry. `true` = handled, so the calling hook stops here.
-    if (SegmentEditGuard.transportFrozen) return true;
+    // to the next entry. `handled: true` = the calling hook stops here.
+    if (SegmentEditGuard.transportFrozen) {
+      return (handled: true, advanced: false);
+    }
     _resetEphemerals();
-    if (repeat == Repeat.one) return false;
+    if (repeat == Repeat.one) return (handled: false, advanced: false);
     if (_useTagViewMode) {
       // See step(): the tag controller feeds internally; do not feed twice.
       final entry = await tagPlay.next();
+      var advanced = entry != null;
       if (entry == null && repeat == Repeat.all) {
         await tagPlay.wrapToFirst();
+        advanced = true;
       }
-      return true;
+      return (handled: true, advanced: advanced);
     }
-    if (!_useScenarioMode) return false;
+    if (!_useScenarioMode) return (handled: false, advanced: false);
 
     var entry = await scenario.next();
     if (entry == null && repeat == Repeat.all) {
       entry = await scenario.wrapToFirst();
     }
-    if (entry != null) {
-      await scenario.advanceEntry(entry);
-    }
-    return true;
+    if (entry == null) return (handled: true, advanced: false);
+    await scenario.advanceEntry(entry);
+    return (handled: true, advanced: true);
   }
 
   /// Guard against a pathological queue blowing up the roll page request.

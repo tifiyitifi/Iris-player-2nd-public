@@ -13,6 +13,21 @@ abstract final class ScanSettingsContribution {
 
   static const List<SettingDef> defs = <SettingDef>[
     SettingDef(
+      key: 'scan.autoClosePrompt',
+      section: SettingsSection.general,
+      valueType: SettingValueType.bool,
+      defaultValue: 'true', // == RecursiveScanState.autoClosePrompt @Default
+      writable: true,
+      widgetKind: SettingWidgetKind.custom,
+      editorKey: 'scan_auto_close_prompt',
+      titleKey: 'set_scan_completion_prompt',
+      subtitleKey: 'set_scan_completion_prompt_desc',
+      iconKey: 'scan_completion_prompt',
+      groupHeaderKey: groupHeaderKey,
+      // Sits directly above the countdown length it controls.
+      sortOrder: 119,
+    ),
+    SettingDef(
       key: 'scan.autoCloseDelay',
       section: SettingsSection.general,
       valueType: SettingValueType.double,
@@ -25,7 +40,6 @@ abstract final class ScanSettingsContribution {
       titleKey: 'scan_auto_close',
       subtitleKey: 'scan_auto_close_desc',
       iconKey: 'scan_auto_close',
-      groupHeaderKey: groupHeaderKey,
       sortOrder: 120,
     ),
     SettingDef(

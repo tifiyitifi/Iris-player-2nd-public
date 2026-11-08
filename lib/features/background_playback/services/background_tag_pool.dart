@@ -75,5 +75,20 @@ Future<List<EffectivePlaybackItem>> resolveBackgroundCandidates({
   }();
   final seed = bg.shuffle ? bg.shuffleSeed : 0;
   if (seed == 0) return snap.vmStream;
-  return shuffleBySeed(snap.vmStream, seed);
+  return renumberVirtualIndexes(shuffleBySeed(snap.vmStream, seed));
 }
+
+/// Rewrites `virtualIndex` to the item's POSITION in [items].
+///
+/// Any consumer that permutes the resolved stream must pass through here: the
+/// resolver numbers the stream in ITS order, and every dense-list consumer —
+/// notably `jumpToOccurrence`, which verifies the tapped row's identity against
+/// the index — assumes `virtualIndex == position`. Skipping the renumber after
+/// 副音's own shuffle (ON by default) made a queue-row tap resolve to a
+/// different file and get silently refused.
+List<EffectivePlaybackItem> renumberVirtualIndexes(
+  List<EffectivePlaybackItem> items,
+) =>
+    <EffectivePlaybackItem>[
+      for (var i = 0; i < items.length; i++) items[i].copyWith(virtualIndex: i),
+    ];

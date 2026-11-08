@@ -65,8 +65,11 @@ void main() {
 
     test('fg end-of-media is reported handled (pause) while frozen', () async {
       store.enterSegmentEdit(_draft());
-      expect(await PlaybackProviderRegistry.advanceOnComplete(Repeat.all),
-          isTrue);
+      final result = await PlaybackProviderRegistry.advanceOnComplete(Repeat.all);
+      expect(result.handled, isTrue);
+      // Handled but nothing advanced: the caller must release its per-item tail
+      // latch, otherwise the finished media can never be stepped again.
+      expect(result.advanced, isFalse);
     });
 
     test('exiting the editor restores transport', () async {

@@ -62,6 +62,27 @@ void main() {
       ),
       (const KeyCombo(LogicalKeyboardKey.pageUp), PotPlayerAction.previousItem),
       (const KeyCombo(LogicalKeyboardKey.pageDown), PotPlayerAction.nextItem),
+      // ── Multi-window neighbour playback ──
+      (
+        const KeyCombo(LogicalKeyboardKey.pageUp, shift: true),
+        PotPlayerAction.openPreviousInNewWindow,
+      ),
+      (
+        const KeyCombo(LogicalKeyboardKey.pageDown, shift: true),
+        PotPlayerAction.openNextInNewWindow,
+      ),
+      // ── 副音 gate for the current foreground media ──
+      // Bound under the canonical apostrophe id; Windows delivers the same
+      // physical key as `quote` (0x22) and `canonicalKeyCombo` folds it in.
+      (
+        const KeyCombo(kApostropheKey, alt: true),
+        PotPlayerAction.toggleBackgroundGate,
+      ),
+      // ── fg/bg control target (the quick bar's T0 control button) ──
+      (
+        const KeyCombo(LogicalKeyboardKey.semicolon, alt: true),
+        PotPlayerAction.toggleControlTarget,
+      ),
       (const KeyCombo(LogicalKeyboardKey.keyD), PotPlayerAction.frameBackward),
       (const KeyCombo(LogicalKeyboardKey.keyF), PotPlayerAction.frameForward),
       (const KeyCombo(LogicalKeyboardKey.keyZ), PotPlayerAction.speedReset),
@@ -202,6 +223,25 @@ void main() {
       expect(
         kPotPlayerKeyMap.keys.where((c) => c.key == LogicalKeyboardKey.f11),
         isEmpty,
+      );
+    });
+
+    test('the Windows apostrophe id folds onto the bound combo', () {
+      // Windows resolves VK_OEM_7 to `quote` (0x22, labelled `"`); a raw
+      // lookup of that combo against the table used to miss, so Alt+' did
+      // nothing at all. `canonicalKeyCombo` is the single fold point.
+      const windowsCombo = KeyCombo(LogicalKeyboardKey.quote, alt: true);
+      final canonical = canonicalKeyCombo(windowsCombo);
+      expect(canonical, const KeyCombo(kApostropheKey, alt: true));
+      expect(
+        kPotPlayerKeyMap[canonical],
+        PotPlayerAction.toggleBackgroundGate,
+        reason: 'Alt+apostrophe must resolve on Windows too',
+      );
+      // Non-apostrophe combos pass through untouched.
+      expect(
+        canonicalKeyCombo(const KeyCombo(LogicalKeyboardKey.keyK, ctrl: true)),
+        const KeyCombo(LogicalKeyboardKey.keyK, ctrl: true),
       );
     });
   });

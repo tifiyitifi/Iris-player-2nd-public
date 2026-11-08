@@ -15,6 +15,8 @@ class ExplicitFileProbeTarget {
     required this.storageId,
     required this.path,
     required this.uri,
+    this.sizeInBytes,
+    this.modifiedAt,
   });
 
   final String storageId;
@@ -24,6 +26,14 @@ class ExplicitFileProbeTarget {
 
   /// Playable URI handed to the probe service (SAF `content://` or a path).
   final String uri;
+
+  /// Size from the listing that produced this target, when the lane could stat
+  /// it. The queue sorts by size, so a dropped/added file must persist it even
+  /// when the deep probe cannot open the container.
+  final int? sizeInBytes;
+
+  /// mtime from that same listing, when known (the queue sorts by it too).
+  final DateTime? modifiedAt;
 }
 
 /// Storage-type probe seam; defaults to the storage store lookup.
@@ -40,6 +50,11 @@ typedef ExplicitProbeOutcome = ({Set<String> touchedStorages, int written});
 /// `media_nodes` so dropped/added explicit files show their metadata without
 /// waiting for the lazy per-play backfill.
 ///
+/// A target's listing-derived [ExplicitFileProbeTarget.sizeInBytes] /
+/// [ExplicitFileProbeTarget.modifiedAt] are written too, even when the probe
+/// yields no duration: the queue sorts by them, so "rescan" has to be able to
+/// heal a 0/NULL row on its own.
+///
 /// Mirrors the scan-time probe (`RecursiveScanService._probePlayableNodes`):
 /// 32/批 via `probeFiles`, network storages (FTP/WebDAV) skipped, absurd
 /// dimensions sanitized. Honors the persisted scan probe preference (unset →
@@ -52,12 +67,14 @@ Future<Set<String>> probeExplicitFiles(
   MediaProbeService? probeService,
   ExplicitProbeIsNetwork? isNetwork,
   int batchSize = 32,
+  bool? probeEnabled,
 }) async =>
     (await probeExplicitFilesDetailed(
       targets,
       probeService: probeService,
       isNetwork: isNetwork,
       batchSize: batchSize,
+      probeEnabled: probeEnabled,
     ))
         .touchedStorages;
 
@@ -71,19 +88,25 @@ Future<ExplicitProbeOutcome> probeExplicitFilesDetailed(
   MediaProbeService? probeService,
   ExplicitProbeIsNetwork? isNetwork,
   int batchSize = 32,
+
+  /// Overrides the persisted scan-probe preference; `null` reads it.
+  ///
+  /// `false` suppresses only the CONTAINER probe — the listing's size/mtime are
+  /// still written back, because a probe-less profile must still be able to
+  /// heal a 0/NULL size row through "rescan file/source".
+  bool? probeEnabled,
 }) async {
   if (targets.isEmpty) return (touchedStorages: const <String>{}, written: 0);
-  // Honor the user's scan-probe choice; never chosen → probe by default
-  // (same "默认勾选扫描时间" rule as the scan options dialog).
-  final preference = await ScanProbePreference.load();
-  if (preference == false) {
-    return (touchedStorages: const <String>{}, written: 0);
-  }
 
-  final probe = probeService ?? createMediaProbeService();
   final net = isNetwork ?? _defaultIsNetwork;
   final local = [for (final t in targets) if (!net(t.storageId)) t];
   if (local.isEmpty) return (touchedStorages: const <String>{}, written: 0);
+
+  // Honor the user's scan-probe choice; never chosen → probe by default
+  // (same "默认勾选扫描时间" rule as the scan options dialog). Creating the
+  // service is skipped when disabled: on desktop it spins up an isolate pool.
+  final enabled = probeEnabled ?? ((await ScanProbePreference.load()) != false);
+  final probe = enabled ? (probeService ?? createMediaProbeService()) : null;
 
   final touched = <String>{};
   var written = 0;
@@ -91,30 +114,43 @@ Future<ExplicitProbeOutcome> probeExplicitFilesDetailed(
   for (var start = 0; start < local.length; start += size) {
     final end = (start + size).clamp(0, local.length);
     final batch = local.sublist(start, end);
-    List<ProbeResult> results;
-    try {
-      results = await probe.probeFiles([for (final t in batch) t.uri]);
-    } catch (e) {
-      // One poison file (isolate spawn failure, channel error) must not fail
-      // the whole run; skip the batch and keep going.
-      _log.w('[explicit-probe] batch failed at $start: $e');
-      continue;
+    List<ProbeResult> results = const <ProbeResult>[];
+    if (probe != null) {
+      try {
+        results = await probe.probeFiles([for (final t in batch) t.uri]);
+      } catch (e) {
+        // One poison file (isolate spawn failure, channel error) must not fail
+        // the whole run; skip the batch and keep going.
+        _log.w('[explicit-probe] batch failed at $start: $e');
+        continue;
+      }
     }
     for (var i = 0; i < batch.length; i++) {
+      final target = batch[i];
       final sane = sanitizeProbeResult(
         i < results.length ? results[i] : ProbeResult.empty,
       );
-      if (sane.durationMs == null || sane.durationMs! <= 0) continue;
+      final durationMs = sane.durationMs;
+      final hasDuration = durationMs != null && durationMs > 0;
+      final hasSize = target.sizeInBytes != null && target.sizeInBytes! > 0;
+      final hasMtime = target.modifiedAt != null;
+      // The listing's physical facts are worth a write on their own: the queue
+      // sorts by size/mtime, and a container the probe cannot open (or a run
+      // with probing disabled) must still heal a 0/NULL row. The old
+      // "duration-only" gate is exactly why "rescan source" never fixed sizes.
+      if (!hasDuration && !hasSize && !hasMtime) continue;
       try {
         final rows = await DbModule.mediaNodeRepo.updateFileMediaInfo(
-          storageId: batch[i].storageId,
-          path: batch[i].path,
-          durationMs: sane.durationMs,
-          width: sane.width,
-          height: sane.height,
+          storageId: target.storageId,
+          path: target.path,
+          durationMs: hasDuration ? durationMs : null,
+          width: hasDuration ? sane.width : null,
+          height: hasDuration ? sane.height : null,
+          sizeInBytes: hasSize ? target.sizeInBytes : null,
+          modifiedAt: target.modifiedAt,
         );
         if (rows > 0) {
-          touched.add(batch[i].storageId);
+          touched.add(target.storageId);
           written++;
         }
       } catch (e) {

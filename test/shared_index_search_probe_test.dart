@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:drift/drift.dart';
@@ -117,8 +117,8 @@ Future<({int n, int groups, int hits, double ms})> _measure({
     await sharedDao.write(
       buildId,
       baseCount: n,
-      slices: SharedIndexCodec.encodeSlices(
-          [(orderKey: 'probe', mediaRev: 1, bits: all)]),
+      slices: SharedIndexCodec.encodeSlices(SingleBaseOrder(
+          [(orderKey: 'probe', mediaRev: 1, bits: all)])),
       accepted: SharedIndexCodec.encodeBitmap(all),
       absorbed: SharedIndexCodec.encodeBitmap(all),
       groupRows: SharedIndexCodec.encodeGroups(groupRows),

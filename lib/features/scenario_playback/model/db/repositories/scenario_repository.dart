@@ -776,10 +776,28 @@ class ScenarioRepository {
   Future<void> copyPersistentExcludes({
     required String sourceScenarioId,
     required String targetScenarioId,
+  }) =>
+      copyExcludes(
+        sourceScenarioId: sourceScenarioId,
+        targetScenarioId: targetScenarioId,
+      );
+
+  /// Copies exclude rules from one scenario to another.
+  ///
+  /// [includeTemporary] additionally copies the workspace-only (temporary)
+  /// excludes. The multi-window mirror needs the FULL set: a temporary exclude
+  /// is a user-removed queue entry, so dropping it would make the new window's
+  /// playlist differ from the one the user is looking at.
+  Future<void> copyExcludes({
+    required String sourceScenarioId,
+    required String targetScenarioId,
+    bool includeTemporary = false,
   }) async {
     final rules = await excludesDao.getByScenario(sourceScenarioId);
     for (final rule in rules) {
-      if (rule.lifetime != ExcludeLifetime.persistent) continue;
+      if (!includeTemporary && rule.lifetime != ExcludeLifetime.persistent) {
+        continue;
+      }
       await addExcludeRule(
         scenarioId: targetScenarioId,
         rule: rule.copyWith(id: 0, scenarioId: targetScenarioId),

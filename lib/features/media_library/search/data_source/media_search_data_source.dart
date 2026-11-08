@@ -33,12 +33,14 @@ import 'package:iris/features/scenario_playback/view/coordinator/scenario_browse
 import 'package:iris/features/scenario_playback/view/dialogs/show_override_confirm_dialog.dart';
 import 'package:iris/features/scenario_playback/view/dialogs/show_version_changed_dialog.dart';
 import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
+import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/rule/vm_title_composer.dart'
     show kVmDisplayPrefix;
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
 import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_storage_store.dart';
@@ -46,6 +48,7 @@ import 'package:iris/utils/escape_like.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 
@@ -507,8 +510,15 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   }
 
   /// In-memory explicit segment (F-007 / v5-D2 / v6-D4): token-match on the
-  /// basename (with extension, lowercase), synthesize out-of-scope or not-in-DB
-  /// items, sort by name, dedupe on canonicalKey.
+  /// basename (with extension, lowercase), resolve each match against the DB,
+  /// sort by name, dedupe on canonicalKey.
+  ///
+  /// An explicit item is NOT proof that the file is missing from the database:
+  /// a dropped file is always an explicit item, and its folder is frequently
+  /// outside the scenario's sources. Resolving EVERY match (not only the
+  /// in-scope ones) is what lets such a row carry its real metadata and stay
+  /// playable — the "not in the media database" verdict must come from the DB,
+  /// never from the row's origin.
   Future<List<SearchResultItem>> _computeExplicitSegment({
     required List<String> tokens,
     required List<SearchSource> sources,
@@ -517,53 +527,56 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     final explicitItems = searchContext.explicitItems;
     if (explicitItems.isEmpty || tokens.isEmpty) return const [];
 
-    final inScope = <SearchExplicitItem>[];
-    final outOfScope = <SearchExplicitItem>[];
-    for (final e in explicitItems) {
-      final name = _basenameOf(e.path);
-      if (!matchesAllTokens(name, tokens)) continue;
-      if (anySourceCovers(sources, e.storageId, e.path)) {
-        inScope.add(e);
+    final matched = <SearchExplicitItem>[
+      for (final e in explicitItems)
+        if (matchesAllTokens(_basenameOf(e.path), tokens)) e,
+    ];
+    if (matched.isEmpty) return const [];
+
+    // One batch existence+metadata read for the whole segment. The returned
+    // node owns the identity the queue resolver uses (`storageId` +
+    // `occurrencePath`), so a tapped row cannot disagree with the queue entry.
+    final nodesByKey = <String, MediaFile>{};
+    final nodesByRelative = <String, MediaFile>{};
+    final ambiguousRelative = <String>{};
+    final nodes = await DbModule.mediaNodeRepo.nodesByMediaKeys({
+      for (final e in matched) canonicalKey(e.storageId, e.path),
+    });
+    for (final node in nodes) {
+      final file = node as MediaFile;
+      final relative =
+          StoragePathCodec.relativeKey(file.storageId, file.path.join('/'));
+      nodesByKey['${file.storageId}|$relative'] = file;
+      if (nodesByRelative.containsKey(relative)) {
+        // Two storages share this relative path: never guess which one an
+        // aliased explicit item meant.
+        ambiguousRelative.add(relative);
       } else {
-        outOfScope.add(e);
+        nodesByRelative[relative] = file;
       }
     }
 
-    // Lightweight batch existence check for in-scope items (v4-D2): an
-    // in-scope, in-DB item is covered by the DB segment — do not synthesize.
-    final existing = <String>{};
-    if (inScope.isNotEmpty) {
-      final byStorage = <String, List<String>>{};
-      for (final e in inScope) {
-        byStorage.putIfAbsent(e.storageId, () => []).add(e.path);
-      }
-      for (final entry in byStorage.entries) {
-        final found = await DbModule.mediaNodeRepo.getExistingFilePaths(
-          storageId: entry.key,
-          paths: entry.value,
-        );
-        for (final p in found) {
-          existing.add('${entry.key}:${canonicalDbPath(p)}');
-        }
-      }
+    MediaFile? nodeFor(SearchExplicitItem e) {
+      final relative = StoragePathCodec.relativeKey(e.storageId, e.path);
+      final exact = nodesByKey['${e.storageId}|$relative'];
+      if (exact != null) return exact;
+      return ambiguousRelative.contains(relative)
+          ? null
+          : nodesByRelative[relative];
     }
 
     final results = <SearchResultItem>[];
     final seen = <String>{};
-    void add(SearchExplicitItem e) {
-      final key = '${e.storageId}:${canonicalDbPath(e.path)}';
-      if (!seen.add(key)) return;
-      results.add(_synthesize(e));
-    }
-
-    for (final e in inScope) {
-      if (existing.contains('${e.storageId}:${canonicalDbPath(e.path)}')) {
+    for (final e in matched) {
+      final node = nodeFor(e);
+      // An in-scope item the DB segment already returns must not be
+      // synthesized twice; the DB row also carries fresher metadata.
+      if (node != null && anySourceCovers(sources, e.storageId, e.path)) {
         continue;
       }
-      add(e);
-    }
-    for (final e in outOfScope) {
-      add(e);
+      final item = node != null ? _fromExplicitNode(node) : _synthesize(e);
+      if (!seen.add(canonicalKey(item.storageId, item.path))) continue;
+      results.add(item);
     }
 
     if (excludeRules.isNotEmpty) {
@@ -572,7 +585,8 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       );
     }
 
-    results.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    // Natural order: ep2 before ep10 (SQL and Dart must agree).
+    results.sort((a, b) => naturalCompare(a.name, b.name));
     return results;
   }
 
@@ -593,6 +607,12 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     final scenarioId = searchContext.scenarioId;
     if (scenarioId == null || tokens.isEmpty) return const [];
     if (!VirtualMediaGate.enabled) return const [];
+    // The master switch pauses merging without touching rules. The indexed
+    // search reads persisted group headers directly, so it must short-circuit
+    // here — otherwise "paused" still surfaced virtual-group search rows.
+    if ((await VirtualMediaService.instance.enabledRules()).isEmpty) {
+      return const [];
+    }
     // Virtual groups span directories: the notion of "current dir" cannot apply.
     if (_scope != SearchScope.allSources) return const [];
 
@@ -630,8 +650,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
           occurrenceIndex: hit.occurrenceIndex,
         ));
       }
-      results.sort(
-          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      results.sort((a, b) => naturalCompare(a.name, b.name));
       return results;
     }
 
@@ -668,7 +687,8 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
         occurrenceIndex: occurrence?.occurrenceIndex,
       ));
     }
-    results.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    // Natural order: ep2 before ep10 (SQL and Dart must agree).
+    results.sort((a, b) => naturalCompare(a.name, b.name));
     return results;
   }
 
@@ -736,6 +756,24 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       subtitles: file.subtitles,
       origin: SearchResultOrigin.dbSource,
       available: file.isPresent,
+    );
+  }
+
+  /// Explicit-item row backed by a real DB node: the node supplies identity
+  /// (`storageId` + `occurrencePath`) and metadata, so the row reads exactly
+  /// like the queue entry it resolves to (duration/size/type included).
+  SearchResultItem _fromExplicitNode(MediaFile node) {
+    return SearchResultItem(
+      storageId: node.storageId,
+      path: node.occurrencePath,
+      name: node.name,
+      mediaType: node.mediaType,
+      sizeInBytes: node.sizeInBytes,
+      durationMs: node.durationMs,
+      uri: node.uri,
+      subtitles: node.subtitles,
+      origin: SearchResultOrigin.explicitItem,
+      available: node.isPresent,
     );
   }
 
@@ -898,16 +936,21 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   /// By design this should not fail (results come from the playing queue); any
   /// failure surfaces the uniform copyable error dialog (v15-D6) and leaves the
   /// player untouched.
+  ///
+  /// Explicit items are NOT rejected up front: a dropped file is an explicit
+  /// item yet may well be in the DB and in the queue. The verdict comes from
+  /// the resolver, and the reason text distinguishes "no row" from "not in the
+  /// current queue".
   Future<void> _playResolvedOrThrow(
       BuildContext context, SearchResultItem item) async {
     try {
       final store = usePlaybackScenarioStore();
       final sys = store.systemPlayingScenario;
-      if (item.origin == SearchResultOrigin.explicitItem || sys == null) {
+      if (sys == null) {
+        final t = getLocalizations(context);
         await _showPlayError(
           context,
-          '无法播放「${item.name}」：'
-          '${item.origin == SearchResultOrigin.explicitItem ? '该文件不在媒体数据库中。' : '当前没有正在播放的场景。'}',
+          t.search_err_cannot_play(item.name, t.search_err_no_scenario),
         );
         return;
       }
@@ -921,8 +964,14 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       );
       if (!context.mounted) return;
       if (resolved == null) {
+        final t = getLocalizations(context);
         await _showPlayError(
-            context, '无法播放「${item.name}」：该文件不在当前播放队列中。');
+          context,
+          t.search_err_cannot_play(
+            item.name,
+            item.available ? t.search_err_not_in_queue : t.search_err_not_in_db,
+          ),
+        );
         return;
       }
       await ScenarioPlaybackActions.playResolvedItem(
@@ -966,34 +1015,34 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   /// Shared play-options dialog (v15-D2, context B) — click and the trailing
   /// Override action use the same component.
   void _showPlayOptionsDialog(BuildContext context, SearchResultItem item) {
+    final t = getLocalizations(context);
     showDialog<_PlayChoice>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
         title: Text(item.name),
-        content: const Text('This media cannot be played from the current '
-            'playing scenario queue.'),
+        content: Text(t.search_play_options_body),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx, _PlayChoice.playFile),
-            child: const Text('Play this media only'),
+            child: Text(t.search_play_file_only),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx, _PlayChoice.playFolder),
-            child: const Text('Play its folder'),
+            child: Text(t.search_play_folder),
           ),
           if (_totalItems > 0)
             TextButton(
               onPressed: () =>
                   Navigator.pop(dialogCtx, _PlayChoice.playSearchResult),
-              child: const Text('Play search result'),
+              child: Text(t.search_play_results),
             ),
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx, _PlayChoice.playScenario),
-            child: const Text('Play scenario'),
+            child: Text(t.search_play_scenario),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogCtx),
-            child: const Text('Cancel'),
+            child: Text(t.cancel),
           ),
         ],
       ),
@@ -1081,7 +1130,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   Future<void> _playSearchResults() async {
     final snap = _currentQuery;
     if (snap == null) {
-      throw const PlaybackUnavailableException('没有可播放的内容：当前搜索结果为空。');
+      throw const PlaybackUnavailableException('search_err_no_results');
     }
     final tail = List<SearchResultItem>.of(_tailItems);
     final files = <FileItem>[];
@@ -1099,7 +1148,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       files.add(_toFileItem(item));
     }
     if (files.isEmpty) {
-      throw const PlaybackUnavailableException('没有可播放的内容：当前搜索结果为空。');
+      throw const PlaybackUnavailableException('search_err_no_results');
     }
     await ScenarioPlaybackActions.playSelectionInDefaultScenario(
       files: files,
@@ -1129,7 +1178,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     final scenarioId = searchContext.scenarioId!;
     final scenario = await store.getScenario(scenarioId);
     if (scenario == null) {
-      throw const PlaybackUnavailableException('被搜索的场景不存在。');
+      throw const PlaybackUnavailableException('search_err_scenario_missing');
     }
     final sys = await ensurePlaybackWorkspace();
     final wsState = await store.getState(sys.id);
@@ -1151,10 +1200,15 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
 
   /// Uniform error surface (v15-D6): [error] → copyable dialog.
   Future<void> _showPlayError(BuildContext context, Object error) async {
+    final t = getLocalizations(context);
     final message = error is PlaybackUnavailableException
-        ? error.message
-        : '播放失败：$error';
-    await showCopyableErrorDialog(context, title: '播放出错', message: message);
+        ? error.displayMessage(t)
+        : t.dlg_play_failed_prefix('$error');
+    await showCopyableErrorDialog(
+      context,
+      title: t.dlg_copy_error_title,
+      message: message,
+    );
   }
 
   FileItem _toFileItem(SearchResultItem item) {
@@ -1211,22 +1265,22 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
 
   @override
   Widget? buildItemSubtitle(BuildContext context, SearchResultItem item) {
+    final t = getLocalizations(context);
     final isScenario = searchContext.scenarioId != null;
     final parts = <Widget>[];
     if (isScenario) {
       final isExplicit = item.origin == SearchResultOrigin.explicitItem;
       final label = item.isVirtualGroup
-          ? 'Virtual'
+          ? t.search_origin_virtual
           : isExplicit
-              ? 'Explicit'
-              : 'Source';
+              ? t.search_origin_explicit
+              : t.search_origin_source;
       parts.add(_OriginBadge(
         label: label,
         explicit: item.isVirtualGroup || isExplicit,
       ));
     }
     if (item.isVirtualGroup) {
-      final t = getLocalizations(context);
       final meta = <String>[
         if (item.segmentCount != null)
           t.vm_list_meta_segments(item.segmentCount!),
@@ -1246,12 +1300,15 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
         ));
       }
     }
-    if (item.origin == SearchResultOrigin.dbSource) {
+    // Explicit rows backed by a DB node carry real metadata too — showing it
+    // is the visible difference between "scanned/dropped in" and "missing".
+    if (item.origin == SearchResultOrigin.dbSource ||
+        item.origin == SearchResultOrigin.explicitItem) {
       final meta = <String>[
         if (item.mediaType == MediaType.video)
-          'Video'
+          t.search_meta_video
         else if (item.mediaType == MediaType.audio)
-          'Audio',
+          t.search_meta_audio,
         if (item.durationMs != null && item.durationMs! > 0)
           NodeLibContentItem.formatDurationHumanReadable(item.durationMs!),
         if (item.sizeInBytes != null && item.sizeInBytes! > 0)
@@ -1287,16 +1344,20 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
 
   @override
   Widget buildTileInfoDialog(BuildContext context, SearchResultItem item) {
+    final t = getLocalizations(context);
+    final origin = item.origin == SearchResultOrigin.explicitItem
+        ? t.search_origin_explicit
+        : t.search_origin_source;
     return AlertDialog(
       title: Text(item.name),
       content: Text(
-        'Path: ${item.path.isEmpty ? '/' : item.path}\n'
-        'Origin: ${item.origin == SearchResultOrigin.explicitItem ? 'Explicit' : 'Source'}',
+        '${t.search_info_path(item.path.isEmpty ? '/' : item.path)}\n'
+        '${t.search_info_origin(origin)}',
       ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
+          child: Text(t.close),
         ),
       ],
     );
@@ -1500,13 +1561,14 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     BuildContext context,
     SearchResultItem item,
   ) {
+    final t = getLocalizations(context);
     if (item.isVirtualGroup) {
       // Virtual merges only support playback + navigation — no Override /
       // Append, which would degrade the group to its representative file.
       return [
-        _trailingAction('Open in lib', Icons.library_music_outlined,
+        _trailingAction(t.search_act_open_lib, Icons.library_music_outlined,
             (ctx) => _openInLib(ctx, item)),
-        _trailingAction('Open in folder', Icons.folder_open,
+        _trailingAction(t.search_act_open_folder, Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
         ...buildExplorerRevealActions<SearchResultItem>(
           context: context,
@@ -1518,9 +1580,9 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     if (_isSystemPlayingSearch) {
       // A: no Override / Append — playback/queue operations live in multi-select.
       return [
-        _trailingAction('Open in lib', Icons.library_music_outlined,
+        _trailingAction(t.search_act_open_lib, Icons.library_music_outlined,
             (ctx) => _openInLib(ctx, item)),
-        _trailingAction('Open in folder', Icons.folder_open,
+        _trailingAction(t.search_act_open_folder, Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
         ...buildExplorerRevealActions<SearchResultItem>(
           context: context,
@@ -1533,11 +1595,11 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
       // C: explicit play/override lives in multi-select; no "Open in lib"
       // (this search already comes from the lib itself, v15-D3).
       return [
-        _trailingAction('Play single', Icons.playlist_play,
+        _trailingAction(t.search_act_play_single, Icons.playlist_play,
             (ctx) => _playSingle(ctx, item)),
-        _trailingAction('Append', Icons.playlist_add,
+        _trailingAction(t.search_act_append, Icons.playlist_add,
             (ctx) => _appendPlay(ctx, item)),
-        _trailingAction('Open in folder', Icons.folder_open,
+        _trailingAction(t.search_act_open_folder, Icons.folder_open,
             (ctx) => _openInFolder(ctx, item)),
         ...buildExplorerRevealActions<SearchResultItem>(
           context: context,
@@ -1548,13 +1610,13 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     }
     // B: user scenario — Override opens the shared play-options dialog.
     return [
-      _trailingAction('Override', Icons.playlist_play,
+      _trailingAction(t.search_act_override, Icons.playlist_play,
           (ctx) => _overridePlay(ctx, item)),
-      _trailingAction('Append', Icons.playlist_add,
+      _trailingAction(t.search_act_append, Icons.playlist_add,
           (ctx) => _appendPlay(ctx, item)),
-      _trailingAction('Open in lib', Icons.library_music_outlined,
+      _trailingAction(t.search_act_open_lib, Icons.library_music_outlined,
           (ctx) => _openInLib(ctx, item)),
-      _trailingAction('Open in folder', Icons.folder_open,
+      _trailingAction(t.search_act_open_folder, Icons.folder_open,
           (ctx) => _openInFolder(ctx, item)),
       ...buildExplorerRevealActions<SearchResultItem>(
         context: context,

@@ -178,6 +178,70 @@ void main() {
     expect(source.actions, isEmpty);
   });
 
+  testWidgets('listKeyboard=true: a held Delete removes once, repeats swallowed',
+      (tester) async {
+    final source = await _pump(tester, listKeyboard: true);
+    await tester.tap(find.text('a'));
+    await tester.pumpAndSettle();
+
+    // KeyDown + the auto-repeats an OS emits while the key stays held.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.delete);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.delete);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.delete);
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      source.actions.where((a) => a == PlaylistAction.removeSelected),
+      hasLength(1),
+      reason: 'each repeat would remove the next row that shifted under the '
+          'cursor — a destructive action must never auto-repeat',
+    );
+  });
+
+  testWidgets('listKeyboard=true: a held play key fires once, repeats swallowed',
+      (tester) async {
+    final source = await _pump(tester, listKeyboard: true);
+    await tester.tap(find.text('a'));
+    await tester.pumpAndSettle();
+
+    // P is not destructive, but a repeat would toggle play/pause once per
+    // auto-repeat tick. Only cursor movement is repeat-safe.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyP);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyP);
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      source.actions.where((a) => a == PlaylistAction.play),
+      hasLength(1),
+      reason: 'a held play key must not flip the transport once per repeat',
+    );
+  });
+
+  testWidgets('listKeyboard=true: held cursor keys keep moving', (tester) async {
+    final source = await _pump(tester, listKeyboard: true);
+    await tester.tap(find.text('a'));
+    await tester.pumpAndSettle();
+
+    // Navigation is the ONE repeat-safe class: ↓ + its auto-repeat = 2 steps.
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyP);
+    await tester.pump();
+    expect(
+      source.cursors.last,
+      1,
+      reason: 'the first ↓ enters at row 0 and the repeat advances to row 1',
+    );
+  });
+
   testWidgets('ListKeyboardScope owns PL keys but not global player keys',
       (tester) async {
     final node = FocusNode();
@@ -262,5 +326,68 @@ void main() {
     expect(tile(1).keyboardCursor, isTrue,
         reason: 'the cursor survived the unfocus: ↓ moved it 0 → 1');
     expect(tile(0).keyboardCursor, isFalse);
+  });
+
+  testWidgets(
+      'page counter and per-page chips are status text, not tab stops',
+      (tester) async {
+    await _pump(tester, listKeyboard: true);
+
+    // The `1/1` page counter must never hold keyboard focus: a focused
+    // readout turns Space/Enter (the framework ActivateIntent) into a tap
+    // that opens the jump prompt.
+    final counters = tester.widgetList<InkWell>(
+      find.ancestor(
+          of: find.text('1/1'), matching: find.byType(InkWell)),
+    );
+    expect(counters, isNotEmpty);
+    for (final counter in counters) {
+      expect(counter.canRequestFocus, isFalse);
+    }
+
+    // Same rule for the `total/pageSize` chip.
+    final chips = tester.widgetList<InkWell>(
+      find.ancestor(
+          of: find.text('4/20'), matching: find.byType(InkWell)),
+    );
+    expect(chips, isNotEmpty);
+    for (final chip in chips) {
+      expect(chip.canRequestFocus, isFalse);
+    }
+  });
+
+  testWidgets('listKeyboard=true: Space/Enter never open the page-jump prompt',
+      (tester) async {
+    await _pump(tester, listKeyboard: true);
+    await tester.tap(find.text('a'));
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+
+    expect(find.text('Jump to Page'), findsNothing,
+        reason: 'Space/Enter belong to the player, not to a toolbar readout');
+    expect(find.text('a'), findsOneWidget);
+  });
+
+  testWidgets('listKeyboard=true: Ctrl+G opens the page-jump prompt',
+      (tester) async {
+    await _pump(tester, listKeyboard: true);
+    await tester.tap(find.text('a'));
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyG);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Jump to Page'), findsOneWidget,
+        reason: 'the keyboard keeps a way to reach the prompt');
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(find.text('Jump to Page'), findsNothing);
   });
 }

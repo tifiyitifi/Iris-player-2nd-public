@@ -9,9 +9,10 @@ import 'package:iris/utils/seek_tail_guard.dart';
 /// durations clamp to 0.
 ///
 /// [intent] is the one exception: a caller that explicitly means "finish this
-/// item" ([SeekIntent.finishAtEnd] — a scrub release at 100%, or a tail step
-/// while playing) may land ON `segDur`, which is what raises the `completed`
-/// that advances the virtual session. The guard stays for every other caller.
+/// item" ([SeekIntent.finishAtEnd] — a scrub release at 100%) may land ON
+/// `segDur`, which is what raises the `completed` that advances the virtual
+/// session. A tail STEP is not such a caller: the hooks finish the item
+/// directly, without a seek. The guard stays for every other caller.
 int clampVmLocalMs(
   int? segDurMs,
   int localMs, {

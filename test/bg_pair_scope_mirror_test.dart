@@ -38,14 +38,17 @@ FileItem _f(String key) =>
 class _FgProbe {
   final List<String> calls = <String>[];
   bool playing;
-  _FgProbe({required this.playing, this.positionMs = 5000});
+  _FgProbe({required this.playing, this.positionMs = 5000, this.isInitializing = false});
 
   /// Foreground position the probe reports. The mirror's drift correction is
   /// judged against it, so a test can place the video far from 00:00.
   final int positionMs;
 
+  /// A media OPEN is in flight (the next file is loading).
+  final bool isInitializing;
+
   MediaPlayer build() => MediaPlayer(
-        isInitializing: false,
+        isInitializing: isInitializing,
         isPlaying: playing,
         externalSubtitles: const [],
         position: Duration(milliseconds: positionMs),
@@ -80,7 +83,11 @@ Widget _harness({required MediaPlayer player, required engine}) =>
           value: engine,
           child: Provider<MediaPlayer>.value(
             value: player,
-            child: const BackgroundRuntimeScope(child: SizedBox.shrink()),
+            // NOT `const`: a const (canonicalized) widget is `identical` to the
+            // previous one, so `pumpWidget` would skip the rebuild and a test
+            // that re-mounts for a NEW foreground would keep reading the old
+            // one.
+            child: BackgroundRuntimeScope(child: const SizedBox.shrink()),
           ),
         ),
       ),
@@ -129,31 +136,57 @@ void main() {
     int bgPositionMs = 0,
     bool bgPlaying = false,
     Duration bgDuration = const Duration(minutes: 10),
+    ControlTarget displayTarget = ControlTarget.foreground,
+    /// Keeps the SESSION alignment / stop flags instead of re-seeding them: used
+    /// by tests that switch the media mid-run and expect the observer's own
+    /// teardown to do the clearing.
+    bool keepSession = false,
+    /// A MULTI-ITEM foreground queue (names), for the tests that drive a real
+    /// `next()` / `previous()` instead of re-mounting on one fixed file.
+    List<String>? foregroundQueue,
+    int foregroundPosition = 0,
+    BgApplyScope applyScope = BgApplyScope.currentOnly,
+    /// A multi-item 副音 queue (names) + where it sits, so a step has somewhere
+    /// to land and the direction is observable in `currentIndex`.
+    List<String>? bgQueue,
+    int bgIndex = 0,
   }) async {
+    final List<String> fgNames = foregroundQueue ?? <String>[foreground];
     await usePlayQueueStore().update(
-      playQueue: [PlayQueueItem(file: _f(foreground), index: 0)],
-      index: 0,
+      playQueue: [
+        for (var i = 0; i < fgNames.length; i++)
+          PlayQueueItem(file: _f(fgNames[i]), index: i),
+      ],
+      index: foregroundPosition,
     );
     final bg = useBackgroundPlaybackStore();
     bg.set(bg.state.copyWith(
       enabled: true,
       gateOpen: true,
       controlTarget: target,
-      displayTarget: ControlTarget.foreground,
-      applyScope: BgApplyScope.currentOnly,
+      displayTarget: displayTarget,
+      applyScope: applyScope,
       scopeAnchorKey: anchor,
       bgAutoPlay: false,
       bgExhausted: false,
+      // Session stop flags from a previous test must not leak: each mount is a
+      // fresh pair in scope.
+      bgOutOfScope: keepSession ? bg.state.bgOutOfScope : false,
+      bgQueueEnded: keepSession ? bg.state.bgQueueEnded : false,
       seekLink: BgSeekLink.linked,
       lockLevel: BgLockLevel.high,
       autoFocusControl: true,
-      alignOffsetMs: alignOffsetMs,
+      alignOffsetMs: keepSession ? bg.state.alignOffsetMs : alignOffsetMs,
       // A live run needs an open target; an EMPTY queue models the "nothing to
       // play" state (the engine was stopped) without touching the DB.
-      queue: loadedBg == null ? const <FileItem>[] : <FileItem>[loadedBg],
-      currentIndex: loadedBg == null ? -1 : 0,
+      queue: bgQueue != null
+          ? <FileItem>[for (final String n in bgQueue) _f(n)]
+          : loadedBg == null
+              ? const <FileItem>[]
+              : <FileItem>[loadedBg],
+      currentIndex: bgQueue != null ? bgIndex : (loadedBg == null ? -1 : 0),
     ));
-    engine.file = loadedBg;
+    engine.file = bgQueue != null ? _f(bgQueue[bgIndex]) : loadedBg;
     engine.duration = bgDuration;
     engine.position = Duration(milliseconds: bgPositionMs);
     engine.isPlaying = bgPlaying;
@@ -227,8 +260,113 @@ void main() {
     );
   });
 
-  testWidgets('a dead 副音 runtime must never pause the foreground',
+  testWidgets('仅当前: leaving the anchor hands controls and picture back',
       (tester) async {
+    final fg = _FgProbe(playing: true);
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      displayTarget: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('A.mp4')),
+      foreground: 'B.mp4',
+      loadedBg: _f('b1'),
+      bgPlaying: true,
+    );
+
+    final s = useBackgroundPlaybackStore().state;
+    expect(s.bgOutOfScope, isTrue);
+    expect(s.bgOwnsControls, isFalse,
+        reason: 'the bar must not keep driving a paused 副音 (original report)');
+    expect(s.bgOwnsDisplay, isFalse);
+    // The routing PREFERENCE is untouched, so returning restores it.
+    expect(s.controlTarget, ControlTarget.background);
+    expect(s.displayTarget, ControlTarget.background);
+  });
+
+  testWidgets('仅当前: returning to the anchor restores the pair automatically',
+      (tester) async {
+    final fg = _FgProbe(playing: true);
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('A.mp4')),
+      foreground: 'B.mp4',
+      loadedBg: _f('b1'),
+      bgPlaying: true,
+    );
+    expect(useBackgroundPlaybackStore().state.bgOwnsControls, isFalse);
+
+    // The foreground plays the anchored media again (an episode switched back).
+    // Re-mount the same observer against the new queue, as the player page does
+    // when the media it shows changes.
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('A.mp4')),
+      foreground: 'A.mp4',
+      loadedBg: _f('b1'),
+      bgPlaying: true,
+    );
+
+    final s = useBackgroundPlaybackStore().state;
+    expect(s.bgOutOfScope, isFalse);
+    expect(s.bgOwnsControls, isTrue);
+  });
+
+  testWidgets('a foreground switch while out of scope drops the stale alignment',
+      (tester) async {
+    // The offset is only meaningful for the media it was derived on. A switch
+    // that happens while the pair is STOOD DOWN (仅当前 left its anchor) used to
+    // skip the teardown, so widening the 作用范围 to 全部 re-activated the pair on
+    // the NEW media with the OLD media's authoritative offset — the mirror then
+    // keeps mapping through it (`anchor()` returns early while a pin is set) and
+    // the 高同步 correction drags the video to the wrong position.
+    final fg = _FgProbe(playing: true);
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('A.mp4')),
+      foreground: 'A.mp4',
+      loadedBg: _f('b1'),
+      bgPlaying: true,
+    );
+    final bg = useBackgroundPlaybackStore();
+    expect(bg.state.alignOffsetMs, isNotNull,
+        reason: 'the first open publishes an alignment');
+
+    // The video moves on to B: 仅当前 stands the pair down. Re-mounted the way
+    // the player page re-mounts for a new media, but WITHOUT re-seeding the
+    // session alignment, so only the observer can clear it.
+    await mount(
+      tester,
+      fg: fg,
+      target: ControlTarget.background,
+      anchor: backgroundMediaKey(_f('A.mp4')),
+      foreground: 'B.mp4',
+      loadedBg: _f('b1'),
+      bgPlaying: true,
+      keepSession: true,
+    );
+    expect(bg.state.bgOutOfScope, isTrue, reason: 'B is outside 仅当前');
+    expect(bg.state.alignOffsetMs, isNull,
+        reason: 'the offset described A; it must not survive onto B');
+
+    // Widening to 全部 brings the pair back on B (the app rebuilds through the
+    // store notification; this harness has to be re-pumped).
+    bg.set(bg.state.copyWith(applyScope: BgApplyScope.all));
+    await tester.pumpWidget(_harness(player: fg.build(), engine: engine));
+    await tester.pumpAndSettle();
+    expect(bg.state.bgOutOfScope, isFalse);
+    expect(bg.state.bgPairInEffect, isTrue);
+    expect(bg.state.alignOffsetMs, isNull,
+        reason: 'no stale pin may drive the video on the new media');
+  });
+
+  testWidgets('a dead 副音 runtime must never pause the foreground', (tester) async {
     final fg = _FgProbe(playing: true);
     // controlTarget = background (what `autoFocusControl` sets on activation),
     // but the secondary engine has NO file: it cannot be a master.
@@ -245,6 +383,53 @@ void main() {
       isEmpty,
       reason: 'an unloaded 副音 engine must not dictate the video transport',
     );
+  });
+
+  testWidgets('a cut→cut switch never resumes 副音 while the next media opens',
+      (tester) async {
+    // Reported shape: 副音 is suspended for cut A, the queue advances to cut B.
+    // `noteCutPlaying(null)` runs when B's open starts, so for the length of the
+    // open `fakeCutActive` is false while `fgKey` already points at B. Resuming
+    // there made 副音 blip for a moment on EVERY cut→cut switch.
+    await usePlayQueueStore().update(
+      playQueue: [PlayQueueItem(file: _f('B.mp4'), index: 0)],
+      index: 0,
+    );
+    final bg = useBackgroundPlaybackStore();
+    bg.set(bg.state.copyWith(
+      enabled: true,
+      gateOpen: true,
+      applyScope: BgApplyScope.all,
+      bgAutoPlay: false,
+      bgExhausted: false,
+      bgOutOfScope: false,
+      bgQueueEnded: false,
+      // What suspendForFakeCut remembers about a run that WAS sounding.
+      bgSuspendedByFakeCut: true,
+      fakeCutHeldRouting: true,
+      // Sentinel: only `resumeAfterFakeCut` clears these two slots.
+      controlTargetBeforeFakeCut: ControlTarget.background,
+      displayTargetBeforeFakeCut: ControlTarget.background,
+    ));
+    engine.file = _f('b1');
+    engine.isPlaying = false;
+
+    // The new media is still opening: the resume must wait.
+    await tester.pumpWidget(
+        _harness(player: _FgProbe(playing: true, isInitializing: true).build(), engine: engine));
+    await tester.pumpAndSettle();
+    expect(bg.state.controlTargetBeforeFakeCut, ControlTarget.background,
+        reason: 'the gap that sounded 副音 through a cut→cut switch must not '
+            'restore the pair while the next media is still opening');
+
+    // The open settled and the media is NOT a cut (the cut flag stays clear):
+    // the pair comes back now.
+    await tester.pumpWidget(
+        _harness(player: _FgProbe(playing: true).build(), engine: engine));
+    await tester.pumpAndSettle();
+    expect(bg.state.controlTargetBeforeFakeCut, ControlTarget.foreground,
+        reason: 'leaving the cut must still restore the pair once the open '
+            'settles');
   });
 
   group('the automatic anchoring rule, applied by the runtime observer', () {
@@ -311,6 +496,40 @@ void main() {
       final bg = useBackgroundPlaybackStore();
       expect(bg.state.alignMode, BgAlignMode.sameClock);
       expect(bg.state.alignOffsetMs, 0);
+    });
+  });
+
+  group('副音 步进方向 (a foreground step carries its own direction)', () {
+    testWidgets('「上一集」 at the head steps 副音 BACK, not forward',
+        (tester) async {
+      // Reported defect: pressing 「上一集」 while on the first episode wrapped
+      // the video onto the LAST one, and 副音 stepped FORWARD. Both directions
+      // of a wrap look identical from the item ids (`first → last` is also what
+      // tapping the last row produces), so only the queue's own stamp can tell
+      // them apart.
+      final fg = _FgProbe(playing: true);
+      await mount(
+        tester,
+        fg: fg,
+        target: ControlTarget.background,
+        anchor: backgroundMediaKey(_f('A.mp4')),
+        foreground: 'A.mp4',
+        foregroundQueue: const ['A.mp4', 'B.mp4', 'C.mp4'],
+        // 全部: a new list item is not a 作用范围 change, so the cross step is
+        // allowed (仅当前 would pause the pair instead).
+        applyScope: BgApplyScope.all,
+        bgQueue: const ['b1', 'b2', 'b3'],
+        bgIndex: 1,
+      );
+      final bg = useBackgroundPlaybackStore();
+      expect(bg.state.currentIndex, 1, reason: 'precondition: 副音 on b2');
+
+      await usePlayQueueStore().previous();
+      await tester.pumpWidget(_harness(player: fg.build(), engine: engine));
+      await tester.pumpAndSettle();
+
+      expect(bg.state.currentIndex, 0,
+          reason: '副音 must follow the video BACK, not step past it');
     });
   });
 

@@ -101,6 +101,97 @@ void main() {
 
     tearDown(() => store.dispose());
 
+    test('简播 suspends only a sounding run and resumes exactly that',
+        () async {
+      await store.enableWithQueue(files);
+      expect(store.state.bgAutoPlay, isTrue);
+      // The gate stays open: 简播 pauses the TRANSPORT, it does not stop 副音.
+      store.suspendForFakeCut();
+      expect(store.state.bgAutoPlay, isFalse);
+      expect(store.state.gateOpen, isTrue);
+      expect(store.state.bgSuspendedByFakeCut, isTrue);
+      expect(store.state.controlTarget, ControlTarget.foreground);
+
+      store.resumeAfterFakeCut(play: true);
+      expect(store.state.bgAutoPlay, isTrue);
+      expect(store.state.bgSuspendedByFakeCut, isFalse);
+    });
+
+    test('a user-paused run is not resurrected when the cut ends', () async {
+      await store.enableWithQueue(files);
+      store.setPlaying(false); // the user paused 副音 themselves
+      store.suspendForFakeCut();
+      expect(store.state.bgSuspendedByFakeCut, isFalse,
+          reason: 'nothing was sounding, so there is nothing to restore');
+      store.resumeAfterFakeCut(play: true);
+      expect(store.state.bgAutoPlay, isFalse);
+    });
+
+    test('the control / display routing survives the cut', () async {
+      await store.enableWithQueue(files);
+      // bg-master: the shared controls and the picture follow 副音.
+      store.setControlTarget(ControlTarget.background);
+      store.setDisplayTarget(ControlTarget.background);
+
+      store.suspendForFakeCut();
+      expect(store.state.controlTarget, ControlTarget.foreground,
+          reason: 'a cut must hand the controls back to the video');
+      expect(store.state.displayTarget, ControlTarget.foreground);
+
+      store.resumeAfterFakeCut(play: true);
+      // The old code only restored `bgAutoPlay`, so a bg-master run came back
+      // as foreground and the target could never be recovered.
+      expect(store.state.controlTarget, ControlTarget.background);
+      expect(store.state.displayTarget, ControlTarget.background);
+      expect(store.state.bgAutoPlay, isTrue);
+      expect(store.state.fakeCutHeldRouting, isFalse);
+    });
+
+    test('routing is restored even when nothing was sounding', () async {
+      await store.enableWithQueue(files);
+      store.setPlaying(false); // paused, but the controls still live on 副音
+      store.setControlTarget(ControlTarget.background);
+      store.suspendForFakeCut();
+      expect(store.state.bgSuspendedByFakeCut, isFalse);
+      expect(store.state.fakeCutHeldRouting, isTrue);
+      expect(store.state.controlTarget, ControlTarget.foreground);
+
+      store.resumeAfterFakeCut(play: true);
+      expect(store.state.controlTarget, ControlTarget.background,
+          reason: 'a silent suspension must not eat the routing either');
+      expect(store.state.bgAutoPlay, isFalse,
+          reason: 'a user-paused run stays paused');
+    });
+
+    test('two cuts in a row keep the resume memory', () async {
+      await store.enableWithQueue(files);
+      store.suspendForFakeCut();
+      expect(store.state.bgSuspendedByFakeCut, isTrue);
+      // A(cut) → B(cut): the same suspension runs again with `bgAutoPlay`
+      // already false; recomputing the flag from it dropped the memory and the
+      // run never came back when the foreground left the cut.
+      store.suspendForFakeCut();
+      expect(store.state.bgSuspendedByFakeCut, isTrue);
+      expect(store.state.bgAutoPlay, isFalse);
+
+      store.resumeAfterFakeCut(play: true);
+      expect(store.state.bgAutoPlay, isTrue);
+    });
+
+    test('an explicit stop / fresh enable clears the suspension', () async {
+      await store.enableWithQueue(files);
+      store.suspendForFakeCut();
+      expect(store.state.bgSuspendedByFakeCut, isTrue);
+      store.stopGate();
+      expect(store.state.bgSuspendedByFakeCut, isFalse);
+      expect(store.state.fakeCutHeldRouting, isFalse);
+
+      await store.enableWithQueue(files);
+      store.suspendForFakeCut();
+      await store.disable();
+      expect(store.state.bgSuspendedByFakeCut, isFalse);
+    });
+
     test('a fresh enable re-arms the duration probe', () async {
       // A member that failed on the last run must be retried: the verdict sets
       // gate which entries the probe observer will try, so a stale failure kept

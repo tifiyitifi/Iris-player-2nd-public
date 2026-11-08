@@ -32,7 +32,7 @@ void main() {
 
     test('falls back to the reported position while nothing is recorded', () {
       expect(
-        StepIntent().baseFor(reportedMs: 1000, lockIntentMs: null),
+        StepIntent().baseFor(reportedMs: 1000, lockIntentMs: null, deltaMs: step),
         1000,
       );
     });
@@ -41,14 +41,17 @@ void main() {
       // The lock unlocks on the first ±2s landing sample, so during a rapid
       // burst its target is often already gone; the step intent must keep
       // accumulating regardless.
-      final i = StepIntent()..note(5000);
-      expect(i.baseFor(reportedMs: 1000, lockIntentMs: 5000), 5000);
-      expect(i.baseFor(reportedMs: 1000, lockIntentMs: null), 5000);
+      final i = StepIntent()..note(5000, deltaMs: step);
+      expect(
+        i.baseFor(reportedMs: 1000, lockIntentMs: 5000, deltaMs: step),
+        5000,
+      );
+      expect(i.baseFor(reportedMs: 1000, lockIntentMs: null, deltaMs: step), 5000);
     });
 
     test('keeps the lock intent when no step has been recorded yet', () {
       expect(
-        StepIntent().baseFor(reportedMs: 1000, lockIntentMs: 7000),
+        StepIntent().baseFor(reportedMs: 1000, lockIntentMs: 7000, deltaMs: step),
         7000,
       );
     });
@@ -61,51 +64,122 @@ void main() {
       const int reported = 541233;
       int target = reported;
       for (int press = 1; press <= 5; press++) {
-        target = i.baseFor(reportedMs: reported, lockIntentMs: null) + step;
-        i.note(target);
+        target =
+            i.baseFor(reportedMs: reported, lockIntentMs: null, deltaMs: step) +
+                step;
+        i.note(target, deltaMs: step);
         expect(target, reported + step * press, reason: 'press $press');
       }
     });
 
     test('a lock that unlocks mid-burst does not rewind the accumulation', () {
-      final i = StepIntent()..note(489583);
+      final i = StepIntent()..note(489583, deltaMs: step);
       // Lock already unlocked and the engine is still sitting on its previous
       // landing.
-      expect(i.baseFor(reportedMs: 485566, lockIntentMs: null) + step, 493583);
-      i.note(493583);
-      expect(i.baseFor(reportedMs: 485583, lockIntentMs: null) + step, 497583);
+      expect(
+        i.baseFor(reportedMs: 485566, lockIntentMs: null, deltaMs: step) + step,
+        493583,
+      );
+      i.note(493583, deltaMs: step);
+      expect(
+        i.baseFor(reportedMs: 485583, lockIntentMs: null, deltaMs: step) + step,
+        497583,
+      );
     });
 
     test('reset drops the accumulation so an absolute seek restarts it', () {
-      final i = StepIntent()..note(9000);
+      final i = StepIntent()..note(9000, deltaMs: step);
       i.reset();
       expect(i.lastMs, isNull);
-      expect(i.baseFor(reportedMs: 1200, lockIntentMs: null), 1200);
+      expect(
+        i.baseFor(reportedMs: 1200, lockIntentMs: null, deltaMs: step),
+        1200,
+      );
     });
 
     test('an inactive burst ignores the stale accumulation', () {
       // Burst ended (no press inside the window): the engine has played past
       // the recorded target, so the next press must anchor on the live
       // position — the default (active) would jump back to the old target.
-      final i = StepIntent()..note(9000);
-      expect(i.baseFor(reportedMs: 400000, lockIntentMs: null, active: false),
+      final i = StepIntent()..note(9000, deltaMs: step);
+      expect(
+        i.baseFor(
+            reportedMs: 400000, lockIntentMs: null, deltaMs: step, active: false),
+        400000,
+      );
+      expect(i.baseFor(reportedMs: 400000, lockIntentMs: null, deltaMs: step),
           400000);
-      expect(i.baseFor(reportedMs: 400000, lockIntentMs: null), 9000);
     });
 
     test('an inactive burst still honours the in-flight lock intent', () {
       // The lock target is the seek actually in flight, so it stays the base
       // even once the burst flag has cleared.
-      final i = StepIntent()..note(9000);
+      final i = StepIntent()..note(9000, deltaMs: step);
       expect(
-        i.baseFor(reportedMs: 1000, lockIntentMs: 5000, active: false),
+        i.baseFor(
+            reportedMs: 1000, lockIntentMs: 5000, deltaMs: step, active: false),
         5000,
       );
     });
 
     test('note replaces the previous target', () {
-      final i = StepIntent()..note(9000)..note(13000);
+      final i = StepIntent()
+        ..note(9000, deltaMs: step)
+        ..note(13000, deltaMs: step);
       expect(i.lastMs, 13000);
+    });
+
+    test('a forward press never anchors BEHIND the picture (tail rewind)', () {
+      // The field log this pins: the accumulator was at 962 017 ms while the
+      // engine already sat at 974 271 ms (the seek landed on the next key
+      // frame), so judging the tail by the sum alone seeked BACK to 966 017 ms.
+      final i = StepIntent()..note(962017, deltaMs: step);
+      expect(
+        i.baseFor(reportedMs: 974271, lockIntentMs: null, deltaMs: step),
+        974271,
+      );
+      // …and the press then reaches the end instead of stepping to 966 017.
+      expect(
+        decideStepTail(
+          reportedMs:
+              i.baseFor(reportedMs: 974271, lockIntentMs: null, deltaMs: step),
+          deltaMs: step,
+          durationMs: 974271,
+          mode: StepTailFinishMode.strict,
+          playing: true,
+        ),
+        StepTailAction.finishItem,
+      );
+    });
+
+    test('a backward burst keeps accumulating while the engine lags', () {
+      const int reported = 500000;
+      final i = StepIntent();
+      int target = reported;
+      for (int press = 1; press <= 3; press++) {
+        target =
+            i.baseFor(reportedMs: reported, lockIntentMs: null, deltaMs: -step) -
+                step;
+        i.note(target, deltaMs: -step);
+        expect(target, reported - step * press, reason: 'press $press');
+      }
+    });
+
+    test('a reversal re-anchors on the picture instead of the other direction', () {
+      // Forward burst heading to 400 s, engine still at 396 s; pressing ← must
+      // rewind one step from the PICTURE (392 s), not from the pending 400 s
+      // (396 s would "rewind" nothing) and never from a stale 5 s target.
+      final i = StepIntent()..note(400000, deltaMs: step);
+      expect(
+        i.baseFor(reportedMs: 396000, lockIntentMs: null, deltaMs: -step),
+        396000,
+      );
+      // The reverse: a backward burst then a forward press.
+      final j = StepIntent()..note(392000, deltaMs: -step);
+      expect(
+        j.baseFor(reportedMs: 396000, lockIntentMs: null, deltaMs: step),
+        396000,
+      );
     });
   });
 
@@ -441,7 +515,9 @@ void main() {
             mode: StepTailFinishMode.window),
         isTrue,
       );
-      // Just outside the window (4 s step => 4 s window) stays a step.
+      // Just outside the FINISH window (4 s step => 4 s window): it is still
+      // inside the 10 s EXACT window, so the press must not roll back — it
+      // takes the exact path instead of a keyframe step.
       expect(
         stepFinishesItem(
             reportedMs: dur - 9000,
@@ -449,6 +525,15 @@ void main() {
             durationMs: dur,
             mode: StepTailFinishMode.window),
         isFalse,
+      );
+      expect(
+        decideStepTail(
+            reportedMs: dur - 9000,
+            deltaMs: 4000,
+            durationMs: dur,
+            mode: StepTailFinishMode.window,
+            playing: true),
+        StepTailAction.exactStep,
       );
     });
 
@@ -470,6 +555,16 @@ void main() {
             durationMs: dur,
             mode: StepTailFinishMode.window),
         isFalse,
+      );
+      // Outside the finish window but inside the exact one: exact step.
+      expect(
+        decideStepTail(
+            reportedMs: dur - 3000,
+            deltaMs: 500,
+            durationMs: dur,
+            mode: StepTailFinishMode.window,
+            playing: true),
+        StepTailAction.exactStep,
       );
     });
 
@@ -608,82 +703,125 @@ void main() {
     });
   });
 
-  group('MpvSeekTailState (mpv playloop parity for a tail press)', () {
-    const int end = 381141;
-    const String evelyn = 'file:///media/evelyn.mp4';
-    const String next = 'file:///media/next.mp4';
+  group('tail exact seek (final-GOP landing)', () {
+    // 322.293 s container; the last key frame of the measured file sat at
+    // 321.336 s, so a keyframe step from there can only land BACK on 321.336.
+    const int dur = 322293;
 
-    test('the first tail press owns the finish', () {
-      final s = MpvSeekTailState();
-      expect(s.armed, isFalse);
-      expect(s.armFirstPress(evelyn, end), isTrue);
-      expect(s.armed, isTrue);
-      expect(s.endMs, end);
-      expect(s.armedUri, evelyn);
+    test('a mid-file step keeps the native keyframe path', () {
+      expect(
+        stepNeedsExactSeek(targetMs: 17816 + 3000, durationMs: dur, deltaMs: 3000),
+        isFalse,
+      );
     });
 
-    test('a held key / rapid taps do NOT queue another seek', () {
-      // The regression this class exists for: every repeat used to issue an
-      // absolute `seek <duration>`, and mpv's `handle_eof()` returns while a
-      // seek is queued (`player/playloop.c:1247-1250`), so EOF never happened
-      // and the picture parked at the tail until the key was released.
-      final s = MpvSeekTailState();
-      expect(s.armFirstPress(evelyn, end), isTrue);
-      for (int i = 0; i < 40; i++) {
-        expect(s.armFirstPress(evelyn, end), isFalse,
-            reason: 'press ${i + 2} must be swallowed (mpv drops the queued seek)');
-      }
+    test('a step inside the final GOP switches to the exact path', () {
+      expect(
+        stepNeedsExactSeek(
+            targetMs: dur - 100, durationMs: dur, deltaMs: 3000),
+        isTrue,
+      );
+      // Just inside / just outside the 10 s window.
+      expect(
+        stepNeedsExactSeek(targetMs: 313000, durationMs: dur, deltaMs: 3000),
+        isTrue,
+      );
+      expect(
+        stepNeedsExactSeek(targetMs: 310000, durationMs: dur, deltaMs: 3000),
+        isFalse,
+      );
     });
 
-    test('the EOF collapse runs exactly once per armed media', () {
-      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
-      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
-      // A late second caller (timer + a racing press) must not advance again.
-      expect(s.consumeCollapse(mediaUri: evelyn), isFalse);
-      expect(s.consumeCollapse(mediaUri: evelyn), isFalse);
+    test('the window is at least one step long', () {
+      // A 12 s step reaches 12 s back, not just 10 s.
+      expect(
+        stepNeedsExactSeek(targetMs: 311000, durationMs: dur, deltaMs: 12000),
+        isTrue,
+      );
+      expect(
+        stepNeedsExactSeek(targetMs: 309000, durationMs: dur, deltaMs: 12000),
+        isFalse,
+      );
     });
 
-    test('a finish never collapses the entry that replaced it', () {
-      // `.ai_knowledge/tmp/seeK/seekaftempvlog.txt`: the arm belonged to the
-      // previous file, the queue advanced, and the same window's re-arm collapsed
-      // the freshly opened entry (pos=311750/dur=312106 were the OLD file's).
-      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
-      expect(s.consumeCollapse(mediaUri: next), isFalse,
-          reason: 'the arm belongs to another media — mpv cleared it at the switch');
-      // …and the legitimate owner still collapses.
-      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+    test('a short step next to a long final GOP still switches', () {
+      // 1 s step at 315 s: the 10 s floor covers the default x264 GOP.
+      expect(
+        stepNeedsExactSeek(targetMs: 315000, durationMs: dur, deltaMs: 1000),
+        isTrue,
+      );
+      expect(kStepTailExactWindowMs, 10000);
     });
 
-    test('nothing collapses while no tail press is armed', () {
-      expect(MpvSeekTailState().consumeCollapse(mediaUri: evelyn), isFalse);
+    test('the window is capped at half the media', () {
+      // A 4 s clip cannot exact-seek every press from its head.
+      expect(
+        stepNeedsExactSeek(targetMs: 1000, durationMs: 4000, deltaMs: 500),
+        isFalse,
+      );
+      expect(
+        stepNeedsExactSeek(targetMs: 3000, durationMs: 4000, deltaMs: 500),
+        isTrue,
+      );
     });
 
-    test('a reset (media change / rewind / completed) re-arms the same media', () {
-      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
-      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
-      s.reset();
-      expect(s.armed, isFalse);
-      expect(s.armedUri, isNull);
-      // Repeat-one loops the SAME media: a reset must allow a new finish.
-      expect(s.armFirstPress(evelyn, end), isTrue);
-      expect(s.consumeCollapse(mediaUri: evelyn), isTrue);
+    test('a backward step is judged by distance', () {
+      expect(
+        stepNeedsExactSeek(targetMs: 318000, durationMs: dur, deltaMs: -5000),
+        isTrue,
+      );
+      expect(
+        stepNeedsExactSeek(targetMs: 200000, durationMs: dur, deltaMs: -5000),
+        isFalse,
+      );
     });
 
-    test('a second tail press with a revised end is still swallowed', () {
-      // The duration stream can be revised while the finish is pending; mpv
-      // drops the queued seek regardless of its new target, so the arm must
-      // survive a changed caller-axis end (a re-arm would queue a second
-      // finish for the same media).
-      final s = MpvSeekTailState()..armFirstPress(evelyn, end);
-      expect(s.armFirstPress(evelyn, end + 5000), isFalse);
-      expect(s.endMs, end);
+    test('an unknown duration never forces the exact path', () {
+      expect(
+        stepNeedsExactSeek(targetMs: 1000, durationMs: 0, deltaMs: 3000),
+        isFalse,
+      );
     });
 
-    test('the EOF window is mpv\'s 0.3 s seek window', () {
-      // `MPSEEK_FLAG_DELAY` (player/playloop.c:521-525) waits for one frame /
-      // one seek result before the next seek; the EOF verdict arrives on that
-      // same restart.
-      expect(kMpvSeekEofWindow, const Duration(milliseconds: 300));
+    test('a press inside the final GOP exact-steps instead of rolling back', () {
+      // `reported + delta` stays inside the media, so this is not a finish —
+      // but a keyframe seek cannot land there.
+      expect(
+        decideStepTail(
+          reportedMs: 310000,
+          deltaMs: 3000,
+          durationMs: dur,
+          mode: StepTailFinishMode.strict,
+          playing: true,
+        ),
+        StepTailAction.exactStep,
+      );
+    });
+
+    test('a press that reaches the end still finishes first', () {
+      expect(
+        decideStepTail(
+          reportedMs: dur - 2000,
+          deltaMs: 3000,
+          durationMs: dur,
+          mode: StepTailFinishMode.strict,
+          playing: true,
+        ),
+        StepTailAction.finishItem,
+      );
+    });
+
+    test('a backward press in the final GOP is never an exact finish', () {
+      expect(
+        decideStepTail(
+          reportedMs: 321000,
+          deltaMs: -3000,
+          durationMs: dur,
+          mode: StepTailFinishMode.strict,
+          playing: true,
+        ),
+        StepTailAction.step,
+      );
     });
   });
 
@@ -707,6 +845,104 @@ void main() {
     test('drops an empty / null media instead of stepping into nothing', () {
       expect(shouldAcceptStepPress(mediaUri: null, openedUri: null), isFalse);
       expect(shouldAcceptStepPress(mediaUri: '', openedUri: ''), isFalse);
+    });
+  });
+
+  group('gateStepPress (tail finish latch)', () {
+    const String a = 'file:///media/a.mp4';
+    const String b = 'file:///media/b.mp4';
+
+    test('accepts a press for the current, open media', () {
+      expect(
+        gateStepPress(mediaUri: a, openedUri: a, dispatchInFlight: false),
+        StepPressGate.accept,
+      );
+    });
+
+    test('drops every press of a burst that already finished this media', () {
+      // Field log: `finish now` twice for the same file — the first dispatch
+      // returned, the hook still held the old media, and the second finish
+      // advanced once more (`wrapToFirst` then `provider.next`): one entry
+      // skipped.
+      for (int i = 0; i < 10; i++) {
+        expect(
+          gateStepPress(
+            mediaUri: a,
+            openedUri: a,
+            dispatchInFlight: false,
+            finishedUri: a,
+          ),
+          StepPressGate.dropTailFinished,
+          reason: 'press ${i + 1} of the burst',
+        );
+      }
+    });
+
+    test('the latch belongs to ONE media', () {
+      expect(
+        gateStepPress(
+          mediaUri: b,
+          openedUri: b,
+          dispatchInFlight: false,
+          finishedUri: a,
+        ),
+        StepPressGate.accept,
+      );
+    });
+
+    test('a switching media still wins over the latch check', () {
+      expect(
+        gateStepPress(
+          mediaUri: b,
+          openedUri: a,
+          dispatchInFlight: false,
+          finishedUri: a,
+        ),
+        StepPressGate.dropMediaSwitching,
+      );
+      expect(
+        gateStepPress(
+          mediaUri: a,
+          openedUri: a,
+          dispatchInFlight: true,
+          finishedUri: null,
+        ),
+        StepPressGate.dropMediaSwitching,
+      );
+    });
+  });
+
+  group('stepTailLatchReusable (leaving the tail again)', () {
+    test('keeps the latch while the picture is still at the tail', () {
+      expect(stepTailLatchReusable(reportedMs: 974017, durationMs: 974271),
+          isFalse);
+      expect(stepTailLatchReusable(reportedMs: 974271, durationMs: 974271),
+          isFalse);
+    });
+
+    test('releases it once the picture is outside the tail window', () {
+      // Repeat-one restart / scrub back / jump: the same media may be finished
+      // again, so the latch must not pin it forever.
+      expect(stepTailLatchReusable(reportedMs: 0, durationMs: 974271), isTrue);
+      expect(stepTailLatchReusable(reportedMs: 800000, durationMs: 974271),
+          isTrue);
+    });
+
+    test('an unknown duration keeps the latch (nothing to compare)', () {
+      expect(stepTailLatchReusable(reportedMs: 0, durationMs: 0), isFalse);
+    });
+
+    test('a short clip releases inside its OWN (capped) window', () {
+      // 6 s clip: an uncapped `duration - 10 s` is negative, so position 0 was
+      // "inside" the window forever and a finished short clip could never be
+      // stepped or rewound again. The window is the same one the exact-seek
+      // path uses — capped at half the media (3 s here).
+      expect(stepTailLatchReusable(reportedMs: 0, durationMs: 6000), isTrue);
+      expect(stepTailLatchReusable(reportedMs: 2900, durationMs: 6000), isTrue);
+      expect(
+          stepTailLatchReusable(reportedMs: 3000, durationMs: 6000), isFalse);
+      expect(
+          stepTailLatchReusable(reportedMs: 5900, durationMs: 6000), isFalse);
     });
   });
 

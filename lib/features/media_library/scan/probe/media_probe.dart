@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:iris/features/media_library/scan/probe/android_media_probe.dart';
+import 'package:iris/features/media_library/scan/probe/fast_local_probe.dart';
 import 'package:iris/features/media_library/scan/probe/isolated_media_probe.dart';
 import 'package:iris/features/media_library/scan/probe/windows_shell_probe.dart';
 
@@ -61,16 +63,50 @@ class NullMediaProbeService implements MediaProbeService {
 
 /// Returns the platform-appropriate probe strategy.
 ///
-/// - Windows: Shell Property System via FFI (same source as Explorer's
-///   "Details" tab).
-/// - Android: MediaMetadataRetriever over a thin platform channel (accepts
-///   both real paths and content:// URIs).
+/// - Windows: container-header parse first (MP4/MOV `mvhd`+`tkhd`, Matroska
+///   `Info`+`Tracks`, AVI `hdrl/avih` — ~1 ms per file) with the Shell Property
+///   System as fallback. The Shell handler alone measured 30–70 ms/file on a
+///   warm cache — that is what made "scan first, then play" take tens of
+///   seconds.
+/// - Android: the SAME Dart header parser first, with `MediaMetadataRetriever`
+///   as fallback. It used to go straight to the retriever, which on a real
+///   phone costs 5–30 ms per file through a binder call — and measured
+///   300–450 ms under load on a 2019 device (logcat `Slow Binder …
+///   IMediaMetadataRetriever`). Header parsing avoids the binder entirely for
+///   the containers most libraries are made of; `content://` targets have no
+///   path to read and fall through to the retriever unchanged.
 /// - Elsewhere: [NullMediaProbeService] (values arrive via lazy backfill).
-MediaProbeService createMediaProbeService() {
-  if (Platform.isWindows) return const IsolatedWindowsShellProbeService();
-  if (Platform.isAndroid) return AndroidMediaProbeService();
+///
+/// The per-platform instance is cached: [FastLocalProbeService] owns a
+/// persistent isolate pool, and a fresh pool per call would spawn workers on
+/// every scan.
+MediaProbeService createMediaProbeService() => createMediaProbeServiceFor(
+      isWindows: Platform.isWindows,
+      isAndroid: Platform.isAndroid,
+    );
+
+/// Platform selection with the platform probe made explicit, so the routing is
+/// testable on any host (the host itself is always Windows in CI).
+@visibleForTesting
+MediaProbeService createMediaProbeServiceFor({
+  required bool isWindows,
+  required bool isAndroid,
+}) {
+  if (isWindows) {
+    return _windowsProbe ??= FastLocalProbeService(
+      fallback: const IsolatedWindowsShellProbeService(),
+    );
+  }
+  if (isAndroid) {
+    return _androidProbe ??= FastLocalProbeService(
+      fallback: const AndroidMediaProbeService(),
+    );
+  }
   return const NullMediaProbeService();
 }
+
+MediaProbeService? _windowsProbe;
+MediaProbeService? _androidProbe;
 
 /// Upper bound for trusting probed video dimensions. Shell handlers for
 /// exotic containers return present-but-absurd values (A/B-pinned on real

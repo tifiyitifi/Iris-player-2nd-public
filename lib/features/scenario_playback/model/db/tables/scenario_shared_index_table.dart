@@ -38,6 +38,13 @@ class ScenarioSharedIndexTable extends Table {
   /// Sparse raw row flags by rank.
   BlobColumn get flags => blob()();
 
+  /// Element-axis permutation (schema v52): element ordinal → anchor rank,
+  /// sorted by the row's DISPLAYED key (a VM group by its member totals).
+  ///
+  /// Empty/NULL means the identity permutation — a scenario without VM rules
+  /// never pays for it.
+  BlobColumn get elementOrder => blob().nullable()();
+
   @override
   Set<Column> get primaryKey => {buildId};
 }

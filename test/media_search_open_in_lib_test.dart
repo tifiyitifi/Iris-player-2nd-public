@@ -16,6 +16,7 @@ import 'package:iris/features/media_library/store/use_media_lib_browser_store.da
 import 'package:iris/features/media_library/view/content/model/media_lib_content_mode.dart';
 import 'package:iris/features/media_library/view/content/store/use_media_lib_content_store.dart';
 import 'package:iris/features/paginated_browser/models/generic_browser_models.dart';
+import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
 
@@ -105,12 +106,16 @@ void main() {
       // so run the tap + poll inside runAsync and let real work complete.
       await tester.runAsync(() async {
         late List<GenericItemAction<SearchResultItem>> actions;
+        var actionsReady = false;
         // No StoreScope: it disposes the whole StoreLocator on unmount, which
         // would kill cross-test store state. Handlers use useXStore() directly.
         await tester.pumpWidget(MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
           home: Scaffold(
             body: Builder(builder: (context) {
               actions = ds.getItemTrailingActions(context, item);
+              actionsReady = true;
               return Column(
                 children: [
                   for (final a in actions)
@@ -123,6 +128,12 @@ void main() {
             }),
           ),
         ));
+        // The deferred l10n delegates load asynchronously and the Builder only
+        // runs once AppLocalizations is above it (the labels are localized now).
+        for (var i = 0; i < 200 && !actionsReady; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          await tester.pump();
+        }
         expect(actions.map((a) => a.label), contains('Open in lib'));
         await tester.tap(find.text('Open in lib'));
         for (var i = 0; i < 200; i++) {

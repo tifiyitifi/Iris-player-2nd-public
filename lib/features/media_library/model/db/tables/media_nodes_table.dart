@@ -45,6 +45,15 @@ class MediaNodesTable extends Table {
   // normalizedName = name.toLowerCase();
   /// lowercase cache for search/sort
   TextColumn get normalizedName => text().nullable()();
+
+  /// BINARY-comparable natural sort key of [name] (see
+  /// `lib/utils/natural_sort_key.dart`), stored so `ORDER BY` can use a plain
+  /// index instead of a collation or a Dart-side sort.
+  ///
+  /// Written by [MediaNodeDriftAdapter.toCompanion] and `renameNodePath`.
+  /// `''` is the "not computed yet" value (pre-v53 rows, raw SQL inserts); the
+  /// v53 migration backfills every row before the index is created.
+  TextColumn get naturalName => text().withDefault(const Constant(''))();
   // dir or file
   TextColumn get nodeKind => textEnum<MediaNodeKind>()();
   // video or audio,

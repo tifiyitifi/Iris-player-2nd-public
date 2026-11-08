@@ -39,6 +39,31 @@ class _BoundSwitchTile extends HookWidget {
   }
 }
 
+class _ScanPromptSwitchTile extends HookWidget {
+  const _ScanPromptSwitchTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final scanStore = useRecursiveScanStore();
+    final AppLocalizations t = getLocalizations(context);
+    // Row-scoped subscription: rebuild only when the switch's value changes.
+    final bool live = scanStore.select(context, (s) => s.autoClosePrompt);
+
+    return ListTile(
+      leading: const Icon(Icons.timer_off_outlined),
+      title: Text(SettingTexts.title('set_scan_completion_prompt', t)),
+      subtitle: Text(
+        SettingTexts.subtitle('set_scan_completion_prompt_desc', t),
+      ),
+      onTap: () => unawaited(scanStore.updateAutoClosePrompt(!live)),
+      trailing: Switch(
+        value: live,
+        onChanged: (bool v) => unawaited(scanStore.updateAutoClosePrompt(v)),
+      ),
+    );
+  }
+}
+
 class _BoundSliderTile extends HookWidget {
   const _BoundSliderTile({
     required this.icon,

@@ -1,8 +1,7 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/features/media_library/scan/probe/scan_probe_preference.dart';
+import 'package:iris/features/media_library/scan/view/scan_info_dialog.dart';
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/utils/get_localizations.dart';
@@ -75,6 +74,11 @@ class RescanFolderDialog extends HookWidget {
       return () => cancelled = true;
     }, const []);
 
+    // A folder rescan reads media info for the same reason a full scan does;
+    // the toggle is only hidden (see [kShowScanProbeOption]), so a stale
+    // persisted "off" must not keep this folder's rows unattributed.
+    final effectiveProbe = kShowScanProbeOption ? probe.value : true;
+
     final theme = Theme.of(context);
     final bodySmall = theme.textTheme.bodySmall;
     final t = getLocalizations(context);
@@ -114,26 +118,24 @@ class RescanFolderDialog extends HookWidget {
                 ],
               ),
             ),
-            const Divider(),
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: loaded.value ? probe.value : null,
-              tristate: true,
-              onChanged: (v) => probe.value = v == true,
-              title: Text(t.scan_probe_label),
-            ),
-            const SizedBox(height: 8),
+            // Hidden while scans always probe (see [kShowScanProbeOption]).
+            if (kShowScanProbeOption) ...[
+              const Divider(),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                value: loaded.value ? probe.value : null,
+                tristate: true,
+                onChanged: (v) => probe.value = v == true,
+                title: Text(t.scan_probe_label),
+              ),
+              const SizedBox(height: 8),
+            ],
             Text(t.scan_purpose, style: bodySmall),
             const SizedBox(height: 8),
-            Text(
-              scanProbeEstimateText(
-                t: t,
-                isWindows: Platform.isWindows,
-                isAndroid: Platform.isAndroid,
-                storageType: storageType,
-              ),
-              style: bodySmall,
+            ScanInfoBody(
+              storageType: storageType,
+              showWholeDiskWarning: false,
             ),
           ],
         ),
@@ -145,10 +147,15 @@ class RescanFolderDialog extends HookWidget {
         ),
         ElevatedButton(
           onPressed: () async {
-            await ScanProbePreference.save(probe.value);
+            if (kShowScanProbeOption) {
+              await ScanProbePreference.save(probe.value);
+            }
             if (context.mounted) {
               Navigator.of(context).pop(
-                RescanFolderChoice(policy: policy.value, probe: probe.value),
+                RescanFolderChoice(
+                  policy: policy.value,
+                  probe: effectiveProbe,
+                ),
               );
             }
           },

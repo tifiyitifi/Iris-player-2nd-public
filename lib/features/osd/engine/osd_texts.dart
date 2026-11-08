@@ -195,6 +195,43 @@ abstract final class OsdTexts {
       line1: t.osd_previous, icon: Icons.skip_previous_rounded);
   static OsdEntry next(AppLocalizations t) =>
       OsdEntry(line1: t.osd_next, icon: Icons.skip_next_rounded);
+
+  /// 副音 gate feedback for the keyboard path (Alt+'): the quick bar's T0
+  /// play/stop button toggled for the media playing now.
+  static OsdEntry backgroundGate(bool on, AppLocalizations t) => OsdEntry(
+        line1: on ? t.osd_bg_gate_on : t.osd_bg_gate_off,
+        icon: on ? Icons.multitrack_audio_rounded : Icons.audiotrack_rounded,
+      );
+
+  /// fg/bg control-target feedback for the keyboard path (Alt+;): the quick
+  /// bar's T0 control button flipped the shared controls. [background] is the
+  /// resulting target, so the icon matches the button's own glyph.
+  static OsdEntry controlTarget(bool background, AppLocalizations t) => OsdEntry(
+        line1: background ? t.osd_control_bg : t.osd_control_fg,
+        icon: background
+            ? Icons.settings_remote_rounded
+            : Icons.settings_input_component_rounded,
+      );
+
+  /// Alt+; pressed while 副音 is not in effect for this media (gate closed,
+  /// outside the 作用范围, 简播, …). Says why the key did nothing instead of
+  /// leaving a dead shortcut.
+  static OsdEntry controlTargetUnavailable(AppLocalizations t) => OsdEntry(
+        line1: t.osd_control_unavailable,
+        icon: Icons.info_outline_rounded,
+      );
+
+  // ── Multi-window neighbour playback (Shift+PageUp/Down) ────────────────
+  static OsdEntry openInNewWindow(String name, AppLocalizations t) => OsdEntry(
+      line1: t.osd_open_in_new_window,
+      line2: name,
+      icon: Icons.open_in_new_rounded);
+  static OsdEntry noPrevious(AppLocalizations t) => OsdEntry(
+      line1: t.osd_no_previous, icon: Icons.skip_previous_rounded);
+  static OsdEntry noNext(AppLocalizations t) =>
+      OsdEntry(line1: t.osd_no_next, icon: Icons.skip_next_rounded);
+  static OsdEntry newWindowUnavailable(AppLocalizations t) => OsdEntry(
+      line1: t.osd_new_window_unavailable, icon: Icons.error_outline_rounded);
   static OsdEntry paused(AppLocalizations t) =>
       OsdEntry(line1: t.osd_paused, icon: Icons.pause_rounded);
   static OsdEntry playing(AppLocalizations t) =>

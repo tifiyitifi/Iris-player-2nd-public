@@ -1,7 +1,7 @@
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
-import 'package:iris/features/virtual_media/rule/vm_natural_compare.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 
 /// Builds a single-level comparator for a rule's [VmSortField].
 ///
@@ -30,7 +30,7 @@ int _compareField(VirtualSegment a, VirtualSegment b, VmSortField field,
 
   switch (field) {
     case VmSortField.fileName:
-      return sign * vmNaturalCompare(a.name, b.name);
+      return sign * naturalCompare(a.name, b.name);
     default:
       break;
   }

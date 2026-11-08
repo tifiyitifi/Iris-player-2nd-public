@@ -5,6 +5,7 @@ import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keyboa
 import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keybinds.dart';
 import 'package:iris/features/windows/desktop_keyboard/model/keybind_codec.dart';
 import 'package:iris/features/windows/desktop_keyboard/model/potplayer_action.dart';
+import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/store/app_state.dart';
 import 'package:iris/store/use_app_store.dart';
 
@@ -53,6 +54,12 @@ enum ShortcutHintKind {
   fullscreen,
   alwaysOnTop,
   autoResize,
+  previousInNewWindow,
+  nextInNewWindow,
+  // 副音 T0 buttons (quick bar). Keyboard-only actions: the legacy scheme has
+  // no binding, so the hints resolve to null there.
+  bgGate,
+  bgControlTarget,
 }
 
 String? shortcutHintLabelFor(
@@ -90,6 +97,20 @@ String? shortcutHintLabelFor(
         scheme == KeyboardShortcutScheme.potplayer ? 'Ctrl + T' : 'F10',
       ShortcutHintKind.autoResize =>
         scheme == KeyboardShortcutScheme.potplayer ? 'Ctrl + R' : null,
+      // New-window stepping exists only in the potplayer table (Shift+PgUp/Dn).
+      // The legacy scheme has no binding, so the menu entry stays hint-less
+      // instead of advertising a key that does nothing.
+      ShortcutHintKind.previousInNewWindow =>
+        scheme == KeyboardShortcutScheme.potplayer ? 'Shift + PageUp' : null,
+      ShortcutHintKind.nextInNewWindow => scheme == KeyboardShortcutScheme.potplayer
+          ? 'Shift + PageDown'
+          : null,
+      // Alt+' / Alt+; are potplayer-table bindings only; legacy leaves both
+      // actions unreachable from the keyboard, so no hint is advertised.
+      ShortcutHintKind.bgGate =>
+        scheme == KeyboardShortcutScheme.potplayer ? "Alt + '" : null,
+      ShortcutHintKind.bgControlTarget =>
+        scheme == KeyboardShortcutScheme.potplayer ? 'Alt + ;' : null,
     };
 
 /// Effective desktop keyboard scheme (hook — must run unconditionally in
@@ -132,6 +153,11 @@ PotPlayerAction? _actionForKind(ShortcutHintKind kind) => switch (kind) {
       ShortcutHintKind.fullscreen => PotPlayerAction.fullscreen,
       ShortcutHintKind.alwaysOnTop => PotPlayerAction.alwaysOnTop,
       ShortcutHintKind.autoResize => PotPlayerAction.toggleAutoResize,
+      ShortcutHintKind.previousInNewWindow =>
+        PotPlayerAction.openPreviousInNewWindow,
+      ShortcutHintKind.nextInNewWindow => PotPlayerAction.openNextInNewWindow,
+      ShortcutHintKind.bgGate => PotPlayerAction.toggleBackgroundGate,
+      ShortcutHintKind.bgControlTarget => PotPlayerAction.toggleControlTarget,
     };
 
 /// Context-aware hint that reflects user custom keybinds when on PotPlayer scheme.
@@ -177,3 +203,16 @@ String? effectiveShortcutHintLabelFor(
   if (combos == null || combos.isEmpty) return null;
   return combos.map(KeybindCodec.labelFor).join(' / ');
 }
+
+/// Appends the live shortcut to a tooltip label: `label ( shortcut )`.
+///
+/// A null [hint] (legacy scheme, explicitly unbound action) leaves [label]
+/// untouched instead of advertising a key that does nothing. The wrapper lives
+/// in ARB (`tooltip_with_shortcut`) so the parenthesis style stays localizable
+/// rather than being concatenated at every call site.
+String withShortcutHint(
+  String label,
+  String? hint,
+  AppLocalizations t,
+) =>
+    hint == null ? label : t.tooltip_with_shortcut(label, hint);

@@ -813,14 +813,17 @@ class StorageBrowserDataSource extends PaginatedBrowserDataSource<FileItem> {
 
   Future<void> _startRecursiveScan(BuildContext context,
       {String? rootPath}) async {
+    rootPath ??= _currentPath.join('/');
     // Scan options gate: null = cancelled by the user.
-    final probeEnabled =
-        await showScanOptionsDialog(context, storageType: storage.type);
+    final probeEnabled = await showScanOptionsDialog(
+      context,
+      storage: storage,
+      rootPath: rootPath,
+    );
     if (probeEnabled == null) return;
     if (!context.mounted) return;
 
     final scanStore = useRecursiveScanStore();
-    rootPath ??= _currentPath.join('/');
     final service = RecursiveScanService(
       storage: storage,
       scanStore: scanStore,

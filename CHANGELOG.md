@@ -1,3 +1,29 @@
+## v2.1.0
+
+### Changelog
+
+1. Multi-window: open the previous or next episode in a new window via Shift+PageUp/Down, or from the window and queue menus, and it plays the item the current window would have played. Holding that shortcut no longer opens one window per key repeat
+2. Scanning is faster and starts showing results instead of waiting: a folder becomes browsable and playable within seconds while durations and resolutions fill in behind it, a slow file can no longer hold up playback, an interrupted multi-folder scan continues where it stopped, and a folder dropped onto the window is scanned without an extra question. Desktop and phone now quote the same scan-speed reference, and the pre-scan estimate also accounts for how much the folder count itself costs. On Android, a SAF subfolder opens the folder you picked instead of falling back to the storage root, progress and the scan info show readable paths instead of `content://...`, the percentage and remaining time no longer sit at "estimating", and local storage that had become unreadable on Android 10 is readable again
+3. File names now sort the way people read them — `1, 2, 10` instead of `1, 10, 2` — in the file browser, media library, play queue, tag views and search. Upgrading rebuilds the saved order once, the first time you open one of those lists (a few seconds even for a very large library); every list after that is instant
+4. The play queue follows what is playing: a new "Auto-locate on switch" setting (on by default) jumps an open queue to the episode that just started and centres its row, including episodes started from another window. Turn it off and the manual "Go to current" stays. Playing a row on page 2 no longer throws the list back to page 1
+5. Files dropped into a scenario and files found through search play again — even when their folder is outside the scenario's scan sources. Only items that are genuinely gone are reported as unavailable
+6. 简播: a LosslessCut cut or merge project plays as its own timeline while the source file stays untouched, every project binds to its own video, and 副音 plus the cut tab always follow the cut that is actually playing
+7. 副音: after its queue runs out the gate restarts it, it never lands on the foreground file, and when you switch between two cuts it resumes once the new cut is open instead of being audible during the switch
+8. Keyboard and lists: Alt+' toggles 副音 for the current video and Alt+; toggles which side the controls act on. Holding a key no longer repeats actions — only the cursor moves — so a held P no longer toggles playback over and over and F2/F3 no longer stack dialogs and Explorer windows. Space/Enter can no longer pop up the page-jump box by accident (Ctrl+G opens it), and holding Delete in the playlist removes one row instead of several
+9. Other fixes: right-click menus close on an outside click, the last step at the end of a file no longer freezes the picture, adding a storage no longer duplicates the same drive, the library's "resolution" sort really sorts by resolution, every page of the phone gesture guide opens in the editor again, and virtual media gains a player "More" entry plus a seamless-merge master switch. Fixed: on the phone, reopening a media could resume from 0 in some cases
+
+### 更新日志
+
+1. 多窗口：用 Shift+PageUp/Down，或窗口菜单、队列菜单，在新窗口打开上一集 / 下一集，播放的正是当前窗口接下来会播的那一项；按住快捷键不会每次自动重复都多开一个窗口
+2. 扫描更快，也不用等全部扫完：文件夹几秒内就能浏览、能播放，时长和分辨率在后台补齐；一个慢文件拖不住播放；多文件夹扫描被中断后会从断点继续；把文件夹拖到窗口上直接开始扫描，不再多问一句。桌面和手机现在引用同一份扫描速度参考，预估里也说明文件夹数量本身要花时间。Android 上，SAF 的子文件夹会打开你指定的那一层，而不是退回存储根目录；进度和扫描信息显示可读路径，而不是 `content://...`；百分比和剩余时间不再一直停在「估算中」；Android 10 上此前变得不可读的本地存储也恢复可读
+3. 文件名按人的读法排序：`1、2、10` 而不是 `1、10、2`，覆盖文件浏览、媒体库、播放队列、标签视图与搜索。升级后第一次打开这些列表时会把保存的顺序重建一次（即使库很大也只要几秒），之后每次都是即时的
+4. 播放队列跟随当前播放项：新增「切换视频时自动定位」开关（默认开启）。切到新一集时，已打开的队列会跳到那一行并居中——从其它窗口起播的也算。关掉后仍可手动「定位当前」。在第 2 页播放某一项，列表不会再被弹回第 1 页
+5. 拖进场景的文件、以及通过搜索找到的文件又能正常播放了，即使它的文件夹不在场景的扫描来源里；只有真正不存在的文件才会被提示不可用
+6. 简播：LosslessCut 的剪切 / 合并项目作为独立时间轴播放，源文件保持原样；每个项目绑定它自己的视频；副音和简播页签始终跟随真正在播的那一刀
+7. 副音：队列跑完后能重新拉起；副音队列不会落到前台文件上；在两刀之间切换时，会等新的一刀打开再恢复，而不是在切换过程中先响出来
+8. 键盘与列表：Alt+' 切换当前视频的副音，Alt+; 切换控制作用在前台还是副音。按住键不再重复触发动作——只有光标会移动——按住 P 不再反复切换播放状态，按住 F2/F3 也不再叠出一串对话框和资源管理器窗口。空格 / 回车不会再误弹出跳页框（Ctrl+G 才是打开它的方式），在播放列表里按住 Delete 只删一行，而不是连着删掉好几行
+9. 其它修复：右键菜单在点击别处时关闭；在文件末尾再按步进不会把画面卡住；添加存储不会重复添加同一磁盘；媒体库的「分辨率」排序真的按分辨率排；手机手势指南的每一页都能重新打开编辑；虚拟媒体在播放器「更多」菜单新增入口，并新增无缝合并总开关。修复手机端部分情况下重开续播从 0 开始的问题
+
 ## v2.0.11
 
 ### Changelog

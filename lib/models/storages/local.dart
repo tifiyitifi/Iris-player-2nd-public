@@ -12,12 +12,14 @@ import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/enums/storage_list_error.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/file_list_result.dart';
+import 'package:iris/models/storages/saf_document_uri_index.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/storages/volume_identity.dart';
 import 'package:iris/models/store/play_queue_state.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/utils/check_content_type.dart';
+import 'package:iris/utils/cooperative_yield.dart';
 import 'package:iris/utils/files_sort.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/get_subtitle_map.dart';
@@ -207,7 +209,11 @@ Future<List<LocalStorage>> scanLocalStorages(LocalStorageLabels labels) async {
           .getSDCardStorageDirectory()
           .timeout(probeTimeout)
           .catchError((error) {
-        areaKeyLog.e('Error getting SD card: $error');
+        // A phone without a removable card is the normal case, not a failure:
+        // the plugin answers SDCardNotFound on every probe and only the storage
+        // list would notice. INFO keeps it out of the error log while still
+        // explaining a missing SD entry when the channel is opened.
+        areaKeyLog.i('scanLocalStorages: no SD card ($error)');
         return null;
       });
 
@@ -368,10 +374,19 @@ Future<void> pickLocalFile() async {
 /// The historical list-only contract returned `[]` for a permission denial, so
 /// the phone rendered "no items found" — no explanation and no grant entry.
 /// [getFilesDetailed] consumes this for every local storage.
+///
+/// [withEntryFacts] is the difference between a BROWSER and a SCAN:
+/// - the browser draws size/date columns, so every entry needs a `stat()`;
+/// - the scan keeps only directories and playable files (everything else is
+///   dropped), and it decides playability from the extension alone. Stat-ing
+///   the rest was the single largest cost of a phone scan: a 2019 device holds
+///   ~180k images beside 21k media files, and every listing paid a syscall per
+///   image that the scan then threw away.
 Future<FileListResult> getLocalFilesResult(
   LocalStorage storage,
-  List<String> path,
-) async {
+  List<String> path, {
+  bool withEntryFacts = true,
+}) async {
   if (path.any((s) => s == '..' || s == '.')) {
     areaKeyLog.w('getLocalFiles rejected traversal path: $path');
     return FileListResult.empty;
@@ -438,7 +453,10 @@ Future<FileListResult> getLocalFilesResult(
 
   final List<FileItem> fileItems = [];
   final subtitleExtensions = {'ass', 'srt', 'vtt', 'sub'};
-  int statCount = 0;
+  // Budgeted yield instead of "every 100 stats": the point is to let the raster
+  // thread paint, so the frame interval is the right unit. Measured on a phone,
+  // the old per-100 rule still fired thousands of timer events per full scan.
+  final yieldGate = CooperativeYield();
 
   final subtitleMap = getSubtitleMap<FileSystemEntity>(
     files: entities,
@@ -454,15 +472,23 @@ Future<FileListResult> getLocalFilesResult(
     // A subtitle is an association, never a row of its own.
     if (!isDir && subtitleExtensions.contains(ext)) continue;
 
-    final isVideo = !isDir && checkContentType(name) == ContentType.video;
-    // One unreadable entry must not abort the directory (see
-    // [statFactsOrUnknown]): the row is kept with unknown size/mtime.
-    final facts = await statFactsOrUnknown(
-      entity.stat,
-      onError: (e) =>
-          areaKeyLog.w('getLocalFiles stat failed for ${entity.path}: $e'),
-    );
-    if (++statCount % 100 == 0) await Future<void>.delayed(Duration.zero);
+    final type = isDir ? ContentType.other : checkContentType(name);
+    final isVideo = type == ContentType.video;
+    // Facts are only needed for rows that survive: a scan discards images and
+    // anything else unplayable, so asking the filesystem about them is pure
+    // cost (see `withEntryFacts`).
+    final needFacts =
+        withEntryFacts || type == ContentType.video || type == ContentType.audio;
+    final facts = needFacts
+        ? await statFactsOrUnknown(
+            entity.stat,
+            onError: (e) =>
+                areaKeyLog.w('getLocalFiles stat failed for ${entity.path}: $e'),
+          )
+        : (size: 0, modified: null as DateTime?);
+    if (needFacts && yieldGate.takeYieldSlot()) {
+      await Future<void>.delayed(Duration.zero);
+    }
     fileItems.add(FileItem(
       storageId: storage.id,
       storageType: storage.type,
@@ -472,11 +498,7 @@ Future<FileListResult> getLocalFilesResult(
       isDir: isDir,
       size: isDir ? 0 : facts.size,
       lastModified: facts.modified,
-      type: isDir
-          ? ContentType.other
-          : isVideo
-              ? ContentType.video
-              : checkContentType(name),
+      type: type,
       // The subtitle's OWN file name is the display label, so an `.ass`/`.srt`
       // pair stays distinguishable in the track panel (the old language-suffix
       // label collapsed both to `zh-ru`).
@@ -563,6 +585,18 @@ Future<FileListResult> getContentFilesResult(
       errorKind: StorageListErrorKind.permissionDenied,
       errorDetail: e.toString(),
     );
+  }
+
+  // Hand the scan the document URI of every subdirectory it just discovered:
+  // descending into them later must not re-query each ancestor level (see
+  // [SafDocumentUriIndex]). Only directories are ever resolved by path.
+  for (final file in files) {
+    if (file.isDir) {
+      SafDocumentUriIndex.instance.remember(
+        <String>[...prefixSegments, file.name],
+        file.uri,
+      );
+    }
   }
 
   final subtitleMap = getSubtitleMap<SafDocumentFile>(

@@ -3,6 +3,10 @@ import 'dart:async';
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart' hide Chip;
 import 'package:flutter_zustand/flutter_zustand.dart';
+import 'package:iris/features/app_instance/controller/neighbor_target.dart';
+import 'package:iris/features/app_instance/services/neighbor_window_request.dart';
+import 'package:iris/features/app_instance/services/new_window_launcher.dart';
+import 'package:iris/features/app_instance/view/new_window_dialogs.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/media_library/services/media_uri.dart';
@@ -57,6 +61,7 @@ import 'package:iris/features/windows/explorer/menu/explorer_reveal_action.dart'
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
+import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/models/storages/local.dart';
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/store/use_app_store.dart';
@@ -84,6 +89,54 @@ OpenInFolderHost resolveOpenInFolderHost({required bool dockedPanel}) =>
     dockedPanel
         ? OpenInFolderHost.pushPopup
         : OpenInFolderHost.replaceCurrentRoute;
+
+/// The queue row's two "open neighbour in a new window" entries, built purely
+/// so the gating is testable without a database-backed queue page.
+///
+/// Absent (not merely disabled) where a second window cannot exist at all:
+/// phones, and Store/MSIX builds, which are single-instance — the same gate the
+/// rest of the app's new-window actions use.
+///
+/// [wrap] mirrors the scenario's repeat mode: `Repeat.all` wraps head↔tail,
+/// anything else greys the entry at the boundary instead of firing an action
+/// that can only report "nothing there".
+@visibleForTesting
+List<GenericItemAction<EffectivePlaybackItem>> buildRowNewWindowActions({
+  required String prevLabel,
+  required String nextLabel,
+  required int anchorIndex,
+  required int count,
+  required bool wrap,
+  required bool supported,
+  required Future<void> Function(
+    BuildContext context,
+    EffectivePlaybackItem item,
+    bool forward,
+  ) onSelected,
+}) {
+  if (!supported || count <= 0) return const [];
+  bool hasNeighbor(bool forward) =>
+      resolveNeighborIndex(
+        index: anchorIndex,
+        count: count,
+        forward: forward,
+        wrap: wrap,
+      ) !=
+      null;
+  return [
+    for (final bool forward in const [false, true])
+      GenericItemAction<EffectivePlaybackItem>(
+        label: forward ? nextLabel : prevLabel,
+        icon: Icon(
+          forward ? Icons.skip_next_rounded : Icons.skip_previous_rounded,
+          size: 16,
+        ),
+        enabled: hasNeighbor(forward),
+        onPressed: (ctx, i) =>
+            onSelected(ctx, i as EffectivePlaybackItem, forward),
+      ),
+  ];
+}
 
 /// Icon of the layout the queue's layout-switch button moves TO.
 ///
@@ -165,9 +218,26 @@ class PagedScenarioMediaDataSource
   /// after its scans). Used to re-fetch the page in place exactly once per run.
   late int _lastSourceScanRevision;
 
+  /// Monotonic id of the fetch that owns the page state.
+  ///
+  /// A background re-fetch (source revision / queue mutation) and a user
+  /// navigation can be in flight together. Whichever landed LAST used to win,
+  /// so a slow re-fetch stomped the page the user had already navigated to.
+  /// A newer fetch bumps this, and a stale one returns without touching state.
+  int _fetchGeneration = 0;
+
   StreamSubscription<PlaybackScenarioStoreState>? _storeSub;
   StreamSubscription<dynamic>? _tagViewSub;
   VoidCallback? _vmFailUnsub;
+
+  /// Last current-item identity announced to the page. The generic page uses
+  /// [currentItemToken] to decide whether an open queue must follow a switch;
+  /// this mirrors it so the data source only notifies on an actual SWITCH.
+  Object? _lastCurrentItemToken;
+
+  /// Tag-view position listener (only mounted while a tag view is active), so
+  /// jumping/stepping inside the view also updates [currentItemToken].
+  VoidCallback? _tagStatusUnsub;
 
   final String scenarioId;
 
@@ -196,17 +266,31 @@ class PagedScenarioMediaDataSource
     _lastPageSize = _store.state.playingScenarioQueuePageSize;
     _lastSourceScanRevision = _store.state.sourceScanRevision;
     _storeSub = _store.stream.listen((state) {
+      // A switch of the playing item is what the "follow on switch" option
+      // reacts to. Announced on its OWN, without re-fetching a page: the page
+      // resolves the target and fetches only when it actually has to move.
+      final token = _followToken();
+      if (token != _lastCurrentItemToken) {
+        _lastCurrentItemToken = token;
+        notifyListeners();
+      }
       if (state.playingScenarioQueuePageSize != _lastPageSize) {
         _lastPageSize = state.playingScenarioQueuePageSize;
         notifyListeners();
       }
-      // A scenario-source refresh finished: re-fetch page 0 so newly scanned /
-      // removed media appear. Keyed on its OWN revision (never playbackVersion,
-      // whose mutating call sites already fetch explicitly) so this cannot
-      // double-resolve.
+      // The media snapshot changed: re-resolve the page the user is READING so
+      // newly scanned / removed media appear without moving the viewport.
+      //
+      // This revision is NOT scan-only. The playback-time duration backfill
+      // (`MediaRevisionActions.mediaNodesChanged` from the player hooks) bumps
+      // it too, so refreshing page 0 here threw the list back to the first page
+      // about a second after a row on a later page was tapped — the reported
+      // "playing an item jumps the queue to page 1". Keyed on its OWN revision
+      // (never playbackVersion, whose mutating call sites already fetch
+      // explicitly) so this cannot double-resolve.
       if (state.sourceScanRevision != _lastSourceScanRevision) {
         _lastSourceScanRevision = state.sourceScanRevision;
-        fetchPage(0, pageSize);
+        unawaited(_refetchKeepingPage('sourceScanRevision'));
       }
     });
     // Tag-view reactivity: entering/exiting a tag view while the queue page
@@ -214,10 +298,17 @@ class PagedScenarioMediaDataSource
     _tagViewSub = useTagPlayStore().stream.listen((_) {
       if (_tagActive != _lastTagActive) {
         _lastTagActive = _tagActive;
+        // The token is mode-dependent (occurrence key vs tag position), so
+        // re-adopt it before the page compares; the re-fetch below announces
+        // the mode swap anyway.
+        _lastCurrentItemToken = _followToken();
+        _syncTagStatusListener();
         fetchPage(0, pageSize);
       }
     });
     _lastTagActive = _tagActive;
+    _lastCurrentItemToken = _followToken();
+    _syncTagStatusListener();
     // VM heal reactivity: a duration scan healing its segments republishes
     // the fail map with a new fingerprint — jump back to page 0 so the
     // degraded singles collapse into their merged item. The notifier fires
@@ -253,7 +344,47 @@ class PagedScenarioMediaDataSource
     _tagViewSub?.cancel();
     _vmFailUnsub?.call();
     _vmFailUnsub = null;
+    _tagStatusUnsub?.call();
+    _tagStatusUnsub = null;
     super.dispose();
+  }
+
+  /// Subscribes to the tag view's position notifier while a tag view owns the
+  /// queue. The controller is only touched in tag mode, so normal browsers (and
+  /// unit tests that never enter a tag view) never depend on its init order.
+  void _syncTagStatusListener() {
+    final active = _tagActive;
+    if (active && _tagStatusUnsub == null) {
+      final notifier = PlaybackProviderRegistry.tagPlay.tagViewStatus;
+      void onStatus() {
+        final token = _followToken();
+        if (token == _lastCurrentItemToken) return;
+        _lastCurrentItemToken = token;
+        notifyListeners();
+      }
+
+      notifier.addListener(onStatus);
+      _tagStatusUnsub = () => notifier.removeListener(onStatus);
+    } else if (!active && _tagStatusUnsub != null) {
+      _tagStatusUnsub!.call();
+      _tagStatusUnsub = null;
+    }
+  }
+
+  /// Stable identity of the playing item for the follow-on-switch option.
+  ///
+  /// A plain tag position/int is enough: it changes exactly when the view moves
+  /// to another row, never for a content refresh.
+  Object? _followToken() {
+    if (_tagActive) {
+      return PlaybackProviderRegistry.tagPlay.tagViewStatus.value?.index;
+    }
+    // A non-active scenario has no live "playing item" of its own; the active
+    // workspace's occurrence belongs to a different queue and must never drive
+    // this view.
+    return _store.state.activeScenarioId == scenarioId
+        ? _store.state.currentOccurrenceKey
+        : null;
   }
 
   PlaybackScenarioStore get _store => usePlaybackScenarioStore();
@@ -302,11 +433,21 @@ class PagedScenarioMediaDataSource
 
   @override
   Future<void> fetchPage(int targetPage, int currentSize) async {
+    // Claim this fetch. A newer fetch (a user navigation, or a later re-fetch)
+    // invalidates this one; it must then return WITHOUT touching `_currentPage`
+    // / `_items` / `_isLoading` — the newer owner finishes them.
+    final generation = ++_fetchGeneration;
+    // CLOSE_DEBUG_LOG
+    areaKeyLog.d(
+        'queue fetch scenario=$scenarioId page=$targetPage size=$currentSize');
     _isLoading = true;
 
     _isError = false;
     notifyListeners();
 
+    List<EffectivePlaybackItem>? items;
+    int? totalItems;
+    var failed = false;
     try {
       if (_tagActive) {
         // TAG VIEW: pages come from the tag's resolved snapshot so the
@@ -316,33 +457,68 @@ class PagedScenarioMediaDataSource
               useTagPlayStore().state.activeViewTagId!,
               scenarioId,
             );
-        _currentPage = targetPage;
-        _totalItems = snap.length;
+        totalItems = snap.length;
         final start = targetPage * currentSize;
         final end = (start + currentSize).clamp(0, snap.length);
-        _items =
-            start < snap.length ? snap.items.sublist(start, end) : const [];
+        items = start < snap.length ? snap.items.sublist(start, end) : const [];
       } else {
         final result = await _store.resolvePageFor(
           scenarioId,
           page: targetPage,
           pageSize: currentSize,
         );
-        _currentPage = targetPage;
-        _items = result.items;
-        _totalItems = result.totalItems;
+        items = result.items;
+        totalItems = result.totalItems;
       }
     } catch (e, st) {
-      _isError = true;
+      failed = true;
       // Never swallow a resolve failure: it leaves the previous page in place,
       // which reads as "the scan / sort did nothing".
       areaKeyLog.e(
           'queue fetch failed scenario=$scenarioId page=$targetPage: $e', st);
     }
 
+    if (generation != _fetchGeneration) return;
+    if (failed) {
+      _isError = true;
+    } else {
+      _currentPage = targetPage;
+      _items = items!;
+      _totalItems = totalItems!;
+    }
+
     await _refreshRedundantExplicitKeys();
+    // The redundant-key pass awaits the DB; a newer fetch may have claimed the
+    // viewport meanwhile.
+    if (generation != _fetchGeneration) return;
     _isLoading = false;
     notifyListeners();
+  }
+
+  /// Re-fetches the page currently being read after a content-revision change.
+  ///
+  /// A content refresh must NOT move the viewport: the media snapshot also
+  /// changes for reasons the reader did not initiate (a playback-time duration
+  /// backfill, a background source scan), and jumping to page 0 for those made
+  /// tapping a row on page 2 snap the list back to page 1. Only an explicit
+  /// navigation (page-size change, sort/shuffle, tag-view switch) starts over at
+  /// page 0.
+  ///
+  /// When the refreshed stream no longer HAS the current page (deletions /
+  /// excludes shrank it), the viewport falls back to the last remaining page
+  /// instead of staying on an empty window above the counter.
+  Future<void> _refetchKeepingPage(String reason) async {
+    final target = _currentPage;
+    // CLOSE_DEBUG_LOG
+    areaKeyLog.d('queue refetch keeping page=$target reason=$reason');
+    await fetchPage(target, pageSize);
+    // A newer navigation (or another re-fetch) claimed the viewport while this
+    // one was resolving: never apply the empty-page fallback on top of it.
+    if (_currentPage != target) return;
+    if (_currentPage == 0 || _items.isNotEmpty) return;
+    final last = _totalItems <= 0 ? 0 : totalPages - 1;
+    if (last == _currentPage) return;
+    await fetchPage(last, pageSize);
   }
 
   /// Recomputes [_redundantExplicitKeys] for the just-resolved page.
@@ -375,6 +551,11 @@ class PagedScenarioMediaDataSource
 
   @override
   bool get supportsCurrentItem => true;
+
+  /// The occurrence key (normal queue) or tag-view position (tag view) — the
+  /// page follows it to keep the playing row in view after a switch.
+  @override
+  Object? get currentItemToken => _followToken();
 
   @override
   Future<int?> resolveCurrentItemIndex() async {
@@ -1254,7 +1435,10 @@ class PagedScenarioMediaDataSource
       case PlaylistAction.albumNew:
       case PlaylistAction.albumEdit:
       case PlaylistAction.albumDelete:
-      // Cursor + selection are owned by the page (never delegated here).
+      // Cursor + selection are owned by the page (never delegated here), and
+      // the page-jump prompt is opened by the page itself (it holds the
+      // paging state) — all consumed here so they never double-fire.
+      case PlaylistAction.jumpToPage:
       case PlaylistAction.cursorUp:
       case PlaylistAction.cursorDown:
       case PlaylistAction.cursorFirst:
@@ -1560,6 +1744,7 @@ class PagedScenarioMediaDataSource
           _removeFromActiveTag(i as EffectivePlaybackItem);
         },
       ));
+      actions.addAll(_newWindowNeighborActions(item, t));
       final path = _pathOf(item);
       if (path.isNotEmpty) {
         actions.add(GenericItemAction<EffectivePlaybackItem>(
@@ -1657,6 +1842,11 @@ class PagedScenarioMediaDataSource
       },
     ));
 
+    // Multi-window: spawn the neighbour of THIS row in a fresh window. Placed
+    // with the media actions (not with the removals) because the outcome is
+    // "play a video", like "Open in folder" just below.
+    actions.addAll(_newWindowNeighborActions(item, t));
+
     final path = _pathOf(item);
     if (path.isNotEmpty) {
       actions.add(GenericItemAction<EffectivePlaybackItem>(
@@ -1728,6 +1918,63 @@ class PagedScenarioMediaDataSource
     ));
 
     return actions;
+  }
+
+  /// Multi-window neighbour entries for a queue row (desktop only).
+  ///
+  /// The anchor is the ROW, not the live position: the Playing Queue is also a
+  /// browse surface, so "next in new window" there means "the episode after the
+  /// one I am pointing at". The spawned window mirrors this scenario/tag view,
+  /// exactly like the Shift+PageUp/Down keys, so both windows keep independent
+  /// transports from the same queue.
+  List<GenericItemAction<EffectivePlaybackItem>> _newWindowNeighborActions(
+    EffectivePlaybackItem item,
+    AppLocalizations t,
+  ) =>
+      buildRowNewWindowActions(
+        prevLabel: t.keybind_act_open_prev_window,
+        nextLabel: t.keybind_act_open_next_window,
+        anchorIndex: item.virtualIndex,
+        count: totalItems,
+        wrap: _store.state.activeScenarioRepeat == Repeat.all,
+        supported: NewWindowLauncher.isSupported,
+        onSelected: (ctx, i, forward) =>
+            _openRowNeighborInNewWindow(ctx, i, forward: forward),
+      );
+
+  /// Spawns the row's neighbour in a new window. The SOURCE window is left
+  /// untouched (unlike the keyboard action, which parks its own player): a row
+  /// menu is a browse gesture and the current playback may belong to a
+  /// different scenario entirely.
+  Future<void> _openRowNeighborInNewWindow(
+    BuildContext context,
+    EffectivePlaybackItem anchor, {
+    required bool forward,
+  }) async {
+    final NeighborWindowTarget? target;
+    try {
+      target = await buildRowNeighborTarget(
+        scenarioId: scenarioId,
+        tagViewId: _tagActive ? useTagPlayStore().state.activeViewTagId : null,
+        anchorIndex: anchor.virtualIndex,
+        count: totalItems,
+        forward: forward,
+        wrap: _store.state.activeScenarioRepeat == Repeat.all,
+      );
+    } catch (e, st) {
+      areaKeyLog.e('row new-window neighbour resolution failed: $e', st);
+      return;
+    }
+    if (target == null) {
+      // Only reachable when the queue changed between build and press; the grey
+      // boundary state covers the ordinary case.
+      areaKeyLog.w('row new-window neighbour: no target '
+          '(scenario=$scenarioId anchor=${anchor.virtualIndex} '
+          'forward=$forward)');
+      return;
+    }
+    if (!context.mounted) return;
+    await launchNewWindow(context, target.request);
   }
 
   /// Runs one row rescan scope, then refreshes page 0 in place.
@@ -1913,7 +2160,8 @@ class PagedScenarioMediaDataSource
   Future<void> _afterQueueMutation() async {
     await _store.bumpPlaybackVersion();
     await ScenarioPlaybackProvider(store: _store).revalidateCurrent();
-    await fetchPage(_currentPage, pageSize);
+    // Keep the viewport: a removal must not also rewind the reader to page 1.
+    await _refetchKeepingPage('queueMutation');
   }
 
   Future<void> _removeExplicitInclude(EffectivePlaybackItem item) async {

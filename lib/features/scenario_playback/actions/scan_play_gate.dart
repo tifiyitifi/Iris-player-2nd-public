@@ -1,13 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:iris/features/media_library/scan/model/recursive_scan_state.dart';
 import 'package:iris/features/media_library/scan/model/scan_rescan_reminder.dart';
 import 'package:iris/features/media_library/scan/probe/media_probe.dart';
+import 'package:iris/features/media_library/scan/probe/scan_probe_preference.dart';
 import 'package:iris/features/media_library/scan/service/recursive_scan_service.dart';
 import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/scenario_playback/actions/media_revision_actions.dart';
 import 'package:iris/features/scenario_playback/actions/pending_play_intent.dart';
 import 'package:iris/features/media_library/scan/view/scan_options_dialog.dart';
+import 'package:iris/features/media_library/scan/view/scan_info_dialog.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_error.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
@@ -31,6 +34,11 @@ enum DirScanGateStatus { unscanned, scanning, done, error, stale }
 /// action must wait for (the batch just started, plus any already-running scan
 /// covering a gated root). That anchor is per action by construction, so a
 /// concurrent action's scan settling first can never steal it.
+///
+/// The anchor completes with whether ANY gated root actually produced playable
+/// rows. A totally failed batch must not resume the play: the batch itself
+/// raises the one scan-error prompt, and a resume would only stack a misleading
+/// "nothing to play" dialog on top of it.
 @immutable
 class ScanGateOutcome {
   const ScanGateOutcome._({required this.proceed, this.scanSettled});
@@ -41,15 +49,16 @@ class ScanGateOutcome {
   /// The action was aborted and nothing will resume it.
   const ScanGateOutcome.cancelled() : this._(proceed: false);
 
-  /// A scan took over; resume the action when [settled] completes.
-  const ScanGateOutcome.scanning(Future<void> settled)
+  /// A scan took over; resume the action when [settled] completes with `true`.
+  const ScanGateOutcome.scanning(Future<bool> settled)
       : this._(proceed: false, scanSettled: settled);
 
   final bool proceed;
 
   /// Non-null when a scan took over this action. Completes when every run this
-  /// action depends on has settled (`done` / `stopped` / `error`).
-  final Future<void>? scanSettled;
+  /// action depends on has settled (`done` / `stopped` / `error`), with `true`
+  /// when at least one of them produced playable rows.
+  final Future<bool>? scanSettled;
 }
 
 /// Classifies one directory's persisted scan status against the reminder
@@ -259,10 +268,28 @@ bool shouldRunScanGate({
 /// chain of the freshly started batch AND any already-running scan that covers
 /// a gated root. Reading a shared/global slot at completion time is what used to
 /// lose the play (a concurrent or superseded run settled first and consumed it).
+///
+/// [silentUnscanned] makes a merely-never-scanned batch increment silently: the
+/// action that triggered the gate cannot be answered without those rows anyway,
+/// and the scan is scoped to exactly those roots, so asking "scan the whole
+/// folder first?" on every newly-touched path is friction, not a decision. Only
+/// a batch whose every gated root is `notScan` takes this path — a
+/// stale/errored/live root is still a real choice and keeps the dialog. The
+/// silent run is chained through the SAME settle anchor, so the caller's resume
+/// is unchanged.
+///
+/// [ask] false makes the whole gate silent (`playback.dropAutoScan`): ANY status
+/// — unscanned, stale, errored or already live — skips the dialog and is either
+/// scanned now or awaited. Use it only where the triggering gesture was already
+/// the play request (the desktop drop). A batch that cannot start a scan gets
+/// one error prompt instead of the dialog, and the action stays aborted (a
+/// resume would only stack a "nothing to play" dialog).
 Future<ScanGateOutcome> ensureDirsScannedDetailed(
   BuildContext context,
-  List<ScenarioSourceSpec> dirs,
-) async {
+  List<ScenarioSourceSpec> dirs, {
+  bool silentUnscanned = false,
+  bool ask = true,
+}) async {
   final reminder = await scanReminderMinutes();
   final now = DateTime.now();
   final gated = <ScenarioSourceSpec, DirScanGateStatus>{};
@@ -276,6 +303,37 @@ Future<ScanGateOutcome> ensureDirsScannedDetailed(
     gated[dir] = status;
   }
   if (gated.isEmpty) return const ScanGateOutcome.proceed();
+  if (!context.mounted) return const ScanGateOutcome.cancelled();
+
+  final silentAll = !ask;
+  if (silentAll ||
+      (silentUnscanned &&
+          gated.values.every((s) => s == DirScanGateStatus.unscanned))) {
+    final start = await _startScansFor(
+      context,
+      gated.keys.toList(growable: false),
+      silentOptions: true,
+    );
+    if (start != null) return ScanGateOutcome.scanning(start.settled);
+    // Nothing could start (no resolvable storage / user cancelled a prompt that
+    // a live run still needed).
+    if (silentAll) {
+      // No dialogs by policy, but silently doing nothing is worse: state the
+      // reason and abort. A resume here would only stack a second "nothing to
+      // play" prompt on top of this one.
+      if (context.mounted) {
+        final t = getLocalizations(context);
+        await showCopyableErrorDialog(
+          context,
+          title: t.scan_error_title,
+          message: t.scan_cannot_start,
+        );
+      }
+      return const ScanGateOutcome.cancelled();
+    }
+    // silentUnscanned: fall through to the dialog rather than leaving the action
+    // silently dead.
+  }
   if (!context.mounted) return const ScanGateOutcome.cancelled();
 
   // One dialog for the whole batch: prefer an actionable status (unscanned /
@@ -444,7 +502,9 @@ Future<Duration> _stalenessOf(ScenarioSourceSpec dir) async {
 class _ScanStart {
   const _ScanStart(this.settled);
 
-  final Future<void> settled;
+  /// Completes with `true` when at least one root this action waited for
+  /// produced playable rows.
+  final Future<bool> settled;
 }
 
 /// Starts background recursive scans for every gated [dirs] root, chained so
@@ -455,9 +515,12 @@ class _ScanStart {
 ///
 /// Returns the settle anchor (see [_ScanStart]) of every run this action now
 /// depends on — the freshly started batch AND any already-running scan that
-/// covers a gated root ([RecursiveScanStore.scanSettled]) — or null when no
+/// covers a gated root ([RecursiveScanStore.playableSettled]) — or null when no
 /// scan work is in flight at all (nothing live, no resolvable storage, or the
 /// user cancelled the scan-options dialog). Callers must NOT resume on null.
+///
+/// The fresh batch contributes one anchor PER ROOT: a multi-folder action
+/// resumes when its last root is playable, not when the first one is.
 ///
 /// Waiting for an already-live run instead of returning null is deliberate: the
 /// store's phase stamp can lag a just-started run (the DB row is still
@@ -467,22 +530,36 @@ class _ScanStart {
 /// One options dialog covers the whole batch (probe default ON). The scan
 /// mutates `media_nodes`; each storage is announced as its scan finishes so the
 /// derived queue index and any open queue view pick up the new content.
+///
+/// [silentOptions] skips that dialog (silent incremental scans reuse the last
+/// confirmed probe choice) so a drop never stacks a second prompt on top of the
+/// play it already asked for.
+///
+/// FAILURES ARE NEVER SILENT: every started run is playback-originated, hence
+/// quiet, and a quiet run deliberately never opens the overlay's error dialog
+/// (it would interrupt the video). The batch therefore reports its own failure
+/// once — [showCopyableErrorDialog] — and the anchor completes with `false` when
+/// NO root produced playable rows, so the caller skips the resume instead of
+/// stacking a misleading "nothing to play" dialog on the error.
 Future<_ScanStart?> _startScansFor(
   BuildContext context,
-  List<ScenarioSourceSpec> dirs,
-) async {
+  List<ScenarioSourceSpec> dirs, {
+  bool silentOptions = false,
+}) async {
   final pending = filterLiveScanRoots(dirs, _scanIsLiveFor);
   // Anchor to the runs already in flight BEFORE starting anything new: a new
   // run resets the store and would complete (release) the previous waiter.
   final liveSettled = <Future<void>>[
     for (final dir in dirs)
-      if (_scanIsLiveFor(dir)) useRecursiveScanStore().scanSettled,
+      if (_scanIsLiveFor(dir)) useRecursiveScanStore().playableSettled,
   ];
   if (pending.isEmpty) {
     // Nothing to start — every gated root is already covered by a running scan.
     // Hand back those runs so the action resumes when they settle.
     if (liveSettled.isEmpty) return null;
-    return _ScanStart(Future.wait<void>(liveSettled));
+    return _ScanStart(
+      Future.wait<void>(liveSettled).then((_) => true),
+    );
   }
   final resolvable = <(Storage, ScenarioSourceSpec)>[];
   for (final dir in pending) {
@@ -492,21 +569,127 @@ Future<_ScanStart?> _startScansFor(
   if (resolvable.isEmpty) return null; // cannot scan without a storage
 
   // Same options dialog as manual scans, probe default ON (see dialog).
-  final probe = await showScanOptionsDialog(
-    context,
-    storageType: resolvable.first.$1.type,
-  );
-  if (probe == null || !context.mounted) return null; // cancelled → no scan
+  //
+  // A silent incremental scan must not stack a second dialog on top of the
+  // action it was triggered by: it reuses the last confirmed probe choice
+  // (default ON) instead of asking again.
+  final bool probe;
+  if (silentOptions) {
+    probe = (await ScanProbePreference.load()) ?? true;
+  } else {
+    final choice = await showScanOptionsDialog(
+      context,
+      storage: resolvable.first.$1,
+      scope: ScanInfoScope.sources,
+    );
+    if (choice == null || !context.mounted) return null; // cancelled → no scan
+    probe = choice;
+  }
 
   final scanStore = useRecursiveScanStore();
+  // Resume anchor: EVERY resolvable root's "playable" point, i.e. metadata-
+  // complete for a small local scope and enumeration-complete for a large /
+  // network one. It is captured from each run itself (the service fires
+  // `onScanStarted` once it is registered), never from a shared global slot.
+  //
+  // Waiting for the first root only was wrong for a multi-folder action: the
+  // batch is chained, so the queue was built from a partial list (and, when the
+  // first folder happened to be empty, the play reported "no playable content"
+  // although a later root had files). A root whose run never registers or
+  // throws is classified by the per-root fallbacks below.
+  //
+  // The anchor carries the batch's OUTCOME, not just its completion: a totally
+  // failed drop must not resume (the failure prompt below already explains why
+  // nothing plays), and a partial one must still play what was indexed.
+  final playable = Completer<bool>();
+  final playablePending = resolvable.length;
+  var playableReached = 0;
+  var playableSuccesses = 0;
+  var failures = 0;
+  String? failureMessage;
+
+  void releaseAnchor() {
+    if (!playable.isCompleted) playable.complete(playableSuccesses > 0);
+  }
+
+  /// Counts one root exactly once for the resume anchor and records whether it
+  /// produced playable rows.
+  void accountRoot({required bool failed, String? error}) {
+    if (failed) {
+      failures++;
+      failureMessage ??= error;
+    } else {
+      playableSuccesses++;
+    }
+    playableReached++;
+    if (playableReached >= playablePending) releaseAnchor();
+  }
+
+  /// One prompt per batch, deduped: the playable-time and batch-end checks must
+  /// never stack two dialogs. A quiet run's own overlay never prompts, so this
+  /// is the ONLY place a failed drop-scan is announced.
+  var failurePrompted = false;
+  Future<void> promptFailureOnce() async {
+    if (failurePrompted || failures == 0) return;
+    failurePrompted = true;
+    if (!context.mounted) return;
+    final t = getLocalizations(context);
+    await showCopyableErrorDialog(
+      context,
+      title: t.scan_error_title,
+      message: t.scan_status_error(
+        // NOT `scanStore.state.error`: the store is shared, so by the time the
+        // batch ends it may already describe a NEWER run and the prompt would
+        // blame the wrong one (or lose the message). Each root captured its own
+        // error when it was classified.
+        failureMessage ?? t.scan_error_unknown,
+      ),
+    );
+  }
+
   final batch = () async {
     for (final (storage, dir) in resolvable) {
+      // A root may be classified twice: at its playable point and again after
+      // its run returns. Only the first classification counts.
+      var accounted = false;
+      void accountOnce({required bool failed, String? error}) {
+        if (accounted) return;
+        accounted = true;
+        accountRoot(failed: failed, error: error);
+      }
+
       final service = RecursiveScanService(
         storage: storage,
         scanStore: scanStore,
         nodesDao: DbModule.mediaNodesDao,
         sourcesDao: DbModule.mediaLibSourcesDao,
         probeService: probe ? createMediaProbeService() : null,
+        playbackOriginated: true,
+        onScanStarted: () {
+          // Rows are final at `playableSettled` (metadata for a small scope,
+          // enumeration otherwise). Announce THEN so the derived queue index
+          // and any open queue view are rebuilt from the new rows before the
+          // action resumes — the batch's own announce only happens at full
+          // completion, which a large scope deliberately does not wait for.
+          scanStore.playableSettled.then((_) async {
+            // Classify BEFORE awaiting the announce: the anchor must not wait
+            // on a DB write, and a failed run is already `error` here.
+            accountOnce(
+              failed: scanStore.state.phase == ScanPhase.error,
+              error: scanStore.state.error,
+            );
+            try {
+              await MediaRevisionActions.mediaNodesChanged([storage.id]);
+            } catch (_) {
+              // Never swallow the resume on a failed announce.
+            } finally {
+              // Playback is about to start: the panel has served its purpose and
+              // must not stay over the video while the aggregate / metadata tail
+              // finishes.
+              scanStore.dismissQuietPanel();
+            }
+          });
+        },
       );
       final rootPath = _effectiveScanRoot(dir);
       if (!context.mounted) return;
@@ -518,14 +701,59 @@ Future<_ScanStart?> _startScansFor(
           await service.scanRecursively(
               rootPaths: [rootPath], context: context);
         }
-      } catch (_) {
-        // One failed root must not stop the rest of the batch.
+      } catch (e) {
+        // One failed root must not stop the rest of the batch, but it must be
+        // reported rather than swallowed.
+        accountOnce(failed: true, error: e.toString());
+      }
+      // Covers a run that never fired `onScanStarted` (nothing started / a test
+      // runner replaced the scan): its terminal state is the only signal left.
+      if (!accounted) {
+        accountOnce(
+          failed: scanStore.state.phase == ScanPhase.error,
+          error: scanStore.state.error,
+        );
       }
       await MediaRevisionActions.mediaNodesChanged([storage.id]);
     }
   }();
-  if (liveSettled.isEmpty) return _ScanStart(batch);
-  return _ScanStart(Future.wait<void>([batch, ...liveSettled]));
+  // Fallback: a run that never registers still releases the anchor when the
+  // batch is over. The batch also owns the quiet panel's dismissal: quiet runs
+  // never count down (one panel for the whole batch, no flicker between chained
+  // roots).
+  unawaited(batch.whenComplete(() {
+    releaseAnchor();
+    _dismissQuietCompletion(scanStore);
+    unawaited(promptFailureOnce());
+  }));
+
+  Future<bool> anchor() async {
+    final anyFreshPlayable = await playable.future;
+    if (liveSettled.isEmpty) return anyFreshPlayable;
+    await Future.wait<void>(liveSettled);
+    // An already-running scan is presumed to produce the rows this action
+    // waits for; its own batch surfaces its own failure.
+    return true;
+  }
+
+  return _ScanStart(anchor());
+}
+
+/// Closes the progress panel a playback-originated run left behind.
+///
+/// Quiet runs never auto-close, so the batch that started them owns the
+/// cleanup. The panel itself is usually already hidden by the time playback
+/// resumed ([RecursiveScanStore.dismissQuietPanel]); this still resets the run
+/// state so no `done` panel is left for the next action to inherit.
+///
+/// An `error` panel is deliberately kept: the user has to see why the scan
+/// failed.
+void _dismissQuietCompletion(RecursiveScanStore scanStore) {
+  if (!scanStore.quietCompletion) return;
+  final phase = scanStore.state.phase;
+  if (phase == ScanPhase.done || phase == ScanPhase.stopped) {
+    unawaited(scanStore.resetScan());
+  }
 }
 
 /// Test seam: runs one root's scan.
@@ -547,13 +775,19 @@ String _dirLabel(ScenarioSourceSpec dir, AppLocalizations t) =>
 /// full scan first, or abort. Public so the dialog builder can be tested.
 enum DirScanGateChoice { playAnyway, scanNow, cancel }
 
-/// Runs the scan gate and, when the user picks scan-now, keeps a
-/// [PendingPlayIntent] that resumes the interrupted playback once the scan
-/// settles — after ONE confirmation.
+/// Runs the scan gate for a playback action and keeps a [PendingPlayIntent]
+/// that resumes the interrupted playback once the scan settles.
 ///
 /// This is the fix for "override play is lost after an on-demand scan": a
 /// playback action blocked by an unscanned directory must survive the scan —
 /// otherwise the user's tap does nothing after scanning completes.
+///
+/// No confirmation is asked afterwards: the play request was already explicit,
+/// and a second "continue playing?" prompt is exactly the friction a drop or a
+/// folder tap must not have. A merely never-scanned batch skips the gate dialog
+/// too ([silentUnscanned]) — it is not a decision, just a first increment;
+/// stale/errored/live roots still ask, because "scan this again?" is a real
+/// choice.
 ///
 /// [dirs] are the recursive scopes that gate playback; [playOnScanNow] repeats
 /// the original action with the SAME captured parameters. Rerunning after the
@@ -567,82 +801,82 @@ enum DirScanGateChoice { playAnyway, scanNow, cancel }
 ///
 /// Returns true when playback may proceed immediately (fresh dirs, or the user
 /// chose play-anyway); false when the scan took over (caller must NOT play now).
+/// Alias of [ensureDirsScannedWithAutoPlay] kept for call-site intent (the
+/// override/append actions vs the desktop drop).
+///
+/// The two converged when the silent increment was unified — a merely
+/// never-scanned root is not a decision on either path — so this must delegate
+/// rather than fork again; a fix applied to one of them has to reach both.
 Future<bool> ensureDirsScannedWithPendingPlay(
   BuildContext context,
   List<ScenarioSourceSpec> dirs, {
   required Future<void> Function() playOnScanNow,
 }) =>
-    _gateWithResume(context, dirs, resume: playOnScanNow, confirm: true);
+    ensureDirsScannedWithAutoPlay(
+      context,
+      dirs,
+      playOnScanNow: playOnScanNow,
+    );
 
-/// [ensureDirsScannedWithPendingPlay] without the confirmation prompt: the
-/// interrupted action resumes as soon as its scan settles.
+/// Silent variant for the desktop drag-drop path, where the drop itself was the
+/// explicit user gesture: it increments a merely-unindexed folder without the
+/// gate dialog and resumes straight into playback once the scan settles.
 ///
-/// Used by the desktop drag-drop path, where the drop itself was the explicit
-/// user gesture — asking again after the scan only risks losing the play (the
-/// reported "drop triggers a scan but never plays; dropping again works").
+/// Asking again after the scan only risks losing the play (the reported "drop
+/// triggers a scan but never plays; dropping again works").
+///
+/// It ALSO increments silently: a dropped folder that was simply never indexed
+/// (a new subdirectory, or one the user never visited) is scanned on the spot
+/// instead of opening the "scan fully now?" gate — every different path of the
+/// same storage used to demand that dialog even though the scan it starts only
+/// covers that dropped root.
+///
+/// [ask] false drops the gate dialog for EVERY status (see
+/// [ensureDirsScannedDetailed]); the desktop drop reads
+/// `AppState.dropAutoScan` and passes `!dropAutoScan` so a modern, few-second
+/// local scan no longer costs the user a decision.
 Future<bool> ensureDirsScannedWithAutoPlay(
   BuildContext context,
   List<ScenarioSourceSpec> dirs, {
   required Future<void> Function() playOnScanNow,
+  bool ask = true,
 }) =>
-    _gateWithResume(context, dirs, resume: playOnScanNow, confirm: false);
+    _gateWithResume(
+      context,
+      dirs,
+      resume: playOnScanNow,
+      silentUnscanned: true,
+      ask: ask,
+    );
 
 Future<bool> _gateWithResume(
   BuildContext context,
   List<ScenarioSourceSpec> dirs, {
   required Future<void> Function() resume,
-  required bool confirm,
+  bool silentUnscanned = false,
+  bool ask = true,
 }) async {
-  final outcome = await ensureDirsScannedDetailed(context, dirs);
+  final outcome = await ensureDirsScannedDetailed(
+    context,
+    dirs,
+    silentUnscanned: silentUnscanned,
+    ask: ask,
+  );
   final settled = outcome.scanSettled;
   if (settled != null) {
     final intent = PendingPlayIntent(resume: resume);
-    // A scan run can surface a storage failure; the resume must still happen and
-    // nothing may escape as an unhandled async error (the scan UI already
-    // reports the failure). `catchError` normalizes the anchor to `void`.
-    unawaited(settled.catchError((Object _) {}).whenComplete(() {
+    // A scan run can surface a storage failure; nothing may escape as an
+    // unhandled async error, and `catchError` normalizes a thrown anchor to
+    // `false`. A `false` anchor means NO root produced playable rows: the batch
+    // already raised the one scan-error prompt, so resuming would only stack a
+    // misleading "nothing to play" dialog on top of it.
+    unawaited(settled.catchError((Object _) => false).then((ok) {
+      if (!ok) return;
       if (!context.mounted) return; // caller already left the screen
-      if (confirm) {
-        _offerPendingResume(context, intent);
-      } else {
-        unawaited(_resumePending(context, intent));
-      }
+      unawaited(_resumePending(context, intent));
     }));
   }
   return outcome.proceed;
-}
-
-/// Shows the single "scan finished — continue playing?" prompt for [intent].
-///
-/// A Cancel here drops the intent (the scan's data stays indexed either way).
-void _offerPendingResume(BuildContext context, PendingPlayIntent intent) {
-  if (!context.mounted) {
-    return; // caller already left the screen — drop silently
-  }
-  showDialog<void>(
-    context: context,
-    builder: (dialogCtx) {
-      final t = getLocalizations(dialogCtx);
-      return AlertDialog(
-        title: Text(t.gate_resume_title),
-        content: Text(t.gate_resume_body),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: Text(t.cancel),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.of(dialogCtx).pop();
-              if (!context.mounted) return;
-              await _resumePending(context, intent);
-            },
-            child: Text(t.gate_resume_continue),
-          ),
-        ],
-      );
-    },
-  );
 }
 
 /// Runs a pending intent, surfacing a failure as the uniform copyable error

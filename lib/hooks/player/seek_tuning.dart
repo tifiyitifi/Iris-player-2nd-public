@@ -60,13 +60,20 @@ int resolveRelativeBaseMs({
 
 /// Lock-independent accumulator for relative STEP seeks (← / → fast-forward).
 ///
-/// Used by the fvp backend: it has no relative seek, so each press becomes an
-/// ABSOLUTE seek (on the keyframe path — see `fvpStepUsesKeyframeSeek`) and the
-/// engine does NOT coalesce presses the way mpv's `queue_seek` does. The class
-/// therefore keeps the Dart side coherent across a burst: the OSD shows where
-/// the burst is heading, and the progress write records the burst's target
-/// instead of a pre-seek sample. (The media_kit backend instead hands mpv a
-/// native relative keyframe seek — [stepSeekArgs] — and keeps no accumulator.)
+/// Used by BOTH player hooks, for two different reasons:
+///
+///  * fvp has no relative seek, so each press becomes an ABSOLUTE seek (on the
+///    keyframe path — see `fvpStepUsesKeyframeSeek`) and the engine does NOT
+///    coalesce presses the way mpv's `queue_seek` does. The accumulator keeps
+///    the burst coherent: the OSD shows where it is heading and every press
+///    lands one step further.
+///  * media_kit hands mpv a native relative keyframe seek ([stepSeekArgs]) and
+///    lets the ENGINE accumulate the delta (`queue_seek`), but the tail
+///    decision still needs the same sum: `time-pos` only reports an executed
+///    seek, so a rapid burst would otherwise be judged against a stale
+///    position and the press that crosses the end would be missed. The
+///    accumulator here mirrors mpv's sum for [decideStepTail] only — the seek
+///    itself is still handed to mpv unchanged.
 ///
 /// The position-lock intent (`resolveRelativeBaseMs`) cannot anchor a step
 /// burst on its own: the lock unlocks as soon as one sample lands within its
@@ -85,15 +92,33 @@ int resolveRelativeBaseMs({
 class StepIntent {
   int? _lastMs;
 
+  /// Sign of the press that recorded [_lastMs] (+1 forward, -1 backward, 0 when
+  /// the caller did not say). A press in the OPPOSITE direction re-anchors on
+  /// the picture instead of chaining onto this target: the recorded target is
+  /// the sum of a burst in ONE direction, and chaining a reversal onto it would
+  /// teleport the picture (burst forward to 400 s, press ← → 5 s).
+  int _direction = 0;
+
   /// The most recently requested step target, in the caller's coordinate axis
   /// (segment-local while a VM session is active), or null when none/reset.
   int? get lastMs => _lastMs;
 
   /// Records the target a step seek is heading to.
-  void note(int targetMs) => _lastMs = targetMs;
+  ///
+  /// [deltaMs] is the signed press that produced it; omit it when the caller
+  /// only knows the absolute landing (the direction is then kept as-is).
+  void note(int targetMs, {int? deltaMs}) {
+    _lastMs = targetMs;
+    if (deltaMs != null && deltaMs != 0) {
+      _direction = deltaMs > 0 ? 1 : -1;
+    }
+  }
 
   /// Drops the accumulation (absolute seek / media change / burst end).
-  void reset() => _lastMs = null;
+  void reset() {
+    _lastMs = null;
+    _direction = 0;
+  }
 
   /// Base position the next relative step must add its delta to:
   /// step intent → position-lock intent → reported position. The last two
@@ -107,13 +132,40 @@ class StepIntent {
   /// and anchoring the next press on it would jump backwards (e.g. burst to
   /// 350s, play to 400s, next +10s lands at 360s instead of 410s). So an
   /// inactive burst ignores [_lastMs] and re-anchors on the live position.
+  ///
+  /// [deltaMs] does two things:
+  ///
+  ///  * a press that REVERSES the recorded burst direction re-anchors on the
+  ///    picture (the sum belongs to the other direction);
+  ///  * the base is then kept on the side the press travels to — forward takes
+  ///    the larger of intent and live position, backward the smaller. The
+  ///    accumulator alone is NOT safe, because a keyframe seek lands on the
+  ///    NEXT key frame: the picture runs AHEAD of the nominal sum, so a tail
+  ///    press judged against the sum would ask to land BEHIND the current
+  ///    frame. That was the field "the tail jumps back and forth": on a
+  ///    974 271 ms file the accumulator said 962 017 ms while the engine was
+  ///    already at 974 271 ms, so the exact tail step seeked BACK to 966 017 ms
+  ///    (an 8.2 s rewind) and the burst had to climb forward again. mpv has the
+  ///    same rule implicitly — `queue_seek` adds the amount to
+  ///    `get_current_time()`, so a forward `→` never resolves behind the
+  ///    current frame.
   int baseFor({
     required int reportedMs,
     required int? lockIntentMs,
+    required int deltaMs,
     bool active = true,
-  }) =>
-      (active ? _lastMs : null) ??
-      resolveRelativeBaseMs(reportedMs: reportedMs, pendingIntentMs: lockIntentMs);
+  }) {
+    final int fallback =
+        resolveRelativeBaseMs(reportedMs: reportedMs, pendingIntentMs: lockIntentMs);
+    final int? intent = active ? _lastMs : null;
+    if (intent == null) return fallback;
+    if (deltaMs == 0) return fallback;
+    if (_direction != 0 && _direction != (deltaMs > 0 ? 1 : -1)) {
+      return fallback;
+    }
+    if (deltaMs > 0) return intent > fallback ? intent : fallback;
+    return intent < fallback ? intent : fallback;
+  }
 }
 
 /// Trailing window that collapses a user-seek progress-write burst into the
@@ -122,17 +174,24 @@ const Duration kUserSeekWriteDebounce = Duration(milliseconds: 350);
 
 /// Floor for the [StepTailFinishMode.window] threshold (ms).
 ///
-/// 2 s — the same value the fvp backend already used for its own tail window
-/// (`kFvpStepTailExactWindowMs`), and for the same reason: the container
-/// duration overshoots the last decodable frame, and the last key frame sits up
-/// to a whole GOP before that, so a target inside that gap is unreachable no
-/// matter how small the step is. Short steps would otherwise leave the final
-/// GOP unprotected (a 500 ms step can never reach the end of a 2 s GOP).
+/// 2 s — the container duration overshoots the last decodable frame, and the
+/// last key frame sits up to a whole GOP before that, so a target inside that
+/// gap is unreachable no matter how small the step is. Short steps would
+/// otherwise leave the final GOP unprotected (a 500 ms step can never reach the
+/// end of a 2 s GOP).
 ///
 /// The EFFECTIVE window is additionally capped at half the media (see
 /// [stepFinishesItem]): a window as long as the clip would put the finish
 /// threshold at/below the head and finish the very first press.
 const int kStepTailFinishWindowMs = 2000;
+
+/// Floor for the EXACT-seek window (ms) — see [stepNeedsExactSeek].
+///
+/// 10 s is the default x264/ffmpeg keyframe interval (`keyint=250`; at 25 fps
+/// that is one GOP of 10 s), i.e. the largest "final GOP" an ordinary encode
+/// puts between the last key frame and the container duration. Inside that
+/// window a relative keyframe seek cannot land where it asked.
+const int kStepTailExactWindowMs = 10000;
 
 /// What a step press must do once the tail policy has been applied.
 enum StepTailAction {
@@ -140,21 +199,30 @@ enum StepTailAction {
   /// except the tail ([stepSeekArgs] / [fvpStepUsesKeyframeSeek]).
   step,
 
-  /// Finish this item: keep stepping FORWARD (the ordinary relative keyframe
-  /// seek, exactly like any other press) and let the engine reach EOF, with
-  /// mpv's collapse rule as the backstop ([MpvSeekTailState]): the first press
-  /// arms the media, later presses are swallowed so a held key cannot keep
-  /// deferring `handle_eof` (`player/playloop.c:1247-1250`), and if the engine
-  /// has not raised `completed` within [kMpvSeekEofWindow] the press is
-  /// collapsed to EOF and the queue advances.
+  /// The target is still INSIDE the media but lies in the final GOP, where a
+  /// keyframe seek cannot land (the demuxer answers with the last key frame —
+  /// the visible rollback). The press therefore takes the EXACT path instead
+  /// (`hr-seek=yes` on media_kit, `seekTo` on fvp) and stays a step: the item
+  /// is not finished yet.
+  exactStep,
+
+  /// Finish this item NOW: the caller advances the queue without seeking.
+  ///
+  /// mpv reaches the same outcome through its playlist: a past-EOF seek ends
+  /// the entry (`handle_eof` / `playloop.c:1247-1250`) and the next playlist
+  /// entry is loaded in the same instance. media_kit always has a single-entry
+  /// playlist and `--keep-open=yes` only holds the LAST entry
+  /// (`DOCS/man/options.rst`), so EOF there only pauses and the host owns the
+  /// advance. Sending a past-EOF seek first is what used to park the picture on
+  /// the last key frame and delay the queue by an invented EOF window.
   ///
   /// Only while PLAYING — a paused tail press is [hold].
   finishItem,
 
   /// Swallow the press (「暂停时保留」). While PAUSED the item must not advance,
-  /// and the step itself cannot land either: the keyframe seek has no key frame
-  /// after the target inside the final GOP, so it would only roll the picture
-  /// back to that GOP's key frame and leave a bogus backward progress write.
+  /// and a keyframe step cannot land either: it would only roll the picture
+  /// back to the final GOP's key frame and leave a bogus backward progress
+  /// write.
   hold,
 }
 
@@ -168,11 +236,9 @@ enum StepTailAction {
 /// `completed`, so the queue never advanced.
 ///
 /// This predicate only says WHEN the tail is reached; the action it maps to is
-/// [StepTailAction.finishItem], which is mpv's own tail handling (the ordinary
-/// relative seek plus the playloop's EOF collapse, see [MpvSeekTailState]) —
-/// NOT an absolute `seek <duration>`. That distinction is what fixes a held key:
-/// the old per-repeat absolute seek kept `handle_eof()` deferring, so the
-/// picture parked at the tail until the key was released.
+/// [StepTailAction.finishItem] — the caller advances the queue WITHOUT seeking.
+/// Sending a seek first is what used to park the picture on the last key frame
+/// and delay the advance by a made-up EOF window.
 ///
 /// [StepTailFinishMode.strict] (default) finishes a target that REACHES the
 /// end (`anchor + delta >= duration`); [StepTailFinishMode.window] also
@@ -210,14 +276,92 @@ bool stepFinishesItem({
   }
 }
 
-/// The full tail-step policy for one press: step / finish / hold.
+/// The exact-seek window (ms) for a media of [durationMs] at [deltaMs].
 ///
-/// [playing] splits the two tail outcomes: while playing the item is finished
-/// through the mpv-parity path — the ordinary relative keyframe seek, later
-/// presses swallowed, and an EOF collapse when the engine does not report the
-/// end within [kMpvSeekEofWindow] (see [MpvSeekTailState]); while paused the
-/// press is held — nothing advances and nothing is written, because a paused
-/// tail seek can only roll the picture back inside the final GOP.
+/// `max(|step|, kStepTailExactWindowMs)` capped at half the media: the floor
+/// covers the default encode's final GOP, one step covers "this press reaches
+/// the end", and the half-media cap keeps a short clip steppable from its head
+/// (the same reason [stepFinishesItem] caps its own window).
+int stepTailExactWindowMs({required int durationMs, required int deltaMs}) {
+  if (durationMs <= 0) return 0;
+  final int step = deltaMs < 0 ? -deltaMs : deltaMs;
+  final int floor = step > kStepTailExactWindowMs ? step : kStepTailExactWindowMs;
+  return floor * 2 > durationMs ? durationMs ~/ 2 : floor;
+}
+
+/// Whether a STEP seek must take the EXACT path because its target lies inside
+/// the media's final GOP.
+///
+/// A relative keyframe seek can only land on a key frame. The LAST key frame
+/// usually sits a whole GOP before the container duration, and a forward target
+/// past it makes the engine answer with that last key frame — the visible
+/// "step at the tail rolls the picture back", which is also why a strict
+/// `target >= duration` predicate can never be satisfied after such a landing:
+/// every further press re-anchors on the rolled-back position and lands there
+/// again.
+///
+/// mpv documents the same limitation (`etc/input.conf`: "Seek units are in
+/// seconds, but note that these are limited by keyframes") and only steps
+/// exactly through an explicit `exact` flag. IRIS applies it automatically
+/// inside the tail window so a press lands where it asked; outside the window
+/// the ordinary native keyframe step is untouched.
+///
+/// Direction-agnostic on purpose: the fvp backend already judged backward
+/// steps by distance, and an exact landing is never wrong there — only
+/// slightly slower. [decideStepTail] asks for it on forward presses only.
+bool stepNeedsExactSeek({
+  required int targetMs,
+  required int durationMs,
+  required int deltaMs,
+}) {
+  if (durationMs <= 0 || deltaMs == 0) return false;
+  final int window =
+      stepTailExactWindowMs(durationMs: durationMs, deltaMs: deltaMs);
+  return targetMs >= durationMs - window;
+}
+
+/// Whether a media the tail step already finished has left its tail again, so
+/// a later press may finish it a second time (repeat-one looped back to the
+/// head, a scrub/jump dialog moved away, a Virtual-Media segment loop).
+///
+/// The finish is dispatched asynchronously and the hook keeps the SAME media
+/// until the queue actually rebinds it, so a second press in that window used
+/// to dispatch a SECOND finish. Field log: `finish now` twice for the same file
+/// and the queue advanced twice (one episode skipped). The gate therefore holds
+/// a per-media latch (`dropped (tail finished)`); this predicate releases it as
+/// soon as the picture demonstrably sits outside the tail window again.
+///
+/// The window is the SHARED exact-seek window ([stepTailExactWindowMs]), i.e.
+/// capped at half the media — a fixed 10 s made `duration - 10 s` negative for
+/// a clip shorter than that, so `reportedMs < negative` was never true and a
+/// finished 6 s clip could never be stepped or rewound again (the latch also
+/// kept `gateStepPress` dropping every press).
+///
+/// An unknown duration keeps the latch: without a length there is no way to
+/// tell "still at the tail", so the conservative answer is to leave it alone.
+bool stepTailLatchReusable({
+  required int reportedMs,
+  required int durationMs,
+}) {
+  if (durationMs <= 0) return false;
+  final int window = stepTailExactWindowMs(durationMs: durationMs, deltaMs: 0);
+  return reportedMs < durationMs - window;
+}
+
+/// The full tail-step policy for one press: step / exact step / finish / hold.
+///
+/// The finish predicate ([stepFinishesItem]) is unchanged; the exact-seek
+/// window is layered on top for presses that stay inside the media but cannot
+/// be reached through a keyframe seek ([stepNeedsExactSeek]).
+///
+/// [playing] splits the two end-of-item outcomes: while playing the queue
+/// advances immediately (`finishItem`); while paused the press is held —
+/// nothing advances and nothing is written.
+///
+/// The finish predicate is tested FIRST, so "paused is held" only covers presses
+/// that reach the end. A paused press that stays inside the media but lands in
+/// the final-GOP window still returns [StepTailAction.exactStep] and really
+/// seeks (see [stepNeedsExactSeek]) — the two windows overlap, the order decides.
 StepTailAction decideStepTail({
   required int reportedMs,
   required int deltaMs,
@@ -225,117 +369,30 @@ StepTailAction decideStepTail({
   required StepTailFinishMode mode,
   required bool playing,
 }) {
-  if (!stepFinishesItem(
+  if (stepFinishesItem(
     reportedMs: reportedMs,
     deltaMs: deltaMs,
     durationMs: durationMs,
     mode: mode,
   )) {
-    return StepTailAction.step;
+    return playing ? StepTailAction.finishItem : StepTailAction.hold;
   }
-  return playing ? StepTailAction.finishItem : StepTailAction.hold;
+  if (durationMs > 0 && deltaMs > 0) {
+    final int anchor = reportedMs.clamp(0, durationMs);
+    if (stepNeedsExactSeek(
+      targetMs: anchor + deltaMs,
+      durationMs: durationMs,
+      deltaMs: deltaMs,
+    )) {
+      return StepTailAction.exactStep;
+    }
+  }
+  return StepTailAction.step;
 }
-
 
 /// Idle window that ends a rapid step burst (a press arriving inside it keeps
 /// the burst — and the [StepIntent] accumulation — alive).
 const Duration kStepBurstWindow = Duration(milliseconds: 400);
-
-/// How long a tail step waits for the engine to prove that EOF happened.
-///
-/// mpv's own window for one seek is `MPSEEK_FLAG_DELAY`'s 0.3 s
-/// (`player/playloop.c:521-525`: "If the user seeks continuously (keeps arrow
-/// key down) try to finish showing a frame from one location before doing
-/// another seek"), and its EOF verdict after a seek past the end arrives on
-/// the playback restart, i.e. within the same window. IRIS therefore gives the
-/// engine exactly that long before applying the playloop's own collapse rule
-/// ([MpvSeekTailState] / `playloop.c:1240-1243`).
-const Duration kMpvSeekEofWindow = Duration(milliseconds: 300);
-
-/// mpv-parity state for ONE media whose step has reached the tail.
-///
-/// IRIS used to turn a tail press into an absolute `seek <duration>` on EVERY
-/// repeat. mpv never does that — `→` is `seek 5 relative+keyframes`
-/// (`etc/input.conf:47`) and the raw target past the end is forwarded as-is —
-/// and it is exactly this per-press absolute seek that broke the tail:
-///
-///  * `handle_eof()` returns while a seek is queued (`playloop.c:1247-1250`,
-///    "if (mpctx->seek.type) return; // for proper keep-open operation"), so a
-///    new seek on every repeat pushes EOF away forever;
-///  * an in-flight A/V hr-seek past EOF must not be overwritten
-///    (`playloop.c:530-535`: "we want it to determine that EOF actually
-///    happened, instead of overwriting it with the new seek");
-///  * continuous forward relative seeks that leave the streams at EOF are
-///    dropped instead of repeated (`playloop.c:1240-1243`, "Continuous seeks
-///    past EOF => treat as EOF instead of repeating seek").
-///
-/// This class is the Dart side of that state machine: the FIRST tail press
-/// issues the ordinary relative keyframe seek and arms the media; every
-/// further press is swallowed instead of queueing another seek (mpv drops the
-/// queued one); and if the engine has not raised `completed` within
-/// [kMpvSeekEofWindow] the caller collapses the press to EOF — the playloop's
-/// own verdict, applied by IRIS because it owns the queue advance.
-///
-/// Clock-free: the caller owns the timer, so the semantics are unit-testable.
-class MpvSeekTailState {
-  int? _endMs;
-  String? _mediaUri;
-  bool _collapsed = false;
-
-  /// Whether a tail press already owns this media's finish.
-  bool get armed => _endMs != null;
-
-  /// The media end the state is armed for, or null.
-  int? get endMs => _endMs;
-
-  /// The media the arm belongs to, or null.
-  String? get armedUri => _mediaUri;
-
-  /// Registers a tail press for [endMs] of [mediaUri].
-  ///
-  /// Returns true for the FIRST press of this media (the caller must issue the
-  /// relative seek and arm the EOF window) and false for every later press
-  /// (swallow it: mpv drops the queued seek instead of repeating it, whatever
-  /// its target — `player/playloop.c:1240-1243`).
-  ///
-  /// The media identity is part of the arm because a finish MUST NOT survive
-  /// the queue advance it triggers: mpv clears the queued seek inside
-  /// `play_current_file` (`player/loadfile.c:1825-1826`), while IRIS's advance
-  /// is async, so a press landing in that window used to re-arm with the
-  /// PREVIOUS duration and collapse the entry that had just been opened
-  /// (`.ai_knowledge/tmp/seeK/seekaftempvlog.txt`: first Evelyn's tail arm
-  /// advanced to the next entry, then the same window's re-arm collapsed that
-  /// entry before it ever played).
-  bool armFirstPress(String mediaUri, int endMs) {
-    if (_endMs != null) return false;
-    _mediaUri = mediaUri;
-    _endMs = endMs;
-    _collapsed = false;
-    return true;
-  }
-
-  /// Takes the one-shot EOF collapse for [mediaUri].
-  ///
-  /// Returns true at most once per armed media; false when nothing is armed,
-  /// the collapse already ran (a second advance must never happen), or the arm
-  /// belongs to a DIFFERENT media (the press that armed it was overtaken by the
-  /// queue advance — mpv's `seek = {0}` equivalent).
-  bool consumeCollapse({required String mediaUri}) {
-    if (_endMs == null || _collapsed) return false;
-    if (_mediaUri != mediaUri) return false;
-    _collapsed = true;
-    return true;
-  }
-
-  /// Drops the arm: media change, a seek away from the tail, a rewind, or a
-  /// `completed` that already finished the item (repeat-one loops keep the
-  /// same media, so the next press must be able to arm again).
-  void reset() {
-    _endMs = null;
-    _mediaUri = null;
-    _collapsed = false;
-  }
-}
 
 /// mpv input arguments for ONE native RELATIVE keyframe step seek.
 ///
@@ -387,14 +444,13 @@ class TrailingCoalescer<T> {
   }
 }
 
-/// Engine-anchored target position (ms) for one step press.
+/// Target position (ms) for one step press, anchored on the caller's base.
 ///
-/// The media_kit backend accumulates the presses itself ([stepSeekArgs]), so
-/// the Dart side tracks only the nominal next land point for the OSD and the
-/// progress write — anchored on the engine's last reported position instead of
-/// a long-lived accumulator. That is what bounds the OSD / persisted value to a
-/// single press even during a held burst, instead of drifting tens of seconds
-/// behind the picture.
+/// [reportedMs] is that base: the live position for a lone press, or the
+/// [StepIntent] target while a burst is in flight. The media_kit backend lets
+/// mpv accumulate the relative deltas itself ([stepSeekArgs]), so this is the
+/// nominal landing the OSD may show — the engine's landing is still the
+/// keyframe it can decode.
 ///
 /// The anchor is clamped into [0, durationMs] FIRST, exactly like
 /// [stepSeekSentDelta]: the reported position can sit outside the media (a
@@ -420,12 +476,11 @@ int stepSeekTargetMs({
 /// (`player/playloop.c`, `MPSEEK_RELATIVE`), so the press keeps its nominal
 /// landing and the engine decides what it can decode.
 ///
-/// The tail press uses this same raw delta. A target that reaches the end is
-/// first classified by [decideStepTail] (finish the item while playing / hold
-/// the press while paused), but the seek it issues is still the ordinary
-/// relative one — mpv forwards the past-the-end target too and only then
-/// decides, on the playback restart, that EOF happened
-/// (`player/playloop.c:530-535`, `1240-1243`; see [MpvSeekTailState]).
+/// Only an ordinary [StepTailAction.step] press reaches this helper: a target
+/// that reaches the end is finished by [decideStepTail] without a seek, and a
+/// target inside the final GOP takes the [StepTailAction.exactStep] path. The
+/// raw delta is kept here for the mpv-parity case, where the engine owns the
+/// landing.
 ///
 /// Clamping here instead would pin the target to `duration - 1` — the rollback
 /// one GOP earlier, and it can never raise `completed`.
@@ -455,7 +510,7 @@ int stepSeekSentDelta({
 /// (`item.locate`). The segment's virtual offset therefore has to be added
 /// back. Passing the local ms straight through — as the fvp tail path did —
 /// re-reads e.g. `5 500 ms` of the third segment as `5 500 ms` of the merged
-/// item, so the press teleports into an early segment and the armed EOF window
+/// item, so the press teleports into an early segment and the pending finish
 /// is dropped by the resulting media change (the item never finishes).
 ///
 /// Accountancy lives here so the coordinate contract is unit-testable without

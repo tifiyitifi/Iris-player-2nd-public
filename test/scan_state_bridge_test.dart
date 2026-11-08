@@ -4,32 +4,41 @@ import 'package:iris/features/meta_settings/bridge/scan_state_bridge.dart';
 
 void main() {
   group('ScanStateBridge', () {
-    test('encode → apply roundtrips the preference', () {
-      const state = RecursiveScanState(autoCloseDelay: 7.5);
+    test('encode → apply roundtrips both preferences', () {
+      const state = RecursiveScanState(
+        autoCloseDelay: 7.5,
+        autoClosePrompt: false,
+      );
       final restored = ScanStateBridge.apply(
-        ScanStateBridge.encodeRow(state),
-        const RecursiveScanState(), // default 2.5
+        ScanStateBridge.encodeRows(state),
+        const RecursiveScanState(), // defaults 2.5 / true
       );
       expect(restored.autoCloseDelay, 7.5);
+      expect(restored.autoClosePrompt, isFalse);
     });
 
-    test('missing row keeps base value', () {
+    test('missing rows keep base values', () {
       final restored = ScanStateBridge.apply({}, const RecursiveScanState());
       expect(restored.autoCloseDelay, 2.5);
+      expect(restored.autoClosePrompt, isTrue);
     });
 
-    test('malformed row is contained, never throws', () {
+    test('malformed rows are contained, never throw', () {
       final restored = ScanStateBridge.apply(
-        {ScanStateBridge.key: '{broken'},
+        {
+          ScanStateBridge.key: '{broken',
+          ScanStateBridge.promptKey: 'not-a-bool',
+        },
         const RecursiveScanState(),
       );
       expect(restored.autoCloseDelay, 2.5);
+      expect(restored.autoClosePrompt, isTrue);
     });
 
-    test('only the preference is representable — runtime fields never leak',
-        () {
+    test('only preferences are representable — runtime fields never leak', () {
       final noisy = const RecursiveScanState(
         autoCloseDelay: 4.0,
+        autoClosePrompt: false,
         phase: ScanPhase.scanning,
         storageId: 's1',
         depthPaths: {0: ['C:/x']},
@@ -40,8 +49,10 @@ void main() {
         error: null,
         paused: true,
       );
-      expect(ScanStateBridge.encodeRow(noisy).keys.single,
-          ScanStateBridge.key);
+      expect(
+        ScanStateBridge.encodeRows(noisy).keys.toSet(),
+        {ScanStateBridge.key, ScanStateBridge.promptKey},
+      );
     });
   });
 }

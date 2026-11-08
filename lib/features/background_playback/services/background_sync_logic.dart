@@ -72,13 +72,16 @@ bool mirrorSourceIsBackground({
 /// stopRestoreFg state must not move either runtime. The exhausted case is the
 /// subtle one: its terminal pause is NOT a transport disagreement, so the
 /// transport mirror must not read it as "the follower should be playing" and
-/// resume (and replay) the dead run.
+/// resume (and replay) the dead run. [queueEnded] (`Repeat.none` ran off the
+/// list's end) is the same situation for a different reason: the pause is
+/// final until the queue moves.
 bool bgMirrorStandsDown({
   required bool enabled,
   required bool gateOpen,
   required bool exhausted,
+  bool queueEnded = false,
 }) =>
-    !enabled || !gateOpen || exhausted;
+    !enabled || !gateOpen || exhausted || queueEnded;
 
 /// Whether play/pause and stop are shared (`linked`, at either level).
 ///

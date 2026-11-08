@@ -17,9 +17,33 @@ import 'package:iris/features/virtual_media/vm_gate.dart';
 abstract final class VmPrefs {
   static const _prefix = 'virtualmedia.';
   static const _pathInputKey = '${_prefix}pathViaInput';
+  static const _masterEnabledKey = '${_prefix}masterEnabled';
 
   static bool get _available =>
       VirtualMediaGate.enabled && MetaSettingsModule.ready;
+
+  /// Global merge master switch. Missing row = ON (fresh installs and older
+  /// builds keep merging until the user explicitly pauses it); `'0'` = OFF.
+  ///
+  /// Individual rules keep their own `enabled` bits — pausing the master
+  /// switch only suspends resolution, never mutates the rules.
+  static Future<bool> masterEnabled() async {
+    if (!_available) return true;
+    try {
+      final rows = await MetaSettingsModule.repo.loadRawValues();
+      return rows[_masterEnabledKey] != '0';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> setMasterEnabled(bool value) async {
+    if (!_available) return;
+    try {
+      await MetaSettingsModule.persistAuxRow(
+          _masterEnabledKey, value ? '1' : '0');
+    } catch (_) {}
+  }
 
   /// Editor toggle: add specified-directory paths by pasting text (true)
   /// instead of opening the system picker (false). Persisted across

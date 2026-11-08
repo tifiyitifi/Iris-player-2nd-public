@@ -66,12 +66,14 @@ VmSessionStartPlan? planVmSessionStart({
   String? targetMediaKey,
   int? targetOccurrenceIndex,
   bool preferRecency = false,
+  Set<String> excludedMediaKeys = const <String>{},
 }) {
   if (rules.isEmpty || stream.isEmpty) return null;
   return planVmSessionStartFromGroups(
     storageId: storageId,
     path: path,
-    groups: resolveGroupsForStream(stream, rules),
+    groups: resolveGroupsForStream(stream, rules,
+        excludedMediaKeys: excludedMediaKeys),
     progressByKey: progressByKey,
     targetMediaKey: targetMediaKey,
     targetOccurrenceIndex: targetOccurrenceIndex,

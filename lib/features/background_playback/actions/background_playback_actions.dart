@@ -8,6 +8,7 @@ import 'package:iris/features/background_playback/model/enum/bg_reactivate_mode.
 import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/store/warning_dialogs.dart';
@@ -153,6 +154,20 @@ abstract final class BackgroundPlaybackActions {
     // scope observer would disagree on every VM block switch.
     final anchor =
         scope == BgApplyScope.all ? null : currentScopeKey();
+    // 简播: the media on screen owns a fake timeline, so 副音 cannot sound
+    // against it right now — whatever the scope. Refusing here (rather than
+    // silently starting a track that the scope observer would pause on the next
+    // rebuild) keeps the press honest; every other media is unaffected.
+    if (fakeCutBlocksBackgroundNow(anchor ?? currentScopeKey())) {
+      final t = getLocalizations(context);
+      await showMessageDialog(
+        navigator,
+        title: t.menu_background_playback,
+        message: t.bg_blocked_by_fake_cut_body,
+        type: MessageDialogType.info,
+      );
+      return;
+    }
     if (store.state.enabled) {
       // Already running: the scope switch only re-anchors the run — EXCEPT
       // when it (re-)applies to the CURRENT foreground ("对当前视频使用副音"):
@@ -247,6 +262,18 @@ abstract final class BackgroundPlaybackActions {
       );
       return;
     }
+    // 简播: the cut owns the timeline, so there is nothing to open 副音 onto for
+    // THIS media. The run stays exactly as it is (paused by the scope observer)
+    // and resumes on its own once the foreground leaves the cut.
+    if (fakeCutBlocksBackgroundNow(fgKey)) {
+      await showMessageDialog(
+        navigator,
+        title: t.menu_background_playback,
+        message: t.bg_blocked_by_fake_cut_body,
+        type: MessageDialogType.info,
+      );
+      return;
+    }
     // Capture the live transport BEFORE any async gap: the gate seeds
     // bgAutoPlay from it, and a context read after an await is forbidden (the
     // transport mirror reconciles any change during the resolve).
@@ -254,8 +281,18 @@ abstract final class BackgroundPlaybackActions {
     // Activated FOR THIS MEDIA → explicit deactivation (the same intent as the
     // bg stop button), even when bg is user-paused: a pause never cancels the
     // activation, so a second press always means "turn it off".
-    if (store.state.enabled &&
-        store.state.gateOpen &&
+    //
+    // The SAME two conditions the quick bar renders its glyph from, so the icon
+    // and the press can never disagree: the stored pair state
+    // ([BackgroundPlaybackState.bgPairInEffect] — nothing was handed back) AND the
+    // pure 作用范围 verdict for the media on screen (`resolveApplyToCurrent`,
+    // which unlike the observer's cached `bgOutOfScope` is right on the first
+    // frame of a media switch). A run that has been handed back — exhausted after
+    // 副音播完, walked off the end of its queue, or outside the scope under 智能 /
+    // 仅当前 — is NOT active here: the press goes on to ACTIVATE for this media
+    // (openGate clears those latches and re-anchors) instead of latching the whole
+    // run shut.
+    if (store.state.bgPairInEffect &&
         resolveApplyToCurrent(
           enabled: store.state.enabled,
           applyScope: store.state.applyScope,
@@ -343,14 +380,22 @@ abstract final class BackgroundPlaybackActions {
   /// force-resuming the pair.
   static Future<void> startForSavedMapping({bool autoplay = true}) async {
     if (!BackgroundPlaybackGate.enabled) return;
+    // 简播: a cut media has no 副音 pairing to honor (the observer already
+    // pauses instead of reaching `startBg`, this is the belt-and-braces path).
+    if (fakeCutBlocksBackgroundNow(currentScopeKey())) return;
     final store = useBackgroundPlaybackStore();
     // An explicit gate stop must never be undone by a saved-pairing auto-start.
     if (!store.state.gateOpen) return;
     if (store.state.enabled) {
       // Already running: re-anchor to the media that owns the saved mapping and
-      // restart its alignment. Without this the smart scope's [startBg] landed
-      // here and returned, so "已保存副音自动播放" never actually switched 副音.
-      store.applyToCurrent(currentScopeKey(), autoplay: autoplay);
+      // restart its ALIGNMENT. The 副音 QUEUE position is kept: the two runtimes
+      // are two independent normal players, so an automatic re-pairing must not
+      // rewind the track the user was already hearing.
+      store.applyToCurrent(
+        currentScopeKey(),
+        autoplay: autoplay,
+        keepQueueProgress: true,
+      );
       return;
     }
     final window = await resolveCandidates();
@@ -399,6 +444,18 @@ abstract final class BackgroundPlaybackActions {
     }
     final store = useBackgroundPlaybackStore();
     if (store.state.enabled) return; // already running — panel is visible
+    // 简播: no 副音 for a cut. The panel is still reachable (the menu entry is
+    // greyed, but a keyboard/menu path may land here) — say why.
+    if (fakeCutBlocksBackgroundNow(currentScopeKey())) {
+      final t = getLocalizations(context);
+      await showMessageDialog(
+        navigator,
+        title: t.menu_background_playback,
+        message: t.bg_blocked_by_fake_cut_body,
+        type: MessageDialogType.info,
+      );
+      return;
+    }
     await _startFromCandidates(navigator, replace: false);
   }
 
@@ -444,6 +501,16 @@ abstract final class BackgroundPlaybackActions {
   }) async {
     // Localize BEFORE any await (dialog survives async gaps).
     final t = getLocalizations(navigator.context);
+    // 简播: refreshing the candidate list must not restart 副音 against a cut.
+    if (fakeCutBlocksBackgroundNow(currentScopeKey())) {
+      await showMessageDialog(
+        navigator,
+        title: t.menu_background_playback,
+        message: t.bg_blocked_by_fake_cut_body,
+        type: MessageDialogType.info,
+      );
+      return;
+    }
     final window = await resolveCandidates();
     if (window == null) {
       await showMessageDialog(

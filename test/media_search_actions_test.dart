@@ -649,6 +649,181 @@ void main() {
     });
   });
 
+  group('explicit items resolve against the DB (dropped files)', () {
+    /// Seeds a file row with explicit metadata so the assertions can prove the
+    /// row's data came from the node, not from a synthetic placeholder.
+    Future<void> seedVideo(
+      String storageId,
+      String p, {
+      int? durationMs,
+      int? sizeInBytes,
+    }) async {
+      await DbModule.mediaNodesDao.deleteNode(storageId, p);
+      final segments = p.split('/');
+      await DbModule.mediaNodesDao.insertNode(MediaNode.file(
+        id: 'f:$storageId:$p',
+        storageId: storageId,
+        path: segments,
+        name: segments.last,
+        mediaType: MediaType.video,
+        durationMs: durationMs,
+        sizeInBytes: sizeInBytes,
+      ));
+    }
+
+    MediaSearchDataSource dataSourceWithExplicit({
+      String? scenarioId,
+      List<SearchSource> sources = const [],
+      List<SearchExplicitItem> explicit = const [],
+    }) {
+      return MediaSearchDataSource(
+        searchContext: SearchContext(
+          entryContext: SearchEntryContext.scenarioSourcesRoot,
+          scenarioId: scenarioId,
+          sources: sources,
+          explicitItems: explicit,
+        ),
+      );
+    }
+
+    test('an explicit item present in the DB is available and carries the '
+        'node metadata even when no source covers it', () async {
+      await seedVideo('s', 'drop/meta.mp4', durationMs: 42000, sizeInBytes: 900);
+      final ds = dataSourceWithExplicit(
+        scenarioId: 'sc-meta',
+        explicit: const [
+          SearchExplicitItem(storageId: 's', path: 'drop/meta.mp4'),
+        ],
+      );
+
+      await ds.submitQuery('meta');
+
+      expect(ds.items, hasLength(1));
+      final row = ds.items.single;
+      expect(row.origin, SearchResultOrigin.explicitItem);
+      expect(row.available, isTrue);
+      expect(row.mediaType, MediaType.video);
+      expect(row.durationMs, 42000);
+      expect(row.sizeInBytes, 900);
+      ds.dispose();
+    });
+
+    test('an explicit item really absent from the DB stays unavailable and '
+        'synthetic', () async {
+      final ds = dataSourceWithExplicit(
+        scenarioId: 'sc-ghost',
+        explicit: const [
+          SearchExplicitItem(storageId: 's', path: 'drop/ghost.mp4'),
+        ],
+      );
+
+      await ds.submitQuery('ghost');
+
+      expect(ds.items, hasLength(1));
+      final row = ds.items.single;
+      expect(row.origin, SearchResultOrigin.explicitItem);
+      expect(row.available, isFalse);
+      expect(row.mediaType, MediaType.unknown);
+      ds.dispose();
+    });
+
+    test('an in-scope explicit item already returned by the DB segment is not '
+        'duplicated', () async {
+      await seedVideo('s', 'dupdir/dup.mp4');
+      final ds = dataSourceWithExplicit(
+        scenarioId: 'sc-dup',
+        sources: const [
+          SearchSource(
+            storageId: 's',
+            path: 'dupdir',
+            kind: MediaSourceKind.directory,
+            recursive: true,
+          ),
+        ],
+        explicit: const [
+          SearchExplicitItem(storageId: 's', path: 'dupdir/dup.mp4'),
+        ],
+      );
+
+      await ds.submitQuery('dup');
+
+      expect(ds.items, hasLength(1));
+      expect(ds.items.single.origin, SearchResultOrigin.dbSource);
+      ds.dispose();
+    });
+
+    testWidgets('A (system playing): tapping a dropped explicit item that is '
+        'in the DB plays it instead of reporting "not in the media database"',
+        (tester) async {
+      final store = usePlaybackScenarioStore();
+      final sys = await store.ensureSystemPlayingScenario();
+      await store.clearSources(sys.id);
+      await store.clearExplicitItems(sys.id);
+      await seedVideo('s', 'drop/playable.mp4');
+      await store.addExplicitItemFor(
+        scenarioId: sys.id,
+        storageId: 's',
+        path: 'drop/playable.mp4',
+      );
+      useMediaLibBrowserStore().openSearch();
+      final ds = dataSourceWithExplicit(
+        scenarioId: sys.id,
+        explicit: const [
+          SearchExplicitItem(storageId: 's', path: 'drop/playable.mp4'),
+        ],
+      );
+
+      const dropped = SearchResultItem(
+        storageId: 's',
+        path: 'drop/playable.mp4',
+        name: 'playable.mp4',
+        mediaType: MediaType.video,
+        origin: SearchResultOrigin.explicitItem,
+      );
+
+      await tapItem(tester, ds, dropped);
+      await pumpUntil(
+        tester,
+        () async => useSearchBrowserStore().parkedSearchSession == ds,
+        'explicit tap did not play + park',
+      );
+      expect(find.textContaining('不在媒体数据库'), findsNothing);
+      ds.dispose();
+    });
+
+    testWidgets('A (system playing): an explicit item really absent from the '
+        'DB reports the localized not-in-db reason', (tester) async {
+      final store = usePlaybackScenarioStore();
+      final sys = await store.ensureSystemPlayingScenario();
+      await store.clearSources(sys.id);
+      await store.clearExplicitItems(sys.id);
+      useMediaLibBrowserStore().openSearch();
+      final ds = dataSourceWithExplicit(
+        scenarioId: sys.id,
+        explicit: const [
+          SearchExplicitItem(storageId: 's', path: 'drop/ghost2.mp4'),
+        ],
+      );
+
+      const ghost = SearchResultItem(
+        storageId: 's',
+        path: 'drop/ghost2.mp4',
+        name: 'ghost2.mp4',
+        origin: SearchResultOrigin.explicitItem,
+        available: false,
+      );
+
+      await tapItem(tester, ds, ghost);
+      await pumpUntil(
+        tester,
+        () async => tester.any(find.text('播放出错')),
+        'explicit tap did not surface the error dialog',
+      );
+      expect(find.textContaining('该文件不在媒体数据库中'), findsOneWidget);
+      ds.dispose();
+    });
+  });
+
   group('tap per context (v15-D2)', () {
     testWidgets('C (media library): tap plays the parent dir directly, no '
         'dialog, and parks + closes the popup when unpinned', (tester) async {
@@ -668,7 +843,7 @@ void main() {
       expect(useSearchBrowserStore().parkedSearchSession, same(ds));
       expect(useMediaLibBrowserStore().state.openMode, BrowserOpenMode.search);
       // No play-options dialog on click in context C.
-      expect(find.text('Play scenario'), findsNothing);
+      expect(find.text('播放场景'), findsNothing);
       await tester.pump(const Duration(milliseconds: 300)); // popup exit
       expect(find.text('tap item'), findsNothing);
       ds.dispose();
@@ -707,11 +882,11 @@ void main() {
 
       await tapItem(tester, ds, item);
       await tester.pump(const Duration(milliseconds: 300)); // dialog entrance
-      expect(find.text('Play this media only'), findsOneWidget);
-      expect(find.text('Play its folder'), findsOneWidget);
-      expect(find.text('Play scenario'), findsOneWidget);
+      expect(find.text('仅播放该媒体'), findsOneWidget);
+      expect(find.text('播放其文件夹'), findsOneWidget);
+      expect(find.text('播放场景'), findsOneWidget);
       // No results yet → "Play search result" hidden.
-      expect(find.text('Play search result'), findsNothing);
+      expect(find.text('播放搜索结果'), findsNothing);
       ds.dispose();
     });
 
@@ -723,7 +898,7 @@ void main() {
 
       await tapItem(tester, ds, item);
       await tester.pump(const Duration(milliseconds: 300)); // dialog entrance
-      expect(find.text('Play search result'), findsOneWidget);
+      expect(find.text('播放搜索结果'), findsOneWidget);
       ds.dispose();
     });
 
@@ -734,7 +909,7 @@ void main() {
 
       await tapItem(tester, ds, item);
       await tester.pump(const Duration(milliseconds: 300)); // dialog entrance
-      await tester.tap(find.text('Play scenario'));
+      await tester.tap(find.text('播放场景'));
       await pumpUntil(
         tester,
         () async => tester.any(find.text('播放出错')),
@@ -764,7 +939,7 @@ void main() {
         'A tap did not surface the error dialog',
       );
       // The uniform error dialog, NOT the play-options dialog.
-      expect(find.text('Play scenario'), findsNothing);
+      expect(find.text('播放场景'), findsNothing);
       expect(find.textContaining('不在当前播放队列中'), findsOneWidget);
       ds.dispose();
     });
@@ -787,7 +962,7 @@ void main() {
       );
       expect(useSearchBrowserStore().parkedSearchSession, same(ds));
       // No dialog on click in context A.
-      expect(find.text('Play scenario'), findsNothing);
+      expect(find.text('播放场景'), findsNothing);
       await tester.pump(const Duration(milliseconds: 300)); // popup exit
       expect(find.text('tap item'), findsNothing);
       ds.dispose();

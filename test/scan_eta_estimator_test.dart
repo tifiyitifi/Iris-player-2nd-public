@@ -75,6 +75,16 @@ void main() {
       expect(e.eta(120, 100), Duration.zero);
     });
 
+    test('an unknown total (never scanned) yields no estimate', () {
+      // 0 is "nobody knows the tree size", not "zero directories left":
+      // treating it as the latter made the overlay promise "0 s left" while the
+      // walk had just begun.
+      final e = ScanEtaEstimator(minSamples: 0);
+      e.sample(0, Duration.zero);
+      e.sample(50, const Duration(seconds: 10));
+      expect(e.eta(50, 0), isNull);
+    });
+
     test('reset clears the accumulated rate', () {
       final e = ScanEtaEstimator(minSamples: 0);
       e.sample(0, Duration.zero);

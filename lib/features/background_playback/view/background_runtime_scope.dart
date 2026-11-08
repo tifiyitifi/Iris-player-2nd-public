@@ -11,7 +11,6 @@ import 'package:iris/features/background_playback/engine/background_scope_logic.
 import 'package:iris/features/background_playback/hooks/use_foreground_scope_key.dart';
 import 'package:iris/features/background_playback/model/enum/bg_align_mode.dart';
 import 'package:iris/features/background_playback/model/enum/bg_apply_scope.dart';
-import 'package:iris/features/background_playback/model/enum/bg_cross_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_exhausted_action.dart';
 import 'package:iris/features/background_playback/model/enum/bg_quick_panel.dart';
 import 'package:iris/features/background_playback/services/background_alignment.dart';
@@ -25,6 +24,8 @@ import 'package:iris/features/background_playback/services/background_sync_logic
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/features/background_playback/view/bg_duration_probe_observer.dart';
 import 'package:iris/features/background_playback/view/bg_queue_sync_observer.dart';
+import 'package:iris/features/fake_cut/core/fake_cut_background_scope.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
@@ -74,11 +75,26 @@ class BackgroundRuntimeScope extends HookWidget {
     final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
     final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
     final gateOpen = bg.select(context, (s) => s.gateOpen);
+    // 简播: while the foreground plays a fake cut, 副音 stands down for THAT
+    // media only (see `fake_cut_background_scope.dart`). Selected here — not
+    // read inside the effects — so the observer rebuilds the moment the cut
+    // actually starts or stops. It is `playingKey`, not `activePaths`: a plan
+    // that is only REMEMBERED (or whose EDL never opened) must not suspend 副音.
+    final fakeCutPlayingKey = useFakeCutStore()
+        .select(context, (FakeCutStoreState s) => s.playingKey);
+    // A Virtual Media session owns its own timeline: its segments are fed as
+    // ordinary single files and never open an EDL (`use_media_kit_player`
+    // skips the cut while the controller is active), so a member that merely
+    // HAS a plan is not playing one.
+    final vmSessionActive = bg.select(context, (s) => s.vmSessionActive);
     // stopRestoreFg terminal state: 副音 is stopped for good and the foreground
     // plays un-ducked. Both mirrors must stand down — otherwise the transport
     // mirror reads the terminal pause as a transport disagreement and resumes
     // (and replays) the dead run.
     final bgExhausted = bg.select(context, (s) => s.bgExhausted);
+    // The queue ran off its end under Repeat.none: nothing left to sound, so
+    // both mirrors must stand down exactly like the terminal stopRestoreFg.
+    final bgQueueEnded = bg.select(context, (s) => s.bgQueueEnded);
     final bgExhaustedAction = bg.select(context, (s) => s.bgExhaustedAction);
     final seekLink = bg.select(context, (s) => s.seekLink);
     final lockLevel = bg.select(context, (s) => s.lockLevel);
@@ -136,6 +152,14 @@ class BackgroundRuntimeScope extends HookWidget {
     // by flutter_hooks); the effects only USE these values.
     final fgPlayer = context.read<MediaPlayer>();
     final fgPlaying = context.select<MediaPlayer, bool>((p) => p.isPlaying);
+    // A foreground OPEN is in flight. During it the new `fgKey` is already
+    // published while the previous media's cut flag has been cleared, so
+    // "the user left the cut" and "the next media is a cut too" look identical
+    // for a frame — resuming 副音 there made it blip through every cut→cut
+    // switch. The resume waits until the open settles; the cut flag is then
+    // real again (and a new cut keeps 副音 suspended).
+    final fgInitializing =
+        context.select<MediaPlayer, bool>((p) => p.isInitializing);
     // Scrub-drag ownership (single source: ScrubDragStore). While the user
     // holds a slider the foreground's pause/live seeks are GESTURE artifacts:
     // the mirror must not interpret them as user transport changes, nor let
@@ -204,9 +228,22 @@ class BackgroundRuntimeScope extends HookWidget {
     final bool hasSavedMapping = savedMapping.data ?? false;
 
     // ── 1. 作用范围: pause/resume/auto-start on a foreground media switch ──
+    //
+    // 简播 is part of the same decision: while the foreground plays a fake cut
+    // the pair is not a pair, so 副音 pauses for THAT media under every scope
+    // and resumes when the foreground leaves it. The suspension is remembered
+    // in the store, so only a run that was actually sounding comes back.
+    final bool fakeCutActive = vmSessionActive
+        ? false
+        : fakeCutBlocksBackground(fgKey, fakeCutPlayingKey);
     final startedForFg = useRef<String?>(null);
     useEffect(() {
-      switch (resolveBgScopeOnFgChange(
+      if (fakeCutActive) {
+        startedForFg.value = null;
+        bg.suspendForFakeCut();
+        return null;
+      }
+      final BgScopeAction action = resolveBgScopeOnFgChange(
         enabled: enabled,
         applyScope: applyScope,
         anchorKey: anchorKey,
@@ -214,7 +251,37 @@ class BackgroundRuntimeScope extends HookWidget {
         offMediaKeys: offMediaKeys,
         newFgHasSavedMapping: hasSavedMapping,
         gateOpen: gateOpen,
-      )) {
+        exhausted: bgExhausted,
+      );
+      // The ONE write of the session "pair inactive" flag (see
+      // BackgroundPlaybackState.bgOutOfScope). Keeping it here — instead of
+      // retargeting controlTarget at every call site — is what lets a return to
+      // the anchored media restore the user's routing preference, and what makes
+      // every derived reader (controls, picture, volume, title, menu, queue
+      // button, dock body) agree without repeating the scope rules.
+      final bool wasOutOfScope = bg.state.bgOutOfScope;
+      bg.setOutOfScope(action == BgScopeAction.pauseBg);
+      // Back from a cut: restore the transport it interrupted (and the routing
+      // it handed back), but only where the scope still applies to this media.
+      // 「智能」without a saved pairing pauses anyway, and a closed gate keeps
+      // its explicit stop.
+      if ((bg.state.bgSuspendedByFakeCut || bg.state.fakeCutHeldRouting) &&
+          (action == BgScopeAction.none || action == BgScopeAction.resumeBg) &&
+          !fgInitializing) {
+        bg.resumeAfterFakeCut(play: fgPlaying);
+      }
+      // Leaving the out-of-scope state by a route OTHER than `resumeBg` (the
+      // 作用范围 widened to 「全部」, or the media was re-applied) must restore the
+      // transport the scope pause took away — it used to stay paused until a
+      // manual play, which read as "换成全部后副音没声了". An exhausted run and a
+      // queue that ran off its end keep their stop.
+      if (action == BgScopeAction.none &&
+          wasOutOfScope &&
+          !bg.state.bgExhausted &&
+          !bg.state.bgQueueEnded) {
+        bg.resumeForScope(play: fgPlaying);
+      }
+      switch (action) {
         case BgScopeAction.pauseBg:
           startedForFg.value = null;
           bg.pauseForScope();
@@ -240,6 +307,9 @@ class BackgroundRuntimeScope extends HookWidget {
       offMediaKeys,
       hasSavedMapping,
       gateOpen,
+      fakeCutActive,
+      bgExhausted,
+      fgInitializing,
     ]);
 
     // ── 1b. 跨视频: a real LIST-ITEM switch may start a new 副音 track ──
@@ -252,17 +322,18 @@ class BackgroundRuntimeScope extends HookWidget {
     // the 仅当前 anchor or a smart media without a saved pairing) must never
     // also switch tracks — only a plain `none` (e.g. 全部) advances 副音.
     final bgItemSwitch = bg.select(context, (s) => s.bgItemSwitch);
-    final vmSessionActive = bg.select(context, (s) => s.vmSessionActive);
     final prevItemFgKey = useRef<String?>(null);
+    final prevCutActive = useRef(false);
+    // Direction of a list-item switch: a foreground step BACK must step 副音
+    // back too (it used to always advance, so 「上一集」 pushed 副音 forward).
+    // Read from the play queue index, with a last→head wrap counted forward.
+    final prevItemFgIndex = useRef<int>(-1);
     useEffect(() {
       final prev = prevItemFgKey.value;
+      final bool prevCut = prevCutActive.value;
       prevItemFgKey.value = fgKey;
-      if (!enabled || vmSessionActive) return null;
-      // Gate closed: an explicit stop must never be undone by a track switch.
-      if (!gateOpen) return null;
-      if (bgItemSwitch != BgCrossAction.newBg) return null;
-      if (prev == null || fgKey == null || prev == fgKey) return null;
-      final scopeAction = resolveBgScopeOnFgChange(
+      prevCutActive.value = fakeCutActive;
+      final BgScopeAction scopeAction = resolveBgScopeOnFgChange(
         enabled: enabled,
         applyScope: applyScope,
         anchorKey: anchorKey,
@@ -270,11 +341,46 @@ class BackgroundRuntimeScope extends HookWidget {
         offMediaKeys: offMediaKeys,
         newFgHasSavedMapping: hasSavedMapping,
         gateOpen: gateOpen,
+        exhausted: bgExhausted,
       );
-      if (scopeAction != BgScopeAction.none) return null;
+      if (!bgCrossStepAllowed(
+        enabled: enabled,
+        vmSessionActive: vmSessionActive,
+        gateOpen: gateOpen,
+        itemSwitch: bgItemSwitch,
+        fakeCutActive: fakeCutActive,
+        prevFakeCutActive: prevCut,
+        fgChanged: prev != null && fgKey != null && prev != fgKey,
+        scopeAction: scopeAction,
+      )) {
+        prevItemFgIndex.value = playIndex;
+        return null;
+      }
+      final int prevIdx = prevItemFgIndex.value;
+      prevItemFgIndex.value = playIndex;
+      // Direction: the queue's own stamp FIRST, ids as the fallback. The ids are
+      // sparse (`maxIndex + 1` on insert, holes after a removal), so the old
+      // `playQueue.length - 1` comparison missed `next()`'s last→head wrap; and
+      // they cannot resolve the wrap that matters in the other direction at all
+      // — 「上一集」 at the head and a tap on the last row both read as
+      // `first → last`. `next()` / `previous()` are the only places that know
+      // which one ran. A stamp that points somewhere else is a stale one (a jump
+      // moved the queue afterwards), so it is ignored and the ids decide.
+      final PlayQueueMove? move = usePlayQueueStore().lastMove;
+      final bool? stampedForward =
+          move != null && move.index == playIndex ? move.forward : null;
+      final bool forward = playQueue.isEmpty
+          ? true
+          : isForwardQueueMove(
+              previousIndex: prevIdx < 0 ? null : prevIdx,
+              currentIndex: playIndex,
+              firstIndex: playQueue.first.index,
+              lastIndex: playQueue.last.index,
+              moveWasForward: stampedForward,
+            );
       unawaited(
         useBackgroundPlaybackStore().step(
-          forward: true,
+          forward: forward,
           excludedKey: excludedForegroundKey(),
         ),
       );
@@ -282,6 +388,8 @@ class BackgroundRuntimeScope extends HookWidget {
     }, [
       enabled,
       fgKey,
+      playIndex,
+      playQueue.length,
       vmSessionActive,
       bgItemSwitch,
       applyScope,
@@ -289,6 +397,10 @@ class BackgroundRuntimeScope extends HookWidget {
       offMediaKeys,
       hasSavedMapping,
       gateOpen,
+      // A cut can start/end WITHOUT an fgKey change (activating a plan reopens
+      // the same file), and the transition itself must be exempt.
+      fakeCutActive,
+      bgExhausted,
     ]);
 
     // ── 1c. A refused/failed 副音 open is reported once ──
@@ -348,6 +460,7 @@ class BackgroundRuntimeScope extends HookWidget {
       anchorKey: anchorKey,
       offMediaKeys: offMediaKeys,
       fgKey: fgKey,
+      fakeCutActive: fakeCutActive,
     );
     final controlTarget = bg.select(context, (s) => s.controlTarget);
     // An E-节 mapping timeline owns 副音 transport with its own mirror (see
@@ -377,6 +490,13 @@ class BackgroundRuntimeScope extends HookWidget {
       // the fg keeps playing, 副音 stays silent until a new alignment clears
       // the exhaustion (see the alignment effect's clearBgExhausted).
       if (bgExhausted) {
+        transportRetry.value?.cancel();
+        transportRetry.value = null;
+        return null;
+      }
+      // The queue ran off its end under Repeat.none: its pause is final, not a
+      // transport disagreement. Mirroring here would replay the last track.
+      if (bgQueueEnded) {
         transportRetry.value?.cancel();
         transportRetry.value = null;
         return null;
@@ -492,6 +612,7 @@ class BackgroundRuntimeScope extends HookWidget {
       enabled,
       gateOpen,
       bgExhausted,
+      bgQueueEnded,
       seekLink,
       lockLevel,
       editing,
@@ -668,10 +789,57 @@ class BackgroundRuntimeScope extends HookWidget {
     // re-anchors instead (covers alignment chains on later files, tiled
     // opens and mapping entries that carry no step latch of their own).
     final prevBgOpenKey = useRef<String?>(null);
+    // The foreground FILE the offset was derived against. A change is a NEW
+    // pair, not a seek inside the old one (see the mirror's fg-switch branch).
+    final prevFgPairKey = useRef<String?>(null);
+    // A USER switch (step / queue-row jump) opens a new 副音 file at its head
+    // while the OLD alignment offset is still published. Until the alignment
+    // effect has landed the new anchor, the mirror must not map either side with
+    // that stale offset — that is the 「步进后视频跳到错误位置 / 掉进度」 report.
+    //
+    // ARMED here (build), CLEARED by the alignment effect once it applies, with
+    // a deadline so a never-resolving duration (probe failure) cannot freeze the
+    // mirror forever.
+    final switchAlignPending = useRef(false);
+    final switchAlignDeadline = useRef<DateTime?>(null);
+    final prevSwitchAlignSeq = useRef(bgUserAlignSeq);
+    if (bgUserAlignSeq != prevSwitchAlignSeq.value) {
+      prevSwitchAlignSeq.value = bgUserAlignSeq;
+      switchAlignPending.value = true;
+      switchAlignDeadline.value =
+          DateTime.now().add(const Duration(milliseconds: 2000));
+    }
     // Explicit restart-for-current resets the whole alignment.
     final prevRunSeq = useRef(bgRunSeq);
 
     useEffect(() {
+      // Track the foreground FILE first: leaving/returning through a scope
+      // stand-down is not a pair change, so the ref must stay current even on
+      // the early return below.
+      final bool fgFileChanged = prevFgPairKey.value != null &&
+          prevFgPairKey.value != fgKey;
+      prevFgPairKey.value = fgKey;
+      // A NEW foreground file is a NEW pair: the previous file's offset — and
+      // its authoritative pin — describe media that is no longer playing, so
+      // mapping this file's head through them dragged 副音 to an unrelated
+      // position (「换集后掉进度」). Tear the alignment down and let the next
+      // settled sample anchor the pair where both actually are; the next 副音
+      // open re-runs its own alignment.
+      //
+      // Deliberately BEFORE the stand-down below: leaving the 作用范围 (or closing
+      // the gate, or running off the queue) changes the media too, and the pin
+      // must not survive onto a media the pair is re-activated on later — a
+      // widening to 「全部」 resumed the pair on the new file with the OLD file's
+      // offset, and `anchor()` never re-derives while a pin is set.
+      if (fgFileChanged) {
+        _mirrorLog.d('mirror re-anchor: foreground file changed');
+        useBackgroundPlaybackStore().setAlignOffset(null);
+        lockOffsetReady.value = false;
+        pendingStepRef.value = false;
+        lastFgMs.value = null;
+        lastBgMs.value = null;
+        return null;
+      }
       // Gate closed: the pair is not running, so drop the lock baseline. A gate
       // open re-runs this effect and re-anchors from the fresh 副音 position
       // (the alignment plan is re-applied, never the remembered one). The same
@@ -685,12 +853,32 @@ class BackgroundRuntimeScope extends HookWidget {
         enabled: enabled && scopeApplied,
         gateOpen: gateOpen,
         exhausted: bgExhausted,
+        queueEnded: bgQueueEnded,
       )) {
         lastFgMs.value = null;
         lastBgMs.value = null;
         lockOffsetReady.value = false;
         pendingStepRef.value = false;
         return null;
+      }
+      // A USER switch is waiting for its new anchor: the published offset still
+      // describes the PREVIOUS file, so nothing may be mapped on either side.
+      // The deadline bounds the hold when the alignment never lands (an
+      // unresolvable duration, the editor owning the pair, the queue ending);
+      // on expiry the stale pin is DROPPED rather than mapped through — releasing
+      // the hold with the previous file's offset is the very drift this guard
+      // exists to prevent.
+      if (switchAlignPending.value) {
+        final DateTime? deadline = switchAlignDeadline.value;
+        if (deadline == null || DateTime.now().isAfter(deadline)) {
+          switchAlignPending.value = false;
+          switchAlignDeadline.value = null;
+          useBackgroundPlaybackStore().setAlignOffset(null);
+          lockOffsetReady.value = false;
+        } else {
+          _mirrorLog.d('mirror hold: waiting for the switch alignment');
+          return null;
+        }
       }
       if (bgStepSeq != stepSeqRef.value) {
         stepSeqRef.value = bgStepSeq;
@@ -1072,6 +1260,7 @@ class BackgroundRuntimeScope extends HookWidget {
       enabled,
       gateOpen,
       bgExhausted,
+      bgQueueEnded,
       editing,
       seekLink,
       lockLevel,
@@ -1088,6 +1277,7 @@ class BackgroundRuntimeScope extends HookWidget {
       bgRepeat,
       fg.posMs,
       fgRate,
+      fgKey,
       fgWindow.durationMs,
       fgWindow.virtualOffsetMs,
       // The pinned queue-VIRTUAL offset (not the file-local [alignOffsetMs]): a
@@ -1119,15 +1309,17 @@ class BackgroundRuntimeScope extends HookWidget {
         enabled: enabled && scopeApplied,
         gateOpen: gateOpen,
         exhausted: bgExhausted,
+        queueEnded: bgQueueEnded,
       )) {
         store.publishSeekWindow();
         return null;
       }
       // FREEZE while a scrub drag is in flight: the drag's own seeks would move
       // the offset the window is derived from, and a mid-drag window change made
-      // the slider's clamp snap the thumb back. The boundary stopBoth is
-      // deferred too, so it can never clear `autoPlay` mid-gesture and leave the
-      // release unable to resume. Both re-evaluate on the release edge below.
+      // the slider's clamp snap the thumb back. The 仅当前 window boundary (which
+      // pauses BOTH runtimes) is deferred too, so it can never clear `autoPlay`
+      // mid-gesture and leave the release unable to resume. Both re-evaluate on
+      // the release edge below.
       if (isScrubbing) {
         return null;
       }
@@ -1189,7 +1381,7 @@ class BackgroundRuntimeScope extends HookWidget {
           unawaited(fgPlayer.pause());
         }
         _mirrorLog.d(
-          'boundary currentOnly stopBoth master=${bgIsMaster ? 'bg' : 'fg'} '
+          'boundary currentOnly lockstep master=${bgIsMaster ? 'bg' : 'fg'} '
           'bg=$bgVirtual fgDur=$fgDur offset=$effectiveOffset',
         );
       }
@@ -1198,6 +1390,7 @@ class BackgroundRuntimeScope extends HookWidget {
       enabled,
       gateOpen,
       bgExhausted,
+      bgQueueEnded,
       applyScope,
       scopeApplied,
       editing,
@@ -1267,6 +1460,10 @@ class BackgroundRuntimeScope extends HookWidget {
         prevAlignOpenKey.value = null;
         return null;
       }
+      // The queue ran off its end under Repeat.none: there is nothing to align
+      // until the queue moves again (a step/jump clears the latch and re-runs
+      // this effect).
+      if (bgQueueEnded) return null;
       // Explicit restart-for-current: rerun the whole alignment chain. The file
       // may be unchanged, so force the re-apply below.
       if (bgRunSeq != prevAlignRunSeq.value) {
@@ -1303,6 +1500,10 @@ class BackgroundRuntimeScope extends HookWidget {
       if (!shouldApply) return null;
       forceReapply.value = false;
       firstAlignDoneForRun.value = true;
+      // The new anchor is about to be published: release the mirror's hold so
+      // it can map the pair again (see `switchAlignPending`).
+      switchAlignPending.value = false;
+      switchAlignDeadline.value = null;
       final store = useBackgroundPlaybackStore();
       final int fgPos = fgWindow.positionMs;
       final int fgDur = fgWindow.durationMs;
@@ -1405,6 +1606,7 @@ class BackgroundRuntimeScope extends HookWidget {
       tiledTargetIndex,
       bgRunSeq,
       bgExhaustedAction,
+      bgQueueEnded,
     ]);
 
     // ── 3b. Remaining-副音 threshold (stopRestoreFg only) ──
@@ -1585,6 +1787,9 @@ class BackgroundRuntimeScope extends HookWidget {
           bgVirtualTargetMs(fgMs: fgMs, offsetMs: offset) >= timeline.totalMs;
       if (listOver) {
         store.setPlaying(false);
+        // The list is over under `Repeat.none`: hand the controls/picture back
+        // to the video (the run stays alive — a row tap re-activates it).
+        store.markBgQueueEnded();
         unawaited(engine.pause());
         return null;
       }

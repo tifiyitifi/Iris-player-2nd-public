@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/background_playback/actions/background_playback_actions.dart';
+import 'package:iris/features/background_playback/model/enum/control_target.dart';
 import 'package:iris/features/background_playback/services/current_foreground_media_key.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
+import 'package:iris/features/windows/desktop_keyboard/executor/potplayer_key_executor.dart';
+import 'package:iris/features/windows/desktop_keyboard/model/potplayer_action.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
@@ -57,6 +60,73 @@ Widget _harness(MediaPlayer player) => InheritedProvider<StoreLocator>.value(
                     BackgroundPlaybackActions.toggleGateForCurrent(context),
                 child: const Text('gate'),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+Widget _executorHarness(
+  MediaPlayer player, {
+  PotPlayerAction action = PotPlayerAction.toggleBackgroundGate,
+}) =>
+    InheritedProvider<StoreLocator>.value(
+      value: StoreLocator(),
+      startListening: (InheritedContext<StoreLocator?> e, StoreLocator value) {
+        final sub = value.changes.listen((_) => e.markNeedsNotifyDependents());
+        return sub.cancel;
+      },
+      lazy: false,
+      child: MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Provider<MediaPlayer>.value(
+          value: player,
+          child: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                await PotPlayerKeyExecutor(
+                  context: context,
+                  player: player,
+                  showControl: () {},
+                  showControlForHover: (future) => future,
+                  showProgress: () {},
+                ).perform(action, false);
+              },
+              child: const Text('gate key'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+Widget _eventHarness(MediaPlayer player, KeyEvent event) =>
+    InheritedProvider<StoreLocator>.value(
+      value: StoreLocator(),
+      startListening: (InheritedContext<StoreLocator?> e, StoreLocator value) {
+        final sub = value.changes.listen((_) => e.markNeedsNotifyDependents());
+        return sub.cancel;
+      },
+      lazy: false,
+      child: MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Provider<MediaPlayer>.value(
+          value: player,
+          child: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                await PotPlayerKeyExecutor(
+                  context: context,
+                  player: player,
+                  showControl: () {},
+                  showControlForHover: (future) => future,
+                  showProgress: () {},
+                ).handle(event);
+              },
+              child: const Text('send key'),
             ),
           ),
         ),
@@ -148,5 +218,155 @@ void main() {
       currentScopeKey(),
       reason: '仅当前 activation anchors the run to the media on screen',
     );
+  });
+
+  testWidgets('the keyboard gate action opens 副音 for the current video',
+      (tester) async {
+    final bg = useBackgroundPlaybackStore();
+    expect(bg.state.gateOpen, isFalse, reason: 'setUp leaves the gate closed');
+
+    await tester.pumpWidget(_executorHarness(_player(playing: true)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('gate key'));
+    await tester.pumpAndSettle();
+
+    expect(bg.state.gateOpen, isTrue);
+    expect(bg.state.bgPairInEffect, isTrue);
+    expect(bg.state.bgAutoPlay, isTrue,
+        reason: 'activation follows a playing foreground');
+  });
+
+  testWidgets('a second keyboard gate press stops it and hands control back',
+      (tester) async {
+    final bg = useBackgroundPlaybackStore();
+
+    await tester.pumpWidget(_executorHarness(_player(playing: true)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('gate key'));
+    await tester.pumpAndSettle();
+    expect(bg.state.gateOpen, isTrue);
+
+    // Pretend the shared controls had been retargeted to 副音: the stop path
+    // must return them to the foreground, exactly like the quick-bar button.
+    bg.setControlTarget(ControlTarget.background);
+
+    await tester.tap(find.text('gate key'));
+    await tester.pumpAndSettle();
+
+    expect(bg.state.gateOpen, isFalse);
+    expect(bg.state.bgPairInEffect, isFalse);
+    expect(bg.state.controlTarget, ControlTarget.foreground);
+    expect(bg.state.displayTarget, ControlTarget.foreground);
+  });
+
+  testWidgets('Alt + the apostrophe key the Windows embedder reports reaches '
+      'the gate action through the real lookup path', (tester) async {
+    // Windows resolves VK_OEM_7 to `quote` (0x22), NOT `quoteSingle`; the
+    // shipping bug was a default bound to `quoteSingle`, so the event fell
+    // through to `key unbound: Alt+"` and nothing happened. Drive the executor
+    // with that exact event so the fold cannot regress.
+    final bg = useBackgroundPlaybackStore();
+    expect(bg.state.gateOpen, isFalse);
+
+    await tester.pumpWidget(
+      _eventHarness(
+        _player(playing: true),
+        KeyDownEvent(
+          physicalKey: PhysicalKeyboardKey.quote,
+          logicalKey: LogicalKeyboardKey.quote,
+          timeStamp: Duration.zero,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+    await tester.tap(find.text('send key'));
+    await tester.pumpAndSettle();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+
+    expect(bg.state.gateOpen, isTrue);
+    expect(bg.state.bgPairInEffect, isTrue);
+  });
+
+  group('Alt+; control target', () {
+    testWidgets('flips the shared controls to 副音 and back while the pair is live',
+        (tester) async {
+      final bg = useBackgroundPlaybackStore();
+      await bg.openGate(mediaKey: currentScopeKey(), autoplay: true);
+      expect(bg.state.bgPairInEffect, isTrue, reason: 'the pair is live');
+      expect(bg.state.bgOwnsControls, isFalse, reason: 'controls start on fg');
+
+      await tester.pumpWidget(
+        _executorHarness(
+          _player(playing: true),
+          action: PotPlayerAction.toggleControlTarget,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('gate key'));
+      await tester.pumpAndSettle();
+
+      expect(bg.state.controlTarget, ControlTarget.background);
+      expect(bg.state.bgOwnsControls, isTrue);
+      expect(bg.state.displayTarget, ControlTarget.foreground,
+          reason: 'the shortcut moves the CONTROLS only');
+
+      await tester.tap(find.text('gate key'));
+      await tester.pumpAndSettle();
+
+      expect(bg.state.controlTarget, ControlTarget.foreground);
+      expect(bg.state.bgOwnsControls, isFalse);
+    });
+
+    testWidgets('is inert while 副音 is not in effect for this media',
+        (tester) async {
+      final bg = useBackgroundPlaybackStore();
+      expect(bg.state.bgPairInEffect, isFalse,
+          reason: 'setUp leaves the gate closed');
+
+      await tester.pumpWidget(
+        _executorHarness(
+          _player(playing: true),
+          action: PotPlayerAction.toggleControlTarget,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('gate key'));
+      await tester.pumpAndSettle();
+
+      expect(bg.state.gateOpen, isFalse, reason: 'never a side-effect open');
+      expect(bg.state.controlTarget, ControlTarget.foreground);
+    });
+
+    testWidgets('the semicolon key the Windows embedder reports reaches the '
+        'action through the real lookup path', (tester) async {
+      final bg = useBackgroundPlaybackStore();
+      await bg.openGate(mediaKey: currentScopeKey(), autoplay: true);
+
+      await tester.pumpWidget(
+        _eventHarness(
+          _player(playing: true),
+          KeyDownEvent(
+            physicalKey: PhysicalKeyboardKey.semicolon,
+            logicalKey: LogicalKeyboardKey.semicolon,
+            timeStamp: Duration.zero,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.altLeft);
+      await tester.tap(find.text('send key'));
+      await tester.pumpAndSettle();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.altLeft);
+
+      expect(bg.state.controlTarget, ControlTarget.background);
+      expect(bg.state.bgOwnsControls, isTrue);
+    });
   });
 }

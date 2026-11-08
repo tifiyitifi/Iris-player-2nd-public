@@ -26,27 +26,31 @@ Future<AppLocalizations> loadEn(WidgetTester tester) async {
 /// storage-aware time estimate (no pre-count wait): general-case magnitudes
 /// so users know what they signed up for before pressing start.
 void main() {
-  testWidgets('windows local shows fast per-file magnitudes', (tester) async {
+  testWidgets('windows local states the header-parse cost', (tester) async {
     final t = await loadEn(tester);
     final s = scanProbeEstimateText(
         t: t,
         isWindows: true,
         isAndroid: false,
         storageType: StorageType.internal);
-    expect(s, contains('tens of ms'));
+    expect(s, contains('1 ms'));
   });
 
-  testWidgets('android local shows slower per-file range', (tester) async {
+  testWidgets('android local states the header-parse cost first', (tester) async {
     final t = await loadEn(tester);
     final s = scanProbeEstimateText(
         t: t,
         isWindows: false,
         isAndroid: true,
         storageType: StorageType.internal);
-    expect(s, contains('50–200ms'));
+    // Local containers are parsed from their header (~1 ms); only the rest
+    // falls back to the system prober, so the old "50–200 ms per file" is no
+    // longer the headline number.
+    expect(s, contains('1 ms'));
+    expect(s, contains('50–200 ms'));
   });
 
-  testWidgets('network storages state that probing is skipped',
+  testWidgets('network storages state that probing stays in the background',
       (tester) async {
     final t = await loadEn(tester);
     for (final type in [
@@ -56,7 +60,7 @@ void main() {
     ]) {
       final s = scanProbeEstimateText(
           t: t, isWindows: true, isAndroid: false, storageType: type);
-      expect(s, contains('skip'));
+      expect(s, contains('background'));
     }
   });
 

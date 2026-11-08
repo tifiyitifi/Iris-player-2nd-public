@@ -44,6 +44,14 @@ class MediaPlayer {
   /// was. Null on backends without a Dart-side step accumulator.
   final int? Function()? stepIntentTargetMs;
 
+  /// 简播: re-times an external subtitle onto the virtual (cut) timeline.
+  ///
+  /// Returns the URI to hand the engine, or null when it cannot be re-timed —
+  /// in which case the callback has already explained why and the caller must
+  /// NOT load the original (a mis-timed subtitle is worse than none).
+  /// A null callback means no fake-cut session is active.
+  final Future<String?> Function(String uri, String name)? remapSubtitleForCut;
+
   // ── Capability stubs (P0 track/sync features) ──
   //
   // Backends without the underlying capability keep these as silent no-ops;
@@ -85,6 +93,7 @@ class MediaPlayer {
     required this.seek,
     this.finishSeek,
     this.stepIntentTargetMs,
+    this.remapSubtitleForCut,
   });
 }
 
@@ -196,6 +205,7 @@ class MediaKitPlayer extends MediaPlayer {
     required super.seek,
     super.finishSeek,
     super.stepIntentTargetMs,
+    super.remapSubtitleForCut,
   });
 }
 

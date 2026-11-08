@@ -4,6 +4,7 @@ import 'package:iris/features/virtual_media/commands/vm_actions.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
+import 'package:iris/features/virtual_media/view/vm_master_switch.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/widgets/a11y_tooltip.dart' show rowTooltip;
@@ -77,6 +78,12 @@ class VmManagerPage extends HookWidget {
                 onPressed: () => Navigator.of(context).pop(),
               ),
             ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: VmMasterSwitch(
+            onChanged: () async => revision.value++,
           ),
         ),
         Divider(

@@ -1,5 +1,6 @@
 import 'package:iris/models/file.dart';
 import 'package:iris/models/store/app_state.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 
 List<FileItem> filesSort({
   required List<FileItem> files,
@@ -17,7 +18,8 @@ List<FileItem> filesSort({
     int result;
     switch (sortBy) {
       case SortBy.name:
-        result = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        // Natural order: 1, 2, 10 — not the lexicographic 1, 10, 2.
+        result = naturalCompare(a.name, b.name);
         break;
       case SortBy.size:
         result = a.size.compareTo(b.size);

@@ -35,7 +35,7 @@ void main() {
   test('same volume, different base is NOT a duplicate', () {
     final groups = planDuplicateStorageGroups([
       _local(id: 'a'),
-      _local(id: 'b', basePath: const <String>['E:', 'yb']),
+      _local(id: 'b', basePath: const <String>['E:', 'vault']),
     ]);
     expect(groups, isEmpty);
   });

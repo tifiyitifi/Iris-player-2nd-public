@@ -139,7 +139,7 @@ void main() {
       final blobs = await sharedDao.read(buildId);
       expect(blobs, isNotNull);
       final slices = <SharedOrderSlice>[];
-      for (final s in SharedIndexCodec.decodeSlices(blobs!.slices)) {
+      for (final s in SharedIndexCodec.decodeSlices(blobs!.slices).singleSlices) {
         final order = await orderDao.read(s.orderKey, mediaRev: s.mediaRev);
         expect(order, isNotNull, reason: 'the shared order must persist');
         slices.add(

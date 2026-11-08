@@ -29,12 +29,16 @@ import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.
 import 'package:iris/features/scenario_playback/resolver/scenario_queue_builder.dart';
 import 'package:iris/features/scenario_playback/resolver/scenario_source_provider.dart';
 import 'package:iris/features/scenario_playback/resolver/bit_vector.dart';
+import 'package:iris/features/scenario_playback/resolver/base_order_view.dart';
+import 'package:iris/features/scenario_playback/resolver/merged_order_codec.dart';
+import 'package:iris/features/scenario_playback/resolver/scenario_order_comparator.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_base_order.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_index_codec.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_media_order.dart';
 import 'package:iris/features/scenario_playback/resolver/shared_row_overlay.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
+import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_overlay.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
@@ -42,6 +46,7 @@ import 'package:iris/features/virtual_media/rule/vm_title_composer.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/vm_l10n.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 
 /// Whether the index-backed read paths serve from the SHARED-ORDER index (v44).
@@ -57,10 +62,12 @@ import 'package:iris/utils/path_conv.dart';
 /// v45 dropped the tables.
 ///
 /// The shared index is the ONLY persisted representation, so a build it cannot
-/// express (placeholder segment, explicit item, provider/media-type mismatch —
-/// see `_SharedIndexDraft`) has nothing to serve and degrades to the LEGACY walk,
-/// never to a stale or empty read. Turning this off is the rollback: every read
-/// path then takes the legacy walk, and no migration is needed.
+/// express (a node the storage's shared order does not contain, a provider whose
+/// order disagrees with the shared order — see `_finishSharedIndex`) has nothing
+/// to serve and degrades to the LEGACY walk, never to a stale or empty read.
+/// Explicit items and placeholder rows ARE expressible (merged base order +
+/// placeholder tail). Turning this off is the rollback: every read path then
+/// takes the legacy walk, and no migration is needed.
 const bool kUseSharedIndexRead = true;
 
 final _log = AreaKeyLog(LogKeys.mediaProbe);
@@ -295,7 +302,12 @@ class ScenarioResolver {
   /// v2 = chunk numbers scoped per directory / per rule.
   /// v3 = ORDER BY semantics (deterministic name/path tail, NULLs last on both
   /// query paths, millisecond `modified_at`).
-  static const int indexFormatVersion = 3;
+  /// v4 = global base order (cross-source/cross-storage/explicit-item merge)
+  /// plus the VM element-axis permutation, and `0` treated as unknown for
+  /// size/duration in the ORDER BY.
+  /// v5 = merged base order v2: a stream carries its ORDER LENGTH, so a sparse
+  /// (sub-range) contribution is representable instead of being refused.
+  static const int indexFormatVersion = 5;
 
   /// The decoded shared index for [buildId], or null when it is absent,
   /// unreadable, or was built against a revision whose order is gone.
@@ -318,28 +330,97 @@ class ScenarioResolver {
             '(the build refused it, or the generation was evicted)');
         return null;
       }
-      final slices = <SharedOrderSlice>[];
-      for (final s in SharedIndexCodec.decodeSlices(blobs.slices)) {
-        final order = await orderDao.read(s.orderKey, mediaRev: s.mediaRev);
-        // Without its order the bitmaps are meaningless: treat the whole index
-        // as absent rather than serve positions against a wrong sequence.
-        if (order == null) {
-          _log.w('shared index unusable for build=$buildId: order '
-              '"${s.orderKey}" missing at mediaRev=${s.mediaRev} '
-              '(a revision mismatch orphans every scenario on that order)');
+      final stored = SharedIndexCodec.decodeSlices(blobs.slices);
+      final accepted = SharedIndexCodec.decodeBitmap(blobs.accepted);
+      final BaseOrderView base;
+      if (stored is MultiBaseOrder) {
+        final merged = stored.order;
+        final orders = <Int32List>[];
+        for (final stream in merged.streams) {
+          final order =
+              await orderDao.read(stream.orderKey, mediaRev: stream.mediaRev);
+          // Without its order the interleave is meaningless: treat the whole
+          // index as absent rather than serve ranks against a wrong sequence.
+          if (order == null) {
+            _log.w('shared index unusable for build=$buildId: order '
+                '"${stream.orderKey}" missing at mediaRev=${stream.mediaRev} '
+                '(a revision mismatch orphans every scenario on that order)');
+            return null;
+          }
+          // A rank is a position in this order, so the two lengths are the same
+          // invariant the build validated. A mismatch means the blob does not
+          // describe the sequence the store now holds.
+          if (order.length != stream.orderLength) {
+            _log.w('shared index unusable for build=$buildId: order '
+                '"${stream.orderKey}" holds ${order.length} nodes, the blob '
+                'was built against ${stream.orderLength}');
+            return null;
+          }
+          orders.add(order);
+        }
+        // The merged segment covers every REAL entry; anything after it is the
+        // placeholder tail the build appended (D5).
+        final placeholderCount = accepted.length - merged.length;
+        if (placeholderCount < 0) {
+          _log.w('shared index unusable for build=$buildId: accepted space '
+              '${accepted.length} is shorter than the merged order '
+              '${merged.length}');
           return null;
         }
-        slices.add(
-            SharedOrderSlice(orderKey: s.orderKey, order: order, bits: s.bits));
+        base = MergedBaseOrder(
+          order: merged,
+          orders: orders,
+          accepted: accepted,
+          placeholderCount: placeholderCount,
+        );
+      } else {
+        final slices = <SharedOrderSlice>[];
+        for (final s in (stored as SingleBaseOrder).slices) {
+          final order = await orderDao.read(s.orderKey, mediaRev: s.mediaRev);
+          // Without its order the bitmap is meaningless: treat the whole index as
+          // absent rather than serve positions against a wrong sequence.
+          if (order == null) {
+            _log.w('shared index unusable for build=$buildId: order '
+                '"${s.orderKey}" missing at mediaRev=${s.mediaRev} '
+                '(a revision mismatch orphans every scenario on that order)');
+            return null;
+          }
+          slices.add(SharedOrderSlice(
+              orderKey: s.orderKey, order: order, bits: s.bits));
+        }
+        base = SharedBaseOrder(slices: slices, accepted: accepted);
+      }
+      final absorbed = SharedIndexCodec.decodeBitmap(blobs.absorbed);
+      // The element permutation must describe exactly the visible rows; a
+      // mismatch means the blob is stale/corrupt, so ignore it (the identity
+      // axis is still correct, just not VM-total-sorted).
+      Int32List? elementOrder;
+      final rawElementOrder = blobs.elementOrder;
+      if (rawElementOrder != null) {
+        try {
+          final decoded = SharedIndexCodec.decodeElementOrder(rawElementOrder);
+          final visible = blobs.baseCount - absorbed.count;
+          final inRange = decoded.every((rank) =>
+              rank >= 0 &&
+              rank < blobs.baseCount &&
+              !absorbed[rank]);
+          if (decoded.length == visible && inRange) {
+            elementOrder = decoded;
+          } else {
+            _log.w('shared index element order ignored for build=$buildId: '
+                '${decoded.length} ordinals for $visible visible rows '
+                '(in range: $inRange)');
+          }
+        } catch (e) {
+          _log.w('shared index element order unreadable for build=$buildId: $e');
+        }
       }
       final index = _SharedIndex(
-        base: SharedBaseOrder(
-          slices: slices,
-          accepted: SharedIndexCodec.decodeBitmap(blobs.accepted),
-        ),
+        base: base,
+        elementOrder: elementOrder,
         overlay: SharedRowOverlay(
           baseCount: blobs.baseCount,
-          absorbed: SharedIndexCodec.decodeBitmap(blobs.absorbed),
+          absorbed: absorbed,
           groupRows: SharedIndexCodec.decodeGroups(blobs.groupRows),
           placeholders: SharedIndexCodec.decodePlaceholders(blobs.placeholders),
           occurrence: SharedIndexCodec.decodeIntMap(blobs.occurrence),
@@ -546,72 +627,119 @@ class ScenarioResolver {
       segmentDirection: segmentDirection,
       sourceInternalFirst: sourceInternalFirst,
     );
-    final space = _VirtualSpace(segments);
     final exclusionSet = await _buildExclusionSet(exclusions);
     final total = _estimateTotal(segments);
 
-    // Prepare the shared-order index (v44) BEFORE the walk. Its per-source
-    // slices are filled from the walk itself, because a slice IS the set of
-    // shared-order positions the resolver's own virtual space assigned to that
-    // source; re-deriving it from a path predicate would add a second source of
-    // truth. Null when the scenario is not representable or the tables are not
-    // wired, in which case the build has no persisted representation at all and
-    // the reads fall back to the legacy walk.
-    final shared = _sharedIndexDao != null && _mediaOrderDao != null
-        ? await _prepareSharedIndex(
+    // ONE collection pass decides this generation's BASE order: every real item
+    // (source + explicit) sorted by the global comparator, placeholders last.
+    // A scenario with a single source skips the sort entirely — its provider
+    // already enumerates the storage's shared order, which keeps the persisted
+    // index byte-for-byte identical to the v44 one.
+    final collection = await _collectBaseItems(
+      segments: segments,
+      sortField: sortField,
+      direction: segmentDirection,
+      grouped: sourceInternalFirst,
+    );
+    final singleSource =
+        segments.length == 1 && segments.single is _SourceSegment;
+
+    // Prepare the shared orders BEFORE the walk. Null when the tables are not
+    // wired: the build then has no persisted representation at all and every
+    // read falls back to the legacy walk.
+    final scope = _sharedIndexDao != null && _mediaOrderDao != null
+        ? await _prepareSharedScope(
             scenarioId: scenarioId,
             segments: segments,
             sortField: sortField,
             sortDirection: segmentDirection,
             sourceInternalFirst: sourceInternalFirst,
-            total: total,
           )
         : null;
 
-    // Materialize the ACCEPTED BASE stream in ascending base-slot order. The
-    // shuffle is deliberately NOT applied here: the persisted rows are the base
-    // order (seed-independent) and the read side permutes them lazily, which is
+    // Materialize the ACCEPTED BASE stream in base order. The shuffle is
+    // deliberately NOT applied here: the persisted representation is the base
+    // order (seed-independent) and the read side permutes it lazily, which is
     // what makes a shuffle refresh free instead of a full rebuild.
     final occurrenceCounts = <String, int>{};
-    final stream = <EffectivePlaybackItem>[];
-    var segmentIndex = 0;
-    var segmentEnd = segments.isEmpty ? 0 : segments.first.count;
-    for (var probe = 0; probe < total; probe++) {
-      // The virtual space is the segments concatenated, so the probe's segment
-      // is a pointer walk (probes ascend).
-      while (probe >= segmentEnd && segmentIndex + 1 < segments.length) {
-        segmentIndex++;
-        segmentEnd += segments[segmentIndex].count;
-      }
-      final raw = await space.resolve(probe);
-      if (raw == null) continue;
-      shared?.record(segmentIndex, _nodeIdOf(raw));
-      if (exclusionSet.isExcluded(raw)) continue;
+    EffectivePlaybackItem? accept(EffectivePlaybackItem raw) {
+      if (exclusionSet.isExcluded(raw)) return null;
       final key = raw.occurrenceId.mediaKey;
-      if (dedup && occurrenceCounts.containsKey(key)) continue;
+      if (dedup && occurrenceCounts.containsKey(key)) return null;
       final occurrence = occurrenceCounts.update(key, (v) => v + 1,
           ifAbsent: () => 0);
-      shared?.markAccepted(probe);
-      stream.add(raw.copyWith(
+      return raw.copyWith(
         occurrenceId: raw.occurrenceId.copyWith(occurrenceIndex: occurrence),
         duplicated: occurrence > 0,
-      ));
+      );
+    }
+
+    final stream = <EffectivePlaybackItem>[];
+    final acceptedReal = List<bool>.filled(collection.real.length, false);
+    final acceptedPlaceholders =
+        List<bool>.filled(collection.placeholders.length, false);
+    for (var i = 0; i < collection.real.length; i++) {
+      final accepted = accept(collection.real[i]);
+      if (accepted == null) continue;
+      acceptedReal[i] = true;
+      stream.add(accepted);
+    }
+    // Placeholders are appended AFTER the sorted entries (D5), so an empty
+    // source or a vanished explicit file never interleaves with real media.
+    for (var i = 0; i < collection.placeholders.length; i++) {
+      final accepted = accept(collection.placeholders[i]);
+      if (accepted == null) continue;
+      acceptedPlaceholders[i] = true;
+      stream.add(accepted);
     }
 
     final vmRules = await _vmRulesFor(scenarioId);
+    // 简播: files with a sibling `.llc` never join a merged group. Resolved
+    // ONCE per build (directory-cached) and injected into the pure builder.
+    final Set<String> fakeCutExclusions = vmRules.isEmpty
+        ? const <String>{}
+        : await vmFakeCutExclusionKeysForStream(stream);
     final plan = ScenarioQueueBuilder.build(
       stream: stream,
       rules: vmRules,
       mediaNodeIdOf: (rank, item) => _nodeIdOf(item),
+      excludedMediaKeys: fakeCutExclusions,
     );
 
-    // The gate: null unless the virtual space is EXACTLY the slices'
-    // concatenation and the accepted set exactly the walk's.
-    final blobs = shared?.finish(
-      acceptedCount: plan.totalRanks,
-      entries: plan.entries,
-      groups: plan.groups,
+    // VM rows sort by the totals they DISPLAY. The permutation only exists when
+    // the scenario actually merged something; it is encoded beside the base
+    // order so the read side can page/number on the element axis without a walk.
+    final elementOrder = _elementOrderFor(
+      stream: stream,
+      plan: plan,
+      sortField: sortField,
+      direction: segmentDirection,
+      grouped: sourceInternalFirst,
     );
+
+    // The persisted shape, or a refusal reason. The gate still holds the same
+    // contract as before: an index is written only when the base order it
+    // encodes is EXACTLY the walk's, otherwise the reads use the legacy walk.
+    ({_SharedIndexBlobs? blobs, String? reason}) encoded =
+        (blobs: null, reason: null);
+    if (scope != null) {
+      encoded = _finishSharedIndex(
+        scope: scope,
+        singleSource: singleSource,
+        singleStorageId: singleSource
+            ? (segments.single as _SourceSegment).source.storageId
+            : null,
+        total: total,
+        real: collection.real,
+        placeholders: collection.placeholders,
+        acceptedReal: acceptedReal,
+        acceptedPlaceholders: acceptedPlaceholders,
+        plan: plan,
+        elementOrder: elementOrder == null
+            ? null
+            : SharedIndexCodec.encodeElementOrder(elementOrder),
+      );
+    }
 
     // Allocate the build id INSIDE the transaction: it is globally unique and is
     // the key the reads resolve, so two scenarios building at once must not read
@@ -632,11 +760,11 @@ class ScenarioResolver {
       );
     });
     await dao.evictOtherBuilds(scenarioId, buildId);
-    if (blobs != null) {
-      await _writeSharedIndex(buildId, blobs);
+    if (encoded.blobs != null) {
+      await _writeSharedIndex(buildId, encoded.blobs!);
     } else {
       _logUnrepresentable(scenarioId, plan,
-          refused: shared != null, reason: shared?.rejectReason);
+          refused: scope != null, reason: encoded.reason);
     }
     // Drop every shared generation no live build owns — the meta eviction above
     // is exactly what makes the previous generation stale. This must run even
@@ -647,32 +775,30 @@ class ScenarioResolver {
     return buildId;
   }
 
-  /// Prepares the shared-order index for one build, or null when the scenario
-  /// cannot be expressed over shared orders (the build then persists no
-  /// representation and the reads use the legacy walk).
+  /// Prepares the shared ORDERS for one build, or null when they cannot be
+  /// built (the build then persists no representation and the reads use the
+  /// legacy walk).
   ///
   /// Never throws into the build: a shared-order failure only costs the
   /// optimization, never the generation itself.
-  Future<_SharedIndexDraft?> _prepareSharedIndex({
+  Future<_SharedOrderScope?> _prepareSharedScope({
     required String scenarioId,
     required List<_Segment> segments,
     required ScenarioSortField sortField,
     required SortDirection sortDirection,
     required bool sourceInternalFirst,
-    required int total,
   }) async {
     final orderDao = _mediaOrderDao;
     if (orderDao == null) return null;
     try {
-      return await _SharedIndexDraft.prepare(
+      return await _SharedOrderScope.prepare(
         segments: segments,
         nodeRepo: nodeRepo,
+        mediaTypes:
+            _scopedMediaTypes() ?? const [MediaType.video, MediaType.audio],
         sortField: sortField,
         sortDirection: sortDirection,
         sourceInternalFirst: sourceInternalFirst,
-        mediaTypes:
-            _scopedMediaTypes() ?? const [MediaType.video, MediaType.audio],
-        total: total,
         orderDao: orderDao,
         revisionOf: _mediaRevisionOf,
       );
@@ -688,19 +814,334 @@ class ScenarioResolver {
     }
   }
 
-  /// Logs the TRIGGER for the one known representability gap: the shared index
-  /// cannot express a placeholder segment (empty source) or an explicit item, so
-  /// the gate refuses such a build and the scenario falls back to the legacy
-  /// walk — whose page window is the raw slot space and whose occurrence
-  /// numbering is page-local.
+  /// Collects the scenario's VIRTUAL base items in their final BASE order.
   ///
-  /// ONLY the non-trivial shape warns. The app auto-creates a 0-source,
-  /// 1-explicit-item `entryWorkspace` every time a file is opened from the browse
-  /// page; it is always trivial (one row, no groups, no duplicates) and warning
-  /// on it would drown the signal that matters. A warn line therefore means "a
-  /// large / grouped / duplicated scenario lost its indexed semantics in this
-  /// library", i.e. the explicit-item-in-a-real-scenario combination appeared and
-  /// the representation must be extended to it.
+  /// Real items (a source element or an explicit file that still resolves) are
+  /// sorted by the global comparator; placeholders (an empty/missing source, or
+  /// an explicit file whose node is gone) are collected separately and appended
+  /// after them. A single-source scenario is NOT sorted: its provider already
+  /// enumerates the storage's shared order, so sorting would only risk changing
+  /// the persisted bytes.
+  Future<_BaseCollection> _collectBaseItems({
+    required List<_Segment> segments,
+    required ScenarioSortField sortField,
+    required SortDirection direction,
+    required bool grouped,
+  }) async {
+    final real = <EffectivePlaybackItem>[];
+    final placeholders = <EffectivePlaybackItem>[];
+    for (final segment in segments) {
+      for (var local = 0; local < segment.count; local++) {
+        final item = await segment.resolve(local);
+        if (item == null) continue;
+        // `available: false` (or a synthetic id) is the placeholder shape used
+        // by both an empty source and a vanished explicit file.
+        if (!item.available || _nodeIdOf(item) < 0) {
+          placeholders.add(item);
+        } else {
+          real.add(item);
+        }
+      }
+    }
+    final singleSource =
+        segments.length == 1 && segments.single is _SourceSegment;
+    if (!singleSource && real.length > 1) {
+      final comparator = ScenarioOrderComparator(
+        field: sortField,
+        direction: direction,
+        grouped: grouped,
+      );
+      real.sort((a, b) => comparator.compare(a.media, b.media));
+    }
+    return _BaseCollection(real: real, placeholders: placeholders);
+  }
+
+  /// Encodes the persisted representation of the base order built by this walk.
+  ///
+  /// Two shapes, selected by the scenario's structure:
+  ///
+  ///  - `SingleBaseOrder` (kind 0) for the one-source case: one storage's shared
+  ///    order plus a membership bitmap. Byte-identical to the pre-change index.
+  ///  - `MultiBaseOrder` (kind 1) otherwise: the global interleave of the
+  ///    storages' shared orders, as `(stream, rank)` varints.
+  ///
+  /// Returns a null blob plus a reason when an invariant does not hold; the
+  /// caller then logs the refusal and persists nothing.
+  ({_SharedIndexBlobs? blobs, String? reason}) _finishSharedIndex({
+    required _SharedOrderScope scope,
+    required bool singleSource,
+    required String? singleStorageId,
+    required int total,
+    required List<EffectivePlaybackItem> real,
+    required List<EffectivePlaybackItem> placeholders,
+    required List<bool> acceptedReal,
+    required List<bool> acceptedPlaceholders,
+    required ScenarioQueuePlan plan,
+    required Uint8List? elementOrder,
+  }) {
+    final overlay = SharedRowOverlay.fromPlan(
+      baseCount: plan.totalRanks,
+      entries: plan.entries,
+      groupsById: {for (final g in plan.groups) g.groupId: g},
+    );
+
+    if (singleSource) {
+      final storageId = singleStorageId;
+      final order = storageId == null ? null : scope.orderOf[storageId];
+      if (storageId == null || order == null) {
+        return (blobs: null, reason: 'no shared order for $storageId');
+      }
+      final bitsBuilder = BitVectorBuilder(order.length);
+      var lastPosition = -1;
+      for (final item in real) {
+        final position = scope.positionOfNode(storageId, _nodeIdOf(item));
+        if (position == null) {
+          return (
+            blobs: null,
+            reason: 'node ${_nodeIdOf(item)} is absent from the shared order '
+                'of $storageId',
+          );
+        }
+        // The slice enumerates positions ASCENDING, so a provider whose element
+        // order differs from the shared order restricted would silently REORDER
+        // the base order. Keep the v44 order invariant.
+        if (position <= lastPosition) {
+          return (
+            blobs: null,
+            reason: 'provider order != shared order at position $position '
+                '(last $lastPosition)',
+          );
+        }
+        lastPosition = position;
+        bitsBuilder.set(position);
+      }
+      final bits = bitsBuilder.build();
+      if (bits.count != total) {
+        return (
+          blobs: null,
+          reason: 'slice count ${bits.count} != virtual space $total',
+        );
+      }
+      final accepted = _acceptedBitmap(
+        real: real.length,
+        placeholders: placeholders.length,
+        acceptedReal: acceptedReal,
+        acceptedPlaceholders: acceptedPlaceholders,
+      );
+      // The accepted set must be exactly the walk's, or the reader would serve a
+      // different queue than the one the build walked.
+      if (accepted.length != total || accepted.count != plan.totalRanks) {
+        return (
+          blobs: null,
+          reason: 'accepted set mismatch (virtualSize ${accepted.length} vs '
+              '$total, count ${accepted.count} vs ${plan.totalRanks})',
+        );
+      }
+      return (
+        blobs: _SharedIndexBlobs(
+          baseCount: plan.totalRanks,
+          slices: SharedIndexCodec.encodeSlices(SingleBaseOrder([
+            (
+              orderKey: scope.orderKeyOf[storageId]!,
+              mediaRev: scope.mediaRevOf[storageId]!,
+              bits: bits,
+            ),
+          ])),
+          accepted: SharedIndexCodec.encodeBitmap(accepted),
+          absorbed: SharedIndexCodec.encodeBitmap(overlay.absorbed),
+          groupRows: SharedIndexCodec.encodeGroups(overlay.groupRows),
+          placeholders:
+              SharedIndexCodec.encodePlaceholders(overlay.placeholders),
+          occurrence: SharedIndexCodec.encodeIntMap(overlay.occurrence),
+          flags: SharedIndexCodec.encodeIntMap(overlay.flags),
+          elementOrder: elementOrder,
+        ),
+        reason: null,
+      );
+    }
+
+    // Merged shape: one stream per contributing storage, in a stable order.
+    final storages = scope.streamStorages;
+    if (storages.isEmpty) {
+      return (blobs: null, reason: 'no storage contributes to the base order');
+    }
+    final counts = List<int>.filled(storages.length, 0);
+    final entries = <({int stream, int rank})>[];
+    for (final item in real) {
+      final storageId = item.media.storageId;
+      final stream = scope.streamIndexOf(storageId);
+      final position = scope.positionOfNode(storageId, _nodeIdOf(item));
+      if (stream == null || position == null) {
+        return (
+          blobs: null,
+          reason: 'node ${_nodeIdOf(item)} of storage $storageId is absent '
+              'from the shared order',
+        );
+      }
+      counts[stream]++;
+      entries.add((stream: stream, rank: position));
+    }
+    final MergedOrder order;
+    try {
+      order = MergedOrder.decode(MergedOrder.encodeEntries(
+        streams: [
+          for (var i = 0; i < storages.length; i++)
+            MergedOrderStream(
+              orderKey: scope.orderKeyOf[storages[i]]!,
+              mediaRev: scope.mediaRevOf[storages[i]]!,
+              count: counts[i],
+              orderLength: scope.orderOf[storages[i]]!.length,
+            ),
+        ],
+        entries: entries,
+      ))!;
+    } catch (e) {
+      // A rank that DECREASES means the comparator and the shared order's
+      // ORDER BY disagree — never persist a base order the reader would
+      // misinterpret.
+      return (blobs: null, reason: 'merged base order is not a valid merge: $e');
+    }
+    final accepted = _acceptedBitmap(
+      real: real.length,
+      placeholders: placeholders.length,
+      acceptedReal: acceptedReal,
+      acceptedPlaceholders: acceptedPlaceholders,
+    );
+    if (accepted.count != plan.totalRanks) {
+      return (
+        blobs: null,
+        reason: 'accepted count ${accepted.count} != plan ${plan.totalRanks}',
+      );
+    }
+    return (
+      blobs: _SharedIndexBlobs(
+        baseCount: plan.totalRanks,
+        slices: SharedIndexCodec.encodeSlices(MultiBaseOrder(order)),
+        accepted: SharedIndexCodec.encodeBitmap(accepted),
+        absorbed: SharedIndexCodec.encodeBitmap(overlay.absorbed),
+        groupRows: SharedIndexCodec.encodeGroups(overlay.groupRows),
+        placeholders: SharedIndexCodec.encodePlaceholders(overlay.placeholders),
+        occurrence: SharedIndexCodec.encodeIntMap(overlay.occurrence),
+        flags: SharedIndexCodec.encodeIntMap(overlay.flags),
+        elementOrder: elementOrder,
+      ),
+      reason: null,
+    );
+  }
+
+  /// Membership over the base virtual space: the sorted real entries followed
+  /// by the placeholder tail.
+  static BitVector _acceptedBitmap({
+    required int real,
+    required int placeholders,
+    required List<bool> acceptedReal,
+    required List<bool> acceptedPlaceholders,
+  }) {
+    final builder = BitVectorBuilder(real + placeholders);
+    for (var i = 0; i < acceptedReal.length; i++) {
+      if (acceptedReal[i]) builder.set(i);
+    }
+    for (var i = 0; i < acceptedPlaceholders.length; i++) {
+      if (acceptedPlaceholders[i]) builder.set(real + i);
+    }
+    return builder.build();
+  }
+
+  /// Element-axis permutation for a VM view: the queue's base rows (a file or a
+  /// whole merged group) sorted by the key the row DISPLAYS, so a group sits
+  /// where its totals belong instead of at its first member's rank.
+  ///
+  /// Only the element axis moves: the base order (and therefore every rank in
+  /// the persisted blob) stays the file order, which is what keeps the index
+  /// rebuildable and the member ranks valid.
+  ///
+  /// Returns null unless at least one group exists — a scenario without VM
+  /// rules never pays for a permutation.
+  static Int32List? _elementOrderFor({
+    required List<EffectivePlaybackItem> stream,
+    required ScenarioQueuePlan plan,
+    required ScenarioSortField sortField,
+    required SortDirection direction,
+    required bool grouped,
+  }) {
+    if (plan.groups.isEmpty) return null;
+    final groupById = {for (final g in plan.groups) g.groupId: g};
+    // Group members are files of THIS stream, so their nodes are already in
+    // memory — no extra query, and no second source of truth for the totals.
+    final rankByNodeId = <int, int>{};
+    for (var rank = 0; rank < stream.length; rank++) {
+      rankByNodeId[_nodeIdOf(stream[rank])] = rank;
+    }
+
+    final elements = <({int rank, MediaNode key})>[];
+    for (final entry in plan.entries) {
+      final anchor = stream[entry.anchorRank].media;
+      if (!entry.isGroup) {
+        elements.add((rank: entry.anchorRank, key: anchor));
+        continue;
+      }
+      final group = groupById[entry.groupId];
+      if (group == null) {
+        elements.add((rank: entry.anchorRank, key: anchor));
+        continue;
+      }
+      DateTime? lastModified = anchor.modifiedAt;
+      for (final member in group.members) {
+        final memberRank = rankByNodeId[member.mediaNodeId];
+        if (memberRank == null) continue;
+        final time = stream[memberRank].media.modifiedAt;
+        if (time != null &&
+            (lastModified == null || time.isAfter(lastModified))) {
+          lastModified = time;
+        }
+      }
+      // A synthetic node carrying the group's DISPLAYED facts. Name / path /
+      // parent come from the anchor member (D6), so the grouped block and the
+      // tie tail stay meaningful while size/duration are the group's totals.
+      elements.add((
+        rank: entry.anchorRank,
+        key: MediaNode.file(
+          id: '-1',
+          storageId: anchor.storageId,
+          path: anchor.path,
+          parentPath: anchor.parentPath,
+          name: anchor.name,
+          normalizedName: anchor.normalizedName,
+          mediaType: MediaType.video,
+          sizeInBytes: group.totalSizeBytes,
+          durationMs: group.totalDurationMs,
+          modifiedAt: lastModified,
+        ),
+      ));
+    }
+
+    final comparator = ScenarioOrderComparator(
+      field: sortField,
+      direction: direction,
+      grouped: grouped,
+    );
+    elements.sort((a, b) {
+      final byKey = comparator.compare(a.key, b.key);
+      // Base rank closes the order: two rows keyed identically must still land
+      // deterministically (and the permutation must stay a permutation).
+      return byKey != 0 ? byKey : a.rank.compareTo(b.rank);
+    });
+    return Int32List.fromList([for (final e in elements) e.rank]);
+  }
+
+  /// Logs a REFUSED shared-index build (the scenario falls back to the legacy
+  /// walk: the page window is the raw slot space and occurrence numbering is
+  /// page-local).
+  ///
+  /// The only representability gaps left are genuine invariant breaks — a node
+  /// that is not in its storage's shared order (a media-type/storage mismatch)
+  /// or a provider whose element order disagrees with the shared order. Those
+  /// always carry a [reason] and always log, however small the scenario is: an
+  /// invariant break is a bug, not a shape limit.
+  ///
+  /// A refusal WITHOUT a reason is only possible for the degenerate "no shared
+  /// order at all" case; a tiny, flat scenario is then allowed to stay quiet
+  /// (the auto-created 1-item `entryWorkspace` would otherwise flood the log).
   void _logUnrepresentable(
     String scenarioId,
     ScenarioQueuePlan plan, {
@@ -748,6 +1189,7 @@ class ScenarioResolver {
         placeholders: blobs.placeholders,
         occurrence: blobs.occurrence,
         flags: blobs.flags,
+        elementOrder: blobs.elementOrder,
       );
     } catch (e) {
       _log.w('shared index write failed (build=$buildId): $e');
@@ -905,6 +1347,16 @@ class ScenarioResolver {
     final total = _estimateTotal(segments);
     await _prepareSegments(segments, total);
 
+    // The BASE order this view walks: the same globally sorted collection the
+    // persisted index is built from, so the walk and the indexed read can never
+    // disagree about the queue.
+    final base = await _collectBaseItems(
+      segments: segments,
+      sortField: effectiveSortField,
+      direction: segmentDirection,
+      grouped: effectiveSourceInternalFirst,
+    );
+
     // ONE element list per view — merged or not. It is built from the accepted
     // stream in BASE order (groups folded to one element each) and only then
     // put through the view's permutation, so the walk, the indexed read and the
@@ -913,9 +1365,8 @@ class ScenarioResolver {
     // permutation, and a merged view needs the whole stream to derive its
     // groups. The index-backed read is the O(pageSize) path.
     final mat = await _materializeVm(
-      segments: segments,
+      baseItems: [...base.real, ...base.placeholders],
       exclusionSet: await _buildExclusionSet(exclusions),
-      total: total,
       dedup: effectiveDedup,
       shuffled: shuffled,
       seed: seed,
@@ -1784,17 +2235,14 @@ class ScenarioResolver {
   /// to define its permutation, and a merged view needs the whole stream to
   /// derive its groups. The index-backed read is the O(pageSize) path.
   Future<_VmMaterialization> _materializeVm({
-    required List<_Segment> segments,
+    required List<EffectivePlaybackItem> baseItems,
     required _ExclusionSet exclusionSet,
-    required int total,
     required bool dedup,
     required bool shuffled,
     required int? seed,
     required SortDirection sortDirection,
     required List<VirtualMediaRule> vmRules,
   }) async {
-    final space = _VirtualSpace(segments);
-
     final occurrenceCounts = <String, int>{};
     EffectivePlaybackItem? accept(EffectivePlaybackItem? item) {
       if (item == null) return null;
@@ -1818,8 +2266,12 @@ class ScenarioResolver {
     // Only a MERGED view tracks representatives (they anchor a VM session); an
     // unmerged one would carry one map entry per file for nothing.
     final trackRepresentative = vmRules.isNotEmpty;
-    for (var probe = 0; probe < total; probe++) {
-      final accepted = accept(await space.resolve(probe));
+    // [baseItems] is already in the scenario's BASE order (the same collection
+    // the persisted index is built from), so the walk is a plain sequence —
+    // no per-probe segment resolution, and no chance of a different order than
+    // the index-backed read serves.
+    for (final item in baseItems) {
+      final accepted = accept(item);
       if (accepted == null) continue;
       stream.add(accepted);
       if (trackRepresentative) {
@@ -1833,7 +2285,14 @@ class ScenarioResolver {
       }
     }
 
-    final groups = resolveGroupsForStream(stream, vmRules);
+    // 简播: files with a sibling `.llc` never join a merged group. Skipped
+    // entirely when no rule can merge anything — a non-VM view must never pay
+    // for a filesystem pass.
+    final Set<String> fakeCutExclusions = vmRules.isEmpty
+        ? const <String>{}
+        : await vmFakeCutExclusionKeysForStream(stream);
+    final groups = resolveGroupsForStream(stream, vmRules,
+        excludedMediaKeys: fakeCutExclusions);
     final elements =
         groups.isEmpty ? stream : applyVmOverlay(stream, groups.byKey);
     return _VmMaterialization(
@@ -1974,10 +2433,15 @@ class ScenarioResolver {
     }
 
     await _prepareSegments(segments, total);
-    final mat = await _materializeVm(
+    final base = await _collectBaseItems(
       segments: segments,
+      sortField: sortField,
+      direction: segmentDirection,
+      grouped: sourceInternalFirst,
+    );
+    final mat = await _materializeVm(
+      baseItems: [...base.real, ...base.placeholders],
       exclusionSet: await _buildExclusionSet(exclusions),
-      total: total,
       dedup: dedup,
       shuffled: shuffled,
       seed: seed,
@@ -2258,6 +2722,12 @@ class ScenarioResolver {
 
     final total = _estimateTotal(segments);
     await _prepareSegments(segments, total);
+    final base = await _collectBaseItems(
+      segments: segments,
+      sortField: sortField,
+      direction: segmentDirection,
+      grouped: sourceInternalFirst,
+    );
 
     // The SAME element list the page read serves: base-order accepted stream,
     // merge groups folded into one element each, view permutation applied last.
@@ -2265,9 +2735,8 @@ class ScenarioResolver {
     // queue actually shows the row at — no separate (and easily divergent)
     // base→display mapping to keep in sync.
     final mat = await _materializeVm(
-      segments: segments,
+      baseItems: [...base.real, ...base.placeholders],
       exclusionSet: exclusionSet,
-      total: total,
       dedup: dedup,
       shuffled: shuffled,
       seed: seed,
@@ -2711,14 +3180,33 @@ class _ExplicitSegment extends _Segment {
     }
     final va = _slotNumeric(a, field);
     final vb = _slotNumeric(b, field);
-    if (va == null || vb == null) {
-      // NULLs last whichever direction — never flipped.
-      if (va == null && vb == null) return _slotTail(a, b, field);
-      return va == null ? 1 : -1;
+    // `size`/`duration` 0 is "the lane could not stat it", exactly as the DAO
+    // treats it (`_nullsLastTerms`: `col IS NULL OR col = 0`). Treating 0 as a
+    // real value here made an explicit-item queue sort stat-less rows first
+    // while the same rows in a folder source sorted last.
+    final ua = _slotUnknown(va, field);
+    final ub = _slotUnknown(vb, field);
+    if (ua || ub) {
+      // Unknown is ALWAYS last — never flipped by the direction.
+      if (ua != ub) return ua ? 1 : -1;
+      // Both unknown: the DAO still orders by the raw column, NULL first on
+      // ascending. Mirror that so the two orderings cannot diverge.
+      final raw = va == null
+          ? (vb == null ? 0 : -1)
+          : (vb == null ? 1 : va.compareTo(vb));
+      if (raw != 0) return ascending ? raw : -raw;
+      return _slotTail(a, b, field);
     }
-    final byValue = va.compareTo(vb);
+    final byValue = va!.compareTo(vb!);
     if (byValue != 0) return ascending ? byValue : -byValue;
     return _slotTail(a, b, field);
+  }
+
+  static bool _slotUnknown(int? value, ScenarioSortField field) {
+    if (value == null) return true;
+    final zeroIsUnknown = field == ScenarioSortField.sizeInBytes ||
+        field == ScenarioSortField.durationMs;
+    return zeroIsUnknown && value == 0;
   }
 
   /// Ascending total-order tail, kept ascending in both directions.
@@ -2737,11 +3225,12 @@ class _ExplicitSegment extends _Segment {
   static String _slotName(_ExplicitSlot slot) {
     final node = slot.node;
     if (node != null) {
-      return (node.normalizedName ?? node.name).toLowerCase();
+      // The stored natural key — the same column SQL orders by.
+      return node.naturalNameValue;
     }
     // Missing node: fall back to the stored path's last segment.
     final segments = pathConv(slot.item.path);
-    return (segments.isEmpty ? slot.item.path : segments.last).toLowerCase();
+    return naturalSortKey(segments.isEmpty ? slot.item.path : segments.last);
   }
 
   static int? _slotNumeric(_ExplicitSlot slot, ScenarioSortField field) {
@@ -2899,6 +3388,7 @@ class _SharedIndexBlobs {
     required this.placeholders,
     required this.occurrence,
     required this.flags,
+    this.elementOrder,
   });
 
   final int baseCount;
@@ -2909,110 +3399,110 @@ class _SharedIndexBlobs {
   final Uint8List placeholders;
   final Uint8List occurrence;
   final Uint8List flags;
+
+  /// Element-axis permutation (VM rows sorted by their DISPLAYED totals), or
+  /// null for the identity permutation.
+  final Uint8List? elementOrder;
 }
 
-/// In-progress shared-order index for one build.
+/// The set of SHARED ORDERS a build merges over.
 ///
-/// The per-source slices are filled from the accepted-stream walk itself,
-/// because a slice IS the set of shared-order positions the resolver's own
-/// virtual space assigned to that source. Re-deriving it from a path predicate
-/// would add a second source of truth that could silently drift; instead
-/// [finish] refuses to produce an index unless the virtual space is EXACTLY the
-/// slices' concatenation, each slice's element ORDER matches its segment, and
-/// the accepted set is exactly the walk's. A refused build persists NOTHING, so a
-/// non-representable scenario (placeholder segment, explicit item,
-/// media-type/storage mismatch, reordered provider) degrades to the legacy walk
-/// and is never mis-served.
-class _SharedIndexDraft {
-  _SharedIndexDraft._({
-    required this.sources,
+/// A shared order is one storage's full file order (`media_orders`), built by
+/// `SharedMediaOrder` from the DAO's ORDER BY. This scope resolves a node to its
+/// position inside its storage's order — what turns the globally sorted item
+/// list into the `(stream, rank)` sequence the merged encoding stores.
+///
+/// [streamStorages] is a STABLE order (sorted storage ids), so two builds of the
+/// same scenario produce byte-identical blobs.
+class _SharedOrderScope {
+  _SharedOrderScope._({
     required this.orderKeyOf,
     required this.orderOf,
     required this.positionOf,
     required this.mediaRevOf,
-    required int total,
-  })  : total = total,
-        _bits = [
-          for (final s in sources)
-            BitVectorBuilder(orderOf[s.storageId]!.length),
-        ],
-        // -1 = "nothing recorded yet"; real positions are >= 0, so the first
-        // element of every segment passes the strict monotonicity check.
-        _lastPos = [for (final _ in sources) -1],
-        _accepted = BitVectorBuilder(total);
+    required this.streamStorages,
+  }) : _streamIndexOf = {
+          for (var i = 0; i < streamStorages.length; i++) streamStorages[i]: i,
+        };
 
-  final List<ScenarioSource> sources;
   final Map<String, String> orderKeyOf;
   final Map<String, Int32List> orderOf;
   final Map<String, Map<int, int>> positionOf;
   final Map<String, int> mediaRevOf;
-  final int total;
-  final List<BitVectorBuilder> _bits;
 
-  /// Last recorded shared-order position per segment (see [record]).
-  ///
-  /// The slice enumerates its positions ASCENDING, so a provider whose element
-  /// order differs from the shared order restricted would pass a pure
-  /// set/count check and silently REORDER the base order — the "wrong page /
-  /// mis-anchored group" class of bug. Requiring a strictly increasing position
-  /// per segment makes the gate an ORDER invariant too.
-  final List<int> _lastPos;
+  /// Distinct storages contributing to the base order, in encoding order.
+  final List<String> streamStorages;
 
-  final BitVectorBuilder _accepted;
+  final Map<String, int> _streamIndexOf;
 
-  /// Flips false the moment the scenario turns out not to be representable.
-  bool viable = true;
+  int? streamIndexOf(String storageId) => _streamIndexOf[storageId];
 
-  /// WHY [viable] flipped (null while still viable). The gate's rejections used
-  /// to be silent, which is exactly the failure class that is hardest to
-  /// diagnose in the field: a large scenario would quietly lose its indexed
-  /// semantics with no line anywhere explaining which invariant failed.
-  String? _rejectReason;
+  int? positionOfNode(String storageId, int nodeId) =>
+      positionOf[storageId]?[nodeId];
 
-  /// Builds the draft, or null when the virtual space is not the sources
-  /// concatenated (any non-source segment disqualifies the scenario).
-  static Future<_SharedIndexDraft?> prepare({
+  /// Builds the orders for every storage the scenario touches: its sources'
+  /// storages AND the storages of its explicit items (an explicit file is a
+  /// `media_nodes` row of its own storage, which no source need cover).
+  static Future<_SharedOrderScope?> prepare({
     required List<_Segment> segments,
     required MediaNodeRepository nodeRepo,
+    required List<MediaType> mediaTypes,
     required ScenarioSortField sortField,
     required SortDirection sortDirection,
     required bool sourceInternalFirst,
-    required List<MediaType> mediaTypes,
-    required int total,
     required MediaOrderDao orderDao,
     required Future<int> Function(String storageId) revisionOf,
   }) async {
-    if (segments.isEmpty) return null;
-    if (segments.any((s) => s is! _SourceSegment)) return null;
-    final sources = [for (final s in segments) (s as _SourceSegment).source];
+    final storageIds = <String>{};
+    final extraTypes = <MediaType>{};
+    for (final segment in segments) {
+      if (segment is _SourceSegment) {
+        storageIds.add(segment.source.storageId);
+      } else if (segment is _ExplicitSegment) {
+        for (final slot in segment.slots) {
+          final node = slot.node;
+          storageIds.add(node?.storageId ?? slot.item.storageId);
+          if (node != null) {
+            extraTypes.add(
+                node.maybeMap(file: (f) => f.mediaType, orElse: () => null) ??
+                    MediaType.unknown);
+          }
+        }
+      }
+    }
+    if (storageIds.isEmpty) return null;
+    // An explicit file can be a media type the browse scope excludes (an audio
+    // file added while scoped to video). Ordering a SUPERSET is harmless — the
+    // base order only consumes positions — whereas omitting the type would make
+    // the item unrepresentable and silently cost the whole scenario its index.
+    final types = <MediaType>{...mediaTypes, ...extraTypes}.toList();
 
     final orderKeyOf = <String, String>{};
     final orderOf = <String, Int32List>{};
     final positionOf = <String, Map<int, int>>{};
     final mediaRevOf = <String, int>{};
-    for (final source in sources) {
-      if (orderOf.containsKey(source.storageId)) continue;
+    for (final storageId in storageIds) {
       final key = SharedMediaOrder.orderKey(
-        storageId: source.storageId,
+        storageId: storageId,
         sortField: sortField,
         sortDirection: sortDirection,
         pathGroupFirst: sourceInternalFirst,
-        mediaTypes: mediaTypes,
+        mediaTypes: types,
       );
-      orderKeyOf[source.storageId] = key;
-      final rev = await revisionOf(source.storageId);
-      mediaRevOf[source.storageId] = rev;
+      orderKeyOf[storageId] = key;
+      final rev = await revisionOf(storageId);
+      mediaRevOf[storageId] = rev;
       // Reuse the shared order only when it was built against the SAME media
       // revision: a stale order would map ranks to the wrong nodes.
       var order = await orderDao.read(key, mediaRev: rev);
       if (order == null) {
         order = await SharedMediaOrder.build(
           nodeRepo,
-          storageId: source.storageId,
+          storageId: storageId,
           sortField: sortField,
           sortDirection: sortDirection,
           pathGroupFirst: sourceInternalFirst,
-          mediaTypes: mediaTypes,
+          mediaTypes: types,
         );
         try {
           await orderDao.write(key, mediaRev: rev, ids: order);
@@ -3022,136 +3512,57 @@ class _SharedIndexDraft {
           _log.w('shared order cache write failed ($key): $e');
         }
       }
-      orderOf[source.storageId] = order;
-      positionOf[source.storageId] = {
+      orderOf[storageId] = order;
+      positionOf[storageId] = {
         for (var i = 0; i < order.length; i++) order[i]: i,
       };
+      // Bounded cache: this is the only place that knows a storage's current
+      // revision, so it is also the only place that can tell which stored
+      // orders are dead. Bookkeeping only — never fail the build over it.
+      final prefix = SharedMediaOrder.scopePrefix(storageId);
+      try {
+        await orderDao.pruneStale(keyPrefix: prefix, currentRev: rev);
+        await orderDao.pruneToRecent(keyPrefix: prefix);
+      } catch (e) {
+        _log.w('shared order cache prune failed ($prefix): $e');
+      }
     }
-    return _SharedIndexDraft._(
-      sources: sources,
+    return _SharedOrderScope._(
       orderKeyOf: orderKeyOf,
       orderOf: orderOf,
       positionOf: positionOf,
       mediaRevOf: mediaRevOf,
-      total: total,
+      streamStorages: storageIds.toList()..sort(),
     );
   }
+}
 
-  /// Marks the shared-order position of the node the walk found at
-  /// [segmentIndex]. Called for EVERY resolved element, accepted or not: the
-  /// slice describes the virtual space (excluded items are holes in the
-  /// accepted bitmap, not absent from the space).
-  void record(int segmentIndex, int nodeId) {
-    if (!viable) return;
-    final source = sources[segmentIndex];
-    final position = positionOf[source.storageId]?[nodeId];
-    if (position == null) {
-      // The provider produced a node the shared order does not contain (media
-      // type or storage mismatch): give up rather than write a wrong index.
-      viable = false;
-      _rejectReason =
-          'node $nodeId from storage ${source.storageId} is absent from the '
-          'shared order (source=${source.id} segment=$segmentIndex)';
-      return;
-    }
-    // ORDER invariant: the slice enumerates positions ASCENDING
-    // (`SharedOrderSlice.nodeIdAt`), so within a segment the provider's element
-    // order must be the shared order restricted. A repeat is fatal too — a
-    // bitmap cannot express a duplicated element, which would desync the
-    // virtual space from the base order. Today only folder segments (proven
-    // ordered by construction) and single-element file segments can pass; this
-    // is the guard for any future multi-element provider.
-    if (position <= _lastPos[segmentIndex]) {
-      viable = false;
-      _rejectReason =
-          'provider order != shared order at segment $segmentIndex '
-          '(node $nodeId position $position <= last ${_lastPos[segmentIndex]})';
-      return;
-    }
-    _lastPos[segmentIndex] = position;
-    _bits[segmentIndex].set(position);
-  }
+/// The scenario's base items split by representability.
+///
+/// [real] is the globally sorted media (sources + explicit files); [placeholders]
+/// are the rows with no node (empty/missing source, vanished explicit file),
+/// kept in segment order and appended after [real].
+class _BaseCollection {
+  const _BaseCollection({required this.real, required this.placeholders});
 
-  void markAccepted(int probe) {
-    if (viable) _accepted.set(probe);
-  }
-
-  /// Encodes the index, or null when the invariants that make the reader exact
-  /// do not hold.
-  _SharedIndexBlobs? finish({
-    required int acceptedCount,
-    required List<QueueEntryRow> entries,
-    required List<GroupRow> groups,
-  }) {
-    if (!viable) return null;
-    final built = [for (final bits in _bits) bits.build()];
-    var sliceCount = 0;
-    for (final b in built) {
-      sliceCount += b.count;
-    }
-    // The virtual space must be EXACTLY the slices concatenated. Combined with
-    // [record]'s strict monotonicity, a slice can hold at most its segment's
-    // count of positions, so equality here also forces PER-SEGMENT count
-    // equality — i.e. provider order == the shared order restricted.
-    if (sliceCount != total) {
-      _rejectReason = 'slice count $sliceCount != virtual space $total';
-      return null;
-    }
-
-    final slices = <SharedOrderSlice>[
-      for (var i = 0; i < sources.length; i++)
-        SharedOrderSlice(
-          orderKey: orderKeyOf[sources[i].storageId]!,
-          order: orderOf[sources[i].storageId]!,
-          bits: built[i],
-        ),
-    ];
-    final accepted = _accepted.build();
-    final base = SharedBaseOrder(slices: slices, accepted: accepted);
-    // …and the accepted set must be exactly the walk's, or the reader would
-    // serve a different queue than the one the build walked.
-    if (base.virtualSize != total || base.count != acceptedCount) {
-      _rejectReason =
-          'accepted set mismatch (virtualSize ${base.virtualSize} vs $total, '
-          'count ${base.count} vs $acceptedCount)';
-      return null;
-    }
-
-    final overlay = SharedRowOverlay.fromPlan(
-      baseCount: acceptedCount,
-      entries: entries,
-      groupsById: {for (final g in groups) g.groupId: g},
-    );
-    return _SharedIndexBlobs(
-      baseCount: acceptedCount,
-      slices: SharedIndexCodec.encodeSlices([
-        for (var i = 0; i < slices.length; i++)
-          (
-            orderKey: slices[i].orderKey,
-            mediaRev: mediaRevOf[sources[i].storageId]!,
-            bits: slices[i].bits,
-          ),
-      ]),
-      accepted: SharedIndexCodec.encodeBitmap(accepted),
-      absorbed: SharedIndexCodec.encodeBitmap(overlay.absorbed),
-      groupRows: SharedIndexCodec.encodeGroups(overlay.groupRows),
-      placeholders: SharedIndexCodec.encodePlaceholders(overlay.placeholders),
-      occurrence: SharedIndexCodec.encodeIntMap(overlay.occurrence),
-      flags: SharedIndexCodec.encodeIntMap(overlay.flags),
-    );
-  }
-
-  /// Why the gate refused this build, or null when it succeeded. Only meaningful
-  /// after [finish] returned null.
-  String? get rejectReason => _rejectReason;
+  final List<EffectivePlaybackItem> real;
+  final List<EffectivePlaybackItem> placeholders;
 }
 
 /// A decoded shared-order index: the base order plus the visible-row overlay.
 class _SharedIndex {
-  _SharedIndex({required this.base, required this.overlay});
+  _SharedIndex({
+    required this.base,
+    required this.overlay,
+    this.elementOrder,
+  });
 
-  final SharedBaseOrder base;
+  final BaseOrderView base;
   final SharedRowOverlay overlay;
+
+  /// Element ordinal → anchor rank when the VM view sorts rows by their
+  /// DISPLAYED totals; null means the identity permutation (rank order).
+  final Int32List? elementOrder;
 }
 
 /// The queue's ONE index space: display position ⇄ element ordinal.
@@ -3287,6 +3698,23 @@ class _SharedRowSource implements _IndexRowSource {
   /// fetched, and the nodes are dropped before the next batch.
   static const int _headerBatch = 2000;
 
+  /// Reverse of [_index.elementOrder] (rank → element ordinal), built lazily.
+  ///
+  /// `-1` marks an absorbed rank (no element of its own).
+  late final Int32List _rankToOrdinal = _buildRankToOrdinal();
+
+  Int32List _buildRankToOrdinal() {
+    final baseCount = _index.overlay.baseCount;
+    final out = Int32List.fromList(List<int>.filled(baseCount, -1));
+    final order = _index.elementOrder;
+    if (order == null) return out;
+    for (var ordinal = 0; ordinal < order.length; ordinal++) {
+      final rank = order[ordinal];
+      if (rank >= 0 && rank < baseCount) out[rank] = ordinal;
+    }
+    return out;
+  }
+
   @override
   Future<int> totalCount() async => _index.overlay.baseCount;
 
@@ -3301,6 +3729,11 @@ class _SharedRowSource implements _IndexRowSource {
     final overlay = _index.overlay;
     if (rank < 0 || rank >= overlay.baseCount) return null;
     if (overlay.absorbed[rank]) return null;
+    final order = _index.elementOrder;
+    if (order != null) {
+      final ordinal = _rankToOrdinal[rank];
+      return ordinal < 0 ? null : ordinal;
+    }
     // `rank - absorbed.rank(rank)` counts the visible rows before this rank,
     // which is exactly its element ordinal (O(1) table lookup).
     return rank - overlay.absorbed.rank(rank);
@@ -3326,6 +3759,13 @@ class _SharedRowSource implements _IndexRowSource {
     if (ordinal < 0) return null;
     final visible = overlay.baseCount - overlay.absorbed.count;
     if (ordinal >= visible) return null;
+    final order = _index.elementOrder;
+    if (order != null) {
+      final rank = order[ordinal];
+      return rank >= 0 && rank < overlay.baseCount && !overlay.absorbed[rank]
+          ? rank
+          : null;
+    }
     // `r - absorbed.rank(r)` is the number of visible rows BEFORE r. It grows by
     // 0 or 1 per rank, so the ordinal-th visible row is the smallest r where it
     // equals `ordinal` — an O(log n) search instead of the DAO's OFFSET scan.
@@ -3353,20 +3793,14 @@ class _SharedRowSource implements _IndexRowSource {
     required int occurrenceIndex,
   }) async {
     final overlay = _index.overlay;
-    // A plain file row wins, mirroring the v43 query's two steps. The node is
-    // located by scanning a slice's order for its id, then asking the base order
-    // for that position's accepted rank — no materialization of the whole
+    // A plain file row wins, mirroring the v43 query's two steps. The base order
+    // locates the node itself (a slice scan for the bitmap form, a stream scan
+    // for the merged form), so this needs no materialization of the whole
     // accepted order (which at 500k would be a 2 MB allocation per call).
-    for (final slice in _index.base.slices) {
-      final order = slice.order;
-      for (var p = 0; p < order.length; p++) {
-        if (order[p] != mediaNodeId) continue;
-        final rank = _index.base.acceptedRankAtPosition(slice, p);
-        if (rank == null) continue;
-        if (overlay.absorbed[rank]) continue; // folded into a group row
-        if ((overlay.occurrence[rank] ?? 0) != occurrenceIndex) continue;
-        return rank;
-      }
+    for (final rank in _index.base.acceptedRanksOfNode(mediaNodeId)) {
+      if (overlay.absorbed[rank]) continue; // folded into a group row
+      if ((overlay.occurrence[rank] ?? 0) != occurrenceIndex) continue;
+      return rank;
     }
     // …otherwise the group row whose members cover it.
     for (final group in overlay.groupRows) {
@@ -3460,6 +3894,16 @@ class _SharedRowSource implements _IndexRowSource {
           lastName: lastNode.name,
         ));
       }
+    }
+    // The element permutation (VM rows sorted by their displayed totals) also
+    // orders the search list, so a hit sits where the queue shows it.
+    if (_index.elementOrder != null) {
+      int ordinalOf(GroupHeaderRow row) {
+        final anchor = _index.overlay.groupById(row.groupId)?.anchorRank;
+        return anchor == null ? -1 : _rankToOrdinal[anchor];
+      }
+
+      out.sort((a, b) => ordinalOf(a).compareTo(ordinalOf(b)));
     }
     return out;
   }

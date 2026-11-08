@@ -10,10 +10,12 @@ import 'package:iris/features/tag_play/model/domain/tag_media_counts.dart';
 import 'package:iris/features/tag_play/model/domain/tag_play_member.dart';
 import 'package:iris/features/tag_play/model/domain/tag_play_view_state.dart';
 import 'package:iris/features/tag_play/model/enum/tag_play_sort_field.dart';
+import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_overlay.dart';
 import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 
 /// Abstraction over "collect the scenario's effective stream" so the tag view
@@ -238,8 +240,7 @@ class TagViewResolver {
     int compare(EffectivePlaybackItem a, EffectivePlaybackItem b) {
       switch (state.sortField) {
         case TagPlaySortField.name:
-          return factor *
-              a.media.name.toLowerCase().compareTo(b.media.name.toLowerCase());
+          return factor * naturalCompare(a.media.name, b.media.name);
         case TagPlaySortField.tagAddedAt:
           final av = addedAtByKey[keyOf(a)] ?? _epoch;
           final bv = addedAtByKey[keyOf(b)] ?? _epoch;
@@ -247,7 +248,17 @@ class TagViewResolver {
       }
     }
 
-    list.sort(compare);
+    if (state.sortField == TagPlaySortField.name && list.length > 1024) {
+      // A tag can span the whole library: encoding the key once per item is
+      // several times cheaper than re-encoding inside the comparator.
+      sortByNaturalKey(
+        list,
+        (e) => e.media.name,
+        descending: factor < 0,
+      );
+    } else {
+      list.sort(compare);
+    }
     var resolved = List<EffectivePlaybackItem>.from(list);
 
     // Shuffle applies ON TOP of the base order (mirrors the scenario model:
@@ -292,7 +303,12 @@ class TagViewResolver {
     if (withVmOverlay) {
       final vmRules = await VirtualMediaService.instance.enabledRules();
       if (vmRules.isNotEmpty) {
-        groups = resolveGroupsForStream(resolved, vmRules);
+        // 简播: a video with a sibling `.llc` stays a single row / single feed.
+        groups = resolveGroupsForStream(
+          resolved,
+          vmRules,
+          excludedMediaKeys: await vmFakeCutExclusionKeysForStream(resolved),
+        );
         if (groups.isNotEmpty) {
           resolved = applyVmOverlay(resolved, groups.byKey);
         }

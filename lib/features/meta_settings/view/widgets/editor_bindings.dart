@@ -38,6 +38,7 @@ import 'package:iris/features/virtual_media/rule/vm_tick_color.dart'
 import 'package:iris/features/virtual_media/rule/vm_tick_extent.dart'
     show vmTickExtentLabel;
 import 'package:iris/features/virtual_media/store/vm_prefs.dart' show VmPrefs;
+import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart';
 import 'package:iris/features/media_library/scan/view/scan_auto_close_settings_dialog.dart';
 import 'package:iris/features/playback_tools/services/screenshot_paths.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_queue_layout.dart';
@@ -253,6 +254,16 @@ abstract final class EditorBindings {
         apply: (store, v) => store.updateDropAppendZonePercent(v),
       ),
 
+      // ── Play · desktop drop auto-scan (`playback.` AUX) ──
+      // ON: the drop starts the scan itself (no gate dialog, no explainer).
+      'drop_auto_scan': _switchTile(
+        icon: Icons.bolt_rounded,
+        titleKey: 'set_drop_auto_scan',
+        subtitleKey: 'set_drop_auto_scan_desc',
+        valueOf: (s) => s.dropAutoScan,
+        apply: (store, v) => store.updateDropAutoScan(v),
+      ),
+
       // ── Play · media_kit demuxer cache preset (`playback.` AUX) ──
       // Radio dialog (stacked rows), not an inline slider: the value is a
       // small enum and phone width never has to fit a slider + value label.
@@ -349,6 +360,10 @@ abstract final class EditorBindings {
         subtitle: (_, t) => SettingTexts.subtitle('scan_auto_close_desc', t),
         open: openScanAutoCloseSettings,
       ),
+      // Completion countdown on/off. Value lives in the scan store (AUX rows),
+      // not the `app.` snapshot, so the generic toggle renderer cannot host it.
+      'scan_auto_close_prompt': (context, def) =>
+          const _ScanPromptSwitchTile(),
       'scan_rescan_reminder': _tile(
         icon: Icons.update,
         titleKey: 'scan_rescan_reminder',
@@ -530,6 +545,15 @@ abstract final class EditorBindings {
         subtitleKey: 'window_keep_in_bounds_desc',
         valueOf: (s) => s.keepWindowInBounds,
         apply: (store, v) => store.updateKeepWindowInBounds(v),
+      ),
+
+      // ── Play · scenario queue follow-on-switch (`window.` AUX bool) ──
+      'scenario_queue_auto_locate': _switchTile(
+        icon: Icons.my_location_rounded,
+        titleKey: 'set_scenario_queue_auto_locate',
+        subtitleKey: 'set_scenario_queue_auto_locate_desc',
+        valueOf: (s) => s.scenarioQueueAutoLocate,
+        apply: (store, v) => store.updateScenarioQueueAutoLocate(v),
       ),
 
       // ── Play · desktop window/playlist rows (`window.` AUX enums) ──

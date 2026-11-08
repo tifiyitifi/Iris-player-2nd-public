@@ -107,37 +107,37 @@ void main() {
 
   Future<void> seed() async {
     // Survivor (old) — the real scanned tree.
-    await node('old', 'yb/a.mp4');
-    await node('old', 'yb/b.mp4');
+    await node('old', 'vault/a.mp4');
+    await node('old', 'vault/b.mp4');
     await dao.insertNode(MediaNode.directory(
-      id: 'old:yb/dir',
+      id: 'old:vault/dir',
       storageId: 'old',
-      path: const <String>['yb', 'dir'],
+      path: const <String>['vault', 'dir'],
       pathDepth: 1,
       name: 'dir',
     ));
     await dao.updatePlaybackProgress(
       storageId: 'old',
-      path: 'yb/a.mp4',
+      path: 'vault/a.mp4',
       positionMs: 1000,
       playCount: 2,
       lastPlayedAt: DateTime(2026, 1, 1),
     );
 
     // Loser (new) — a re-scan of the same drive into its own scope.
-    await node('new', 'yb/a.mp4');
-    await node('new', 'yb/b.mp4');
-    await node('new', 'yb/c.mp4');
+    await node('new', 'vault/a.mp4');
+    await node('new', 'vault/b.mp4');
+    await node('new', 'vault/c.mp4');
     await dao.insertNode(MediaNode.directory(
-      id: 'new:yb/dir',
+      id: 'new:vault/dir',
       storageId: 'new',
-      path: const <String>['yb', 'dir'],
+      path: const <String>['vault', 'dir'],
       pathDepth: 1,
       name: 'dir',
     ));
     await dao.updatePlaybackProgress(
       storageId: 'new',
-      path: 'yb/a.mp4',
+      path: 'vault/a.mp4',
       positionMs: 9000,
       playCount: 5,
       lastPlayedAt: DateTime(2026, 2, 1),
@@ -151,50 +151,50 @@ void main() {
     // References owned by the loser entry.
     await exec(
       "INSERT INTO scenario_sources (scenario_id, storage_id, path, recursive, "
-      "source_kind, sort_order) VALUES ('S', 'new', 'E:/yb', 1, 'folder', 0)",
+      "source_kind, sort_order) VALUES ('S', 'new', 'E:/vault', 1, 'folder', 0)",
     );
     await exec(
       "INSERT INTO scenario_explicit_items (scenario_id, storage_id, path, "
-      "add_order) VALUES ('S', 'new', 'E:/yb/c.mp4', 1)",
+      "add_order) VALUES ('S', 'new', 'E:/vault/c.mp4', 1)",
     );
     await exec(
       "INSERT INTO video_tag_members (tag_id, storage_id, path) "
-      "VALUES (1, 'old', 'E:/yb/a.mp4')",
+      "VALUES (1, 'old', 'E:/vault/a.mp4')",
     );
     await exec(
       "INSERT INTO video_tag_members (tag_id, storage_id, path) "
-      "VALUES (1, 'new', 'E:/yb/a.mp4')",
+      "VALUES (1, 'new', 'E:/vault/a.mp4')",
     );
     await exec(
       "INSERT INTO video_tag_members (tag_id, storage_id, path) "
-      "VALUES (2, 'new', 'E:/yb/b.mp4')",
+      "VALUES (2, 'new', 'E:/vault/b.mp4')",
     );
     await exec(
-      "INSERT INTO favorites_table (storage_id, path) VALUES ('new', 'E:/yb/x')",
+      "INSERT INTO favorites_table (storage_id, path) VALUES ('new', 'E:/vault/x')",
     );
     await exec(
       "INSERT INTO navigation_table (key, current_storage_id, current_path_json) "
       "VALUES ('main', 'new', '[]')",
     );
     await exec(
-      "INSERT INTO bg_mappings_table (storage_id, path) VALUES ('new', 'E:/yb/b.mp4')",
+      "INSERT INTO bg_mappings_table (storage_id, path) VALUES ('new', 'E:/vault/b.mp4')",
     );
     await exec(
       "INSERT INTO bg_mapping_segments_table (mapping_id, action, fg_start_ms, "
       "fg_end_ms, bg_storage_id, bg_path) "
-      "VALUES (1, 'playMedia', 0, 1000, 'new', 'E:/yb/b.mp4')",
+      "VALUES (1, 'playMedia', 0, 1000, 'new', 'E:/vault/b.mp4')",
     );
     await exec(
       "INSERT INTO scan_states (storage_id, data_scope_id, path, status) "
-      "VALUES ('new', 'new', 'yb', 1)",
+      "VALUES ('new', 'new', 'vault', 1)",
     );
     await exec(
       "INSERT INTO scan_queue (storage_id, data_scope_id, path, depth) "
-      "VALUES ('new', 'new', 'yb', 0)",
+      "VALUES ('new', 'new', 'vault', 0)",
     );
     await exec(
       "INSERT INTO scenario_state (scenario_id, current_playback_occurrence) "
-      '''VALUES ('S', '{"storageId":"new","path":"E:/yb/c.mp4","occurrenceIndex":0}')''',
+      '''VALUES ('S', '{"storageId":"new","path":"E:/vault/c.mp4","occurrenceIndex":0}')''',
     );
   }
 
@@ -214,23 +214,23 @@ void main() {
 
     final oldRows = await dao.rowsInScope('old');
     expect(await dao.rowsInScope('new'), isEmpty);
-    expect(stats.mergedNodes, 3); // yb/a.mp4, yb/b.mp4, yb/dir
-    expect(stats.movedNodes, 1); // yb/c.mp4
+    expect(stats.mergedNodes, 3); // vault/a.mp4, vault/b.mp4, vault/dir
+    expect(stats.movedNodes, 1); // vault/c.mp4
     expect(stats.droppedPhantoms, 1); // the absolute 'E:' row
 
     expect(
       oldRows.map((r) => r.path).toSet(),
-      {'yb/a.mp4', 'yb/b.mp4', 'yb/c.mp4', 'yb/dir'},
+      {'vault/a.mp4', 'vault/b.mp4', 'vault/c.mp4', 'vault/dir'},
     );
-    expect(oldRows.where((r) => r.path == 'yb/c.mp4').single.storageId, 'old');
-    expect(oldRows.where((r) => r.path == 'yb/c.mp4').single.dataScopeId, 'old');
+    expect(oldRows.where((r) => r.path == 'vault/c.mp4').single.storageId, 'old');
+    expect(oldRows.where((r) => r.path == 'vault/c.mp4').single.dataScopeId, 'old');
   });
 
   test('the most recently played progress survives', () async {
     await seed();
     await merge();
 
-    final merged = await row('old', 'yb/a.mp4');
+    final merged = await row('old', 'vault/a.mp4');
     expect(merged.playbackPositionMs, 9000);
     expect(merged.playCount, 5);
     expect(merged.lastPlayedAt, DateTime(2026, 2, 1));
@@ -320,12 +320,12 @@ void main() {
     await exec(
       "INSERT INTO media_nodes (storage_id, data_scope_id, path, name, "
       "node_kind, media_type, is_present) VALUES "
-      "('new', 'new', 'E:/yb/d.mp4', 'd.mp4', 'file', 'video', 1)",
+      "('new', 'new', 'E:/vault/d.mp4', 'd.mp4', 'file', 'video', 1)",
     );
     await exec(
       "INSERT INTO media_nodes (storage_id, data_scope_id, path, name, "
       "node_kind, media_type, is_present) VALUES "
-      "('new', 'new', 'yb/d.mp4', 'd.mp4', 'file', 'video', 1)",
+      "('new', 'new', 'vault/d.mp4', 'd.mp4', 'file', 'video', 1)",
     );
 
     final stats = await merge();
@@ -357,10 +357,10 @@ void main() {
 
   test('completion follows the row whose position is kept', () async {
     await seed();
-    // 'old' watched yb/b.mp4 to the end first.
+    // 'old' watched vault/b.mp4 to the end first.
     await dao.updatePlaybackProgress(
       storageId: 'old',
-      path: 'yb/b.mp4',
+      path: 'vault/b.mp4',
       positionMs: 120000,
       completed: true,
       lastPlayedAt: DateTime(2026, 1, 1),
@@ -368,7 +368,7 @@ void main() {
     // The duplicate entry re-opened it later and only got half-way.
     await dao.updatePlaybackProgress(
       storageId: 'new',
-      path: 'yb/b.mp4',
+      path: 'vault/b.mp4',
       positionMs: 5000,
       completed: false,
       lastPlayedAt: DateTime(2026, 2, 2),
@@ -376,7 +376,7 @@ void main() {
 
     await merge();
 
-    final merged = await row('old', 'yb/b.mp4');
+    final merged = await row('old', 'vault/b.mp4');
     expect(merged.playbackPositionMs, 5000);
     expect(
       merged.playbackCompleted,
@@ -389,14 +389,14 @@ void main() {
     await seed();
     await dao.updatePlaybackProgress(
       storageId: 'old',
-      path: 'yb/b.mp4',
+      path: 'vault/b.mp4',
       positionMs: 5000,
       completed: false,
       lastPlayedAt: DateTime(2026, 1, 1),
     );
     await dao.updatePlaybackProgress(
       storageId: 'new',
-      path: 'yb/b.mp4',
+      path: 'vault/b.mp4',
       positionMs: 120000,
       completed: true,
       lastPlayedAt: DateTime(2026, 2, 2),
@@ -404,7 +404,7 @@ void main() {
 
     await merge();
 
-    final merged = await row('old', 'yb/b.mp4');
+    final merged = await row('old', 'vault/b.mp4');
     expect(merged.playbackPositionMs, 120000);
     expect(merged.playbackCompleted, isTrue);
   });
@@ -417,7 +417,7 @@ void main() {
     // merge must keep a single membership (a binary compare used to leave two).
     await exec(
       "INSERT INTO video_tag_members (tag_id, storage_id, path) "
-      "VALUES (1, 'new', 'e:/yb/a.mp4')",
+      "VALUES (1, 'new', 'e:/vault/a.mp4')",
     );
 
     await merge();
@@ -443,11 +443,11 @@ void main() {
     );
     await exec(
       "INSERT INTO media_lib_sources (library_id, storage_id, path) "
-      "VALUES ('sys_old', 'third', 'yb')",
+      "VALUES ('sys_old', 'third', 'vault')",
     );
     await exec(
       "INSERT INTO media_lib_sources (library_id, storage_id, path) "
-      "VALUES ('sys_new', 'new', 'yb')",
+      "VALUES ('sys_new', 'new', 'vault')",
     );
 
     await merge();
@@ -460,7 +460,7 @@ void main() {
     expect(
       sources.map(
           (r) => '${r.read<String>('storage_id')}:${r.read<String>('path')}'),
-      <String>['old:yb', 'third:yb'],
+      <String>['old:vault', 'third:vault'],
     );
   });
 
@@ -468,8 +468,8 @@ void main() {
     await seed();
     await merge();
 
-    // Scans write `segments.length` (yb/c.mp4 = 2); the repair must agree.
-    expect((await row('old', 'yb/c.mp4')).pathDepth, 2);
+    // Scans write `segments.length` (vault/c.mp4 = 2); the repair must agree.
+    expect((await row('old', 'vault/c.mp4')).pathDepth, 2);
   });
 
   test('a base mismatch is refused instead of corrupting paths', () async {

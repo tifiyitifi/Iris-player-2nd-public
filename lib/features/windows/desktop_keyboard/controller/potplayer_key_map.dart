@@ -33,6 +33,30 @@ class KeyCombo {
       '${key.keyLabel}';
 }
 
+/// Canonical id of the apostrophe key, the ONE key bindings may name.
+///
+/// The Windows embedder resolves the physical `'` key (VK_OEM_7 / scan 222) to
+/// [LogicalKeyboardKey.quote] — id 0x22, whose own label is `"` — while Linux
+/// and macOS report [LogicalKeyboardKey.quoteSingle] (0x27) for the same
+/// physical key. Looking a raw Windows event up against a `quoteSingle`
+/// binding therefore misses silently (`key unbound: Alt+"` in the console).
+/// [canonicalKeyCombo] folds the Windows id onto this one so a single default
+/// binding, a recorded override and a live event all agree on every desktop
+/// platform.
+const LogicalKeyboardKey kApostropheKey = LogicalKeyboardKey.quoteSingle;
+
+/// Collapses platform-specific key ids onto the binding identity they share.
+/// See [kApostropheKey]; a no-op for every other key.
+KeyCombo canonicalKeyCombo(KeyCombo combo) {
+  if (combo.key != LogicalKeyboardKey.quote) return combo;
+  return KeyCombo(
+    kApostropheKey,
+    ctrl: combo.ctrl,
+    alt: combo.alt,
+    shift: combo.shift,
+  );
+}
+
 /// PotPlayer-aligned single-key bindings (strict replacement scheme).
 ///
 /// Sources: `.ai_knowledge/tmp/potplayer_shortcuts/parsed/default_shortcuts.tsv`
@@ -48,6 +72,13 @@ final Map<KeyCombo, PotPlayerAction> kPotPlayerKeyMap =
   KeyCombo(LogicalKeyboardKey.space): PotPlayerAction.playPause,
   KeyCombo(LogicalKeyboardKey.pageUp): PotPlayerAction.previousItem,
   KeyCombo(LogicalKeyboardKey.pageDown): PotPlayerAction.nextItem,
+  // Shift+PageUp/Down: keep THIS player in place (paused) and open the
+  // neighbour in a second window sharing the same playback context. Never
+  // repeatable — an auto-repeated key would spawn a window per repeat.
+  KeyCombo(LogicalKeyboardKey.pageUp, shift: true):
+      PotPlayerAction.openPreviousInNewWindow,
+  KeyCombo(LogicalKeyboardKey.pageDown, shift: true):
+      PotPlayerAction.openNextInNewWindow,
   KeyCombo(LogicalKeyboardKey.keyD): PotPlayerAction.frameBackward,
   KeyCombo(LogicalKeyboardKey.keyF): PotPlayerAction.frameForward,
 
@@ -121,6 +152,22 @@ final Map<KeyCombo, PotPlayerAction> kPotPlayerKeyMap =
   KeyCombo(LogicalKeyboardKey.numpadSubtract): PotPlayerAction.tagChordRemove,
   KeyCombo(LogicalKeyboardKey.numpadMultiply):
       PotPlayerAction.tagChordSwitchView,
+
+  // ── 副音 gate for the current foreground media ──
+  // The quick bar's T0 play/stop button in keyboard form. Alt+' is unbound in
+  // PotPlayer's default table and outside the `;` sequence prefix, so it
+  // collides with nothing. Not repeatable: holding the key must not flip the
+  // gate on/off repeatedly. [kApostropheKey], not `quoteSingle` inline: Windows
+  // reports the same physical key as `quote` (0x22), see [canonicalKeyCombo].
+  KeyCombo(kApostropheKey, alt: true): PotPlayerAction.toggleBackgroundGate,
+
+  // ── fg/bg control target (the quick bar's T0 control button) ──
+  // `;` alone arms the sequence buffer (R1 requires NO modifier), so Alt+;
+  // never opens it and collides with nothing. Windows/Linux/macOS all report
+  // the physical semicolon key as `semicolon` (0x3B), so no fold is needed
+  // here. Not repeatable: holding the key must not ping-pong the target.
+  KeyCombo(LogicalKeyboardKey.semicolon, alt: true):
+      PotPlayerAction.toggleControlTarget,
 
   // ── Panels ──
   KeyCombo(LogicalKeyboardKey.keyL): PotPlayerAction.subtitlesPanel,

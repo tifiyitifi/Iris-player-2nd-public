@@ -9,20 +9,20 @@ void main() {
       expect(
         dirRuleMatchesFile(
           mode: DirMatchMode.specifiedDir,
-          paths: const ['yb/20260614'],
+          paths: const ['vault/003'],
           patterns: const [],
-          fullPath: 'E:/yb/20260614/a.mp4',
-          parentPath: 'E:/yb/20260614',
+          fullPath: 'E:/vault/003/a.mp4',
+          parentPath: 'E:/vault/003',
         ),
         isTrue,
       );
       expect(
         dirRuleMatchesFile(
           mode: DirMatchMode.specifiedDir,
-          paths: const ['yb/20260614'],
+          paths: const ['vault/003'],
           patterns: const [],
-          fullPath: 'E:/yb/20260614/sub/a.mp4',
-          parentPath: 'E:/yb/20260614/sub',
+          fullPath: 'E:/vault/003/sub/a.mp4',
+          parentPath: 'E:/vault/003/sub',
         ),
         isFalse,
       );
@@ -231,17 +231,17 @@ void main() {
         );
 
     test('specifiedDir matches compiled == uncompiled', () {
-      for (final parent in ['E:/yb/20260614', 'E:/yb/20260614/sub', '']) {
+      for (final parent in ['E:/vault/003', 'E:/vault/003/sub', '']) {
         expect(
           viaCompiled(
             mode: DirMatchMode.specifiedDir,
-            paths: const ['yb/20260614'],
+            paths: const ['vault/003'],
             fullPath: '$parent/a.mp4',
             parentPath: parent,
           ),
           uncompiled(
             mode: DirMatchMode.specifiedDir,
-            paths: const ['yb/20260614'],
+            paths: const ['vault/003'],
             fullPath: '$parent/a.mp4',
             parentPath: parent,
           ),

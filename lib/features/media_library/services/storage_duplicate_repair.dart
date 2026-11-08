@@ -368,7 +368,7 @@ String _parentOf(String relative) {
 
 int _depthOf(String relative) {
   if (relative.isEmpty) return 0;
-  // The scan writes `segments.length` (pathDepth 2 for `yb/c.mp4`), so the
+  // The scan writes `segments.length` (pathDepth 2 for `vault/c.mp4`), so the
   // repair must count the leaf too — counting separators alone left every moved
   // row one level shallower than a scanned one.
   return '/'.allMatches(relative).length + 1;

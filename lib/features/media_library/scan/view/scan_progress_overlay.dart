@@ -6,6 +6,16 @@ import 'package:iris/features/media_library/scan/store/recursive_scan_store.dart
 import 'package:iris/features/media_library/scan/view/scan_timing_text.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/path_conv.dart';
+
+/// How long a playback-originated run must last before its progress panel
+/// appears.
+///
+/// That run is a side effect of the drop/tap, not a request to scan: a folder
+/// that settles well inside this window must not flash a panel over the video.
+/// Slower runs still get the panel (and its pause/stop buttons), because the
+/// play is genuinely waiting on them.
+const Duration kQuietScanOverlayDelay = Duration(milliseconds: 600);
 
 /// Floating scan progress bar inserted into the Navigator's overlay.
 ///
@@ -52,6 +62,21 @@ class _ScanProgressOverlayManagerState
   bool _hasInitializedPosition = false;
   bool _syncScheduled = false;
 
+  /// Whether a quiet (playback-originated) run has passed
+  /// [kQuietScanOverlayDelay] and may show its panel. Always true for a run
+  /// whose panel is not quiet.
+  bool _quietVisible = false;
+  Timer? _quietShowTimer;
+
+  /// Guards the zero-delay ("close silently") path: it is armed from inside a
+  /// builder, which runs on every store tick, and must schedule exactly one
+  /// reset.
+  bool _immediateCloseScheduled = false;
+
+  /// Whether the failure dialog of the current run was already shown. Reset
+  /// when the phase leaves `error`, so each failure gets exactly one dialog.
+  bool _errorDialogShown = false;
+
   @override
   void initState() {
     super.initState();
@@ -64,6 +89,9 @@ class _ScanProgressOverlayManagerState
     // user-facing progress UI while a scan is running; the owner flips this
     // notifier so the generic bar yields without touching scan lifecycle.
     scanStore.overlaySuppressed.addListener(_onStoreChanged);
+    // Playback resuming hides a playback-originated panel without touching the
+    // run (its metadata tail keeps going) — see [RecursiveScanStore.quietPanelDone].
+    scanStore.quietPanelDone.addListener(_onStoreChanged);
     // Covers the resume-with-active-scan case; the entry is only ever created
     // once the host Overlay is reachable (deferred to a microtask).
     _scheduleSync();
@@ -75,7 +103,13 @@ class _ScanProgressOverlayManagerState
   bool get _shouldShow {
     final scanStore = useRecursiveScanStore();
     if (scanStore.overlaySuppressed.value) return false;
-    return scanStore.state.phase != ScanPhase.idle;
+    if (scanStore.quietPanelDone.value) return false;
+    final phase = scanStore.state.phase;
+    if (phase == ScanPhase.idle) return false;
+    // Playback-originated runs stay invisible until they prove they are slow
+    // enough to matter (see [kQuietScanOverlayDelay]).
+    if (scanStore.quietCompletion && !_quietVisible) return false;
+    return true;
   }
 
   void _onStoreChanged() {
@@ -111,6 +145,8 @@ class _ScanProgressOverlayManagerState
   /// `MouseTracker._deviceUpdatePhase` and poisons `_debugDuringDeviceUpdate`
   /// for the rest of the session.
   void _syncEntry() {
+    _ensureQuietVisibility();
+    _maybeShowErrorDialog();
     final bool shouldShow = _shouldShow;
     if (shouldShow && _entry == null) {
       final overlay = Overlay.maybeOf(context);
@@ -129,12 +165,96 @@ class _ScanProgressOverlayManagerState
     }
   }
 
+  /// Drives [_quietVisible]: a quiet run shows its panel only after
+  /// [kQuietScanOverlayDelay], while every other run shows immediately.
+  ///
+  /// Terminal phases matter here. A quiet run that finishes inside the delay
+  /// never draws anything (playback resuming, or the batch end, dismisses it),
+  /// while a slow one keeps the panel it already showed until that dismissal.
+  /// An `error` is never hidden: the user has to see why the scan failed.
+  void _ensureQuietVisibility() {
+    final scanStore = useRecursiveScanStore();
+    final phase = scanStore.state.phase;
+    if (phase == ScanPhase.idle) {
+      _quietShowTimer?.cancel();
+      _quietShowTimer = null;
+      _quietVisible = false;
+      return;
+    }
+    if (!scanStore.quietCompletion) {
+      _quietShowTimer?.cancel();
+      _quietShowTimer = null;
+      _quietVisible = true;
+      return;
+    }
+    if (phase == ScanPhase.error) {
+      _quietShowTimer?.cancel();
+      _quietShowTimer = null;
+      _quietVisible = true;
+      return;
+    }
+    if (phase != ScanPhase.scanning) {
+      // done / stopped: keep whatever visibility the run already earned.
+      _quietShowTimer?.cancel();
+      _quietShowTimer = null;
+      return;
+    }
+    if (_quietVisible || _quietShowTimer != null) return;
+    _quietShowTimer = Timer(kQuietScanOverlayDelay, () {
+      _quietShowTimer = null;
+      if (!mounted) return;
+      _quietVisible = true;
+      _syncEntry();
+    });
+  }
+
+  /// A failed scan must never be announced only by the small floating panel:
+  /// it may be off-screen, behind a route, or dismissed by the user before the
+  /// reason was read. Manual runs therefore get a modal dialog; playback-
+  /// originated (quiet) ones keep the panel, because a prompt appearing over a
+  /// video the user did not ask to scan would be worse than a silent miss.
+  void _maybeShowErrorDialog() {
+    final scanStore = useRecursiveScanStore();
+    final state = scanStore.state;
+    if (state.phase != ScanPhase.error) {
+      _errorDialogShown = false;
+      return;
+    }
+    if (scanStore.quietCompletion || _errorDialogShown) return;
+    _errorDialogShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final current = useRecursiveScanStore().state;
+      if (current.phase != ScanPhase.error) return;
+      final t = getLocalizations(context);
+      final message = current.error == kScanInterruptedByRestart
+          ? t.scan_interrupted_reason
+          : (current.error ?? '');
+      showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(t.scan_error_title),
+          content: Text(t.scan_status_error(message)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(t.scan_error_ack),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
   @override
   void dispose() {
     _autoCloseTimer?.cancel();
+    _quietShowTimer?.cancel();
+    _quietShowTimer = null;
     _subscription?.cancel();
     useRecursiveScanStore().timing.removeListener(_onStoreChanged);
     useRecursiveScanStore().overlaySuppressed.removeListener(_onStoreChanged);
+    useRecursiveScanStore().quietPanelDone.removeListener(_onStoreChanged);
     final entry = _entry;
     if (entry != null) {
       entry.remove();
@@ -161,11 +281,18 @@ class _ScanProgressOverlayManagerState
 
     // Auto-close triggers on both done and stopped — the scan is no longer
     // actively running, so give the user a moment to see the result then
-    // clean up automatically.
-    final shouldAutoClose =
-        state.phase == ScanPhase.done || state.phase == ScanPhase.stopped;
+    // clean up automatically. A quiet (playback-originated) run never counts
+    // down: the batch that started it dismisses the panel, which keeps a
+    // multi-root drop as one continuous panel.
+    //
+    // Silent completion replaces the countdown with a zero delay: the panel is
+    // dismissed as soon as the terminal phase is observed. The stored delay is
+    // left untouched so re-enabling the countdown restores it.
+    final quiet = scanStore.quietCompletion;
+    final shouldAutoClose = !quiet &&
+        (state.phase == ScanPhase.done || state.phase == ScanPhase.stopped);
     if (shouldAutoClose) {
-      _startAutoClose(state.autoCloseDelay);
+      _startAutoClose(state.autoClosePrompt ? state.autoCloseDelay : 0);
     } else {
       _cancelAutoClose();
     }
@@ -272,23 +399,35 @@ class _ScanProgressOverlayManagerState
                     ExcludeSemantics(
                       child: Text(
                         isScanning &&
-                                state.totalDirs > 0 &&
-                                state.progressFraction == 0
-                            ? t.scan_discovering(
-                                state.totalDirs,
+                                state.totalDirs <= 0
+                            // No stored snapshot: nobody knows the tree's size
+                            // yet. A percentage against "discovered so far"
+                            // would read ~99% for the whole walk, so say what
+                            // is actually known.
+                            ? t.scan_discovering_unknown(
                                 state.scannedDirs,
-                                state.currentScanningPath ?? '',
+                                displayScanPath(
+                                    state.currentScanningPath ?? ''),
                               )
-                            : isScanning
-                                ? t.scan_progress_dirs(
-                                    (state.progressFraction * 100)
-                                        .toStringAsFixed(1),
-                                    state.scannedDirs,
+                            : isScanning &&
+                                    state.totalDirs > 0 &&
+                                    state.progressFraction == 0
+                                ? t.scan_discovering(
                                     state.totalDirs,
+                                    state.scannedDirs,
+                                    displayScanPath(
+                                        state.currentScanningPath ?? ''),
                                   )
-                                : t.scan_progress_percent(
-                                    (state.progress * 100).toStringAsFixed(1),
-                                  ),
+                                : isScanning
+                                    ? t.scan_progress_dirs(
+                                        (state.progressFraction * 100)
+                                            .toStringAsFixed(1),
+                                        state.scannedDirs,
+                                        state.totalDirs,
+                                      )
+                                    : t.scan_progress_percent(
+                                        (state.progress * 100).toStringAsFixed(1),
+                                      ),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: colorScheme.onSurfaceVariant,
                             ),
@@ -381,13 +520,18 @@ class _ScanProgressOverlayManagerState
     switch (state.phase) {
       case ScanPhase.scanning:
         if (state.paused) return t.scn_scan_paused;
-        return state.currentScanningPath ?? t.scan_status_scanning;
+        final raw = state.currentScanningPath;
+        // Display-only: the stored path stays the full content:// identity.
+        return raw == null ? t.scan_status_scanning : displayScanPath(raw);
       case ScanPhase.done:
         return t.scan_status_done;
       case ScanPhase.stopped:
         return t.scan_status_stopped;
       case ScanPhase.error:
-        return t.scan_status_error(state.error ?? '');
+        final message = state.error == kScanInterruptedByRestart
+            ? t.scan_interrupted_reason
+            : (state.error ?? '');
+        return t.scan_status_error(message);
       case ScanPhase.idle:
         return '';
     }
@@ -408,14 +552,18 @@ class _ScanProgressOverlayManagerState
   }
 
   void _startAutoClose(double delay) {
-    if (_closeDeadline != null) return;
-
     if (delay <= 0) {
+      if (_immediateCloseScheduled) return;
+      _immediateCloseScheduled = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        _immediateCloseScheduled = false;
+        if (!mounted) return;
         useRecursiveScanStore().resetScan();
       });
       return;
     }
+
+    if (_closeDeadline != null) return;
 
     _closeDeadline =
         DateTime.now().add(Duration(milliseconds: (delay * 1000).round()));
@@ -446,5 +594,6 @@ class _ScanProgressOverlayManagerState
     _autoCloseTimer = null;
     _closeDeadline = null;
     _autoCloseTicks = 0;
+    _immediateCloseScheduled = false;
   }
 }

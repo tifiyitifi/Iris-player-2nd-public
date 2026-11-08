@@ -252,7 +252,7 @@ void main() {
     expect(
       displayedChildren.every((k) => !k.contains('/sub/')),
       isTrue,
-      reason: 'the 20260614-style row must not contain subdirectory members, '
+      reason: 'the 003-style row must not contain subdirectory members, '
           'got $displayedChildren',
     );
 

@@ -24,18 +24,23 @@ import 'package:iris/features/scenario_playback/actions/scenario_playback_action
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/storages/local.dart' show getLocalStorages;
 import 'package:iris/models/storages/storage.dart';
 import 'package:iris/models/storages/volume_identity.dart';
 import 'package:iris/models/store/app_state.dart' show BrowseMediaScope;
+import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/store/warning_dialogs.dart';
 import 'package:iris/utils/check_content_type.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/logger.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_confirm_suppressible_dialog.dart';
 import 'package:iris/widgets/popups/storages/db/storages_utils/storage_utils.dart';
+
+final _log = AreaKeyLog(LogKeys.legacyScenario);
 
 /// Kind of a single dropped filesystem target after a stat.
 enum DragDropEntryKind { directory, file, ignored }
@@ -406,7 +411,14 @@ abstract final class DragDropPlayHandler {
         if (match == null) continue;
         addKnown(match.storage);
       }
-      final storage = match.storage;
+      // The store may already own this display root under a different (legacy)
+      // id. Key the drop on THAT entry so the scan/playback writes land in the
+      // tree the library, scenarios and tags reference.
+      final storage = switch (match.storage) {
+        final LocalStorage local =>
+          useStorageStore().existingLocalRoot(local) ?? local,
+        final other => other,
+      };
       final relative = match.relative;
       if (useStorageStore().findById(storage.id) == null &&
           !toPersist.any((s) => s.id == storage.id)) {
@@ -447,6 +459,11 @@ abstract final class DragDropPlayHandler {
     // file), then probe duration/dimensions silently in the background so the
     // queue shows metadata without waiting for the per-play backfill.
     final indexed = await _indexFiles(explicit);
+    if (indexed.missing.isNotEmpty) {
+      _log.w('[drag-drop] ${indexed.missing.length}/${explicit.length} '
+          'dropped file(s) missing from the index after upsert: '
+          '${indexed.missing.join(', ')}');
+    }
     if (indexed.probes.isNotEmpty) {
       unawaited(_probeInBackground(indexed.probes));
     }
@@ -494,9 +511,14 @@ abstract final class DragDropPlayHandler {
       // The drop IS the user's play request, so a scan-started gate resumes
       // straight into playback once THAT scan settles — no confirmation step
       // that could swallow it (the reported "drop scans, then never plays").
+      //
+      // With `playback.dropAutoScan` ON (the default) the gate asks nothing at
+      // all: the scan starts immediately and its failure is reported by the
+      // batch itself (never silently).
       final proceed = await ensureDirsScannedWithAutoPlay(
         context,
         specs,
+        ask: !useAppStore().state.dropAutoScan,
         playOnScanNow: () => _proceedAfterResolve(
           context,
           dirs: dirs,
@@ -596,9 +618,11 @@ abstract final class DragDropPlayHandler {
   static Future<void> _persistStorage(Storage storage) async {
     try {
       await DbModule.storageRepo.updateInsertStorage(storage);
-    } catch (_) {
+    } catch (e, st) {
       // A failed DB write must not abort playback: the in-memory store entry
-      // still lets the scan gate resolve the storage.
+      // still lets the scan gate resolve the storage. Log it so a later
+      // "file is not in the database" has a traceable cause instead of none.
+      _log.w('[drag-drop] failed to persist storage ${storage.id}', e, st);
     }
     await useStorageStore().addStorage(storage);
   }
@@ -607,8 +631,18 @@ abstract final class DragDropPlayHandler {
   /// [FileItem]s for the playability pre-check plus the probe targets for the
   /// background duration backfill — a light, non-recursive substitute for
   /// scanning the whole parent directory.
+  ///
+  /// [missing] lists the dropped paths whose row is absent after the write.
+  /// `batchUpsertNodes` swallows a row that keeps failing, so a returned
+  /// write is NOT proof the rows exist; an unindexed file would later read as
+  /// "not in the media database" everywhere. Callers log it (never silently
+  /// install a ghost explicit item).
   static Future<
-      ({List<FileItem> fileItems, List<ExplicitFileProbeTarget> probes})>
+      ({
+        List<FileItem> fileItems,
+        List<ExplicitFileProbeTarget> probes,
+        List<String> missing,
+      })>
       _indexFiles(List<DragDropResolvedFile> files) async {
     final fileItems = <FileItem>[];
     final nodes = <MediaNode>[];
@@ -656,16 +690,50 @@ abstract final class DragDropPlayHandler {
     }
     try {
       await DbModule.mediaNodeRepo.batchUpsertNodes(nodes);
-    } catch (_) {
+    } catch (e, st) {
       // A failed index must not abort playback. Keep the resolved file items
       // so the play/append scope still carries the user's selection; only drop
       // the probes (a probe needs the rows this write would have created).
+      _log.e('[drag-drop] batch index failed for ${nodes.length} file(s)',
+          e, st);
       return (
         fileItems: fileItems,
         probes: const <ExplicitFileProbeTarget>[],
+        missing: <String>[
+          for (final f in files)
+            if (f.relative.isNotEmpty) f.path,
+        ],
       );
     }
-    return (fileItems: fileItems, probes: probes);
+    // `batchUpsertNodes` degrades to per-row writes and silently swallows a row
+    // that still fails, so verify the rows once and report the ghosts.
+    final missing = <String>[];
+    try {
+      final byStorage = <String, List<String>>{};
+      for (final f in files) {
+        if (f.relative.isEmpty) continue;
+        byStorage.putIfAbsent(f.storageId, () => []).add(f.path);
+      }
+      for (final entry in byStorage.entries) {
+        final found = await DbModule.mediaNodeRepo.getExistingFilePaths(
+          storageId: entry.key,
+          paths: entry.value,
+        );
+        final foundKeys = {
+          for (final p in found) StoragePathCodec.relativeKey(entry.key, p),
+        };
+        for (final path in entry.value) {
+          if (!foundKeys
+              .contains(StoragePathCodec.relativeKey(entry.key, path))) {
+            missing.add(path);
+          }
+        }
+      }
+    } catch (e, st) {
+      // Verification is diagnostic only; never let it break the drop.
+      _log.w('[drag-drop] index verification failed', e, st);
+    }
+    return (fileItems: fileItems, probes: probes, missing: missing);
   }
 
   /// Fires the silent duration/dimension probe and announces the storages it

@@ -35,6 +35,19 @@ void main() {
       expect(KeybindCodec.decodeOverrides('not json'), isEmpty);
       expect(KeybindCodec.decodeOverrides(null), isEmpty);
     });
+
+    test('the Windows apostrophe id is stored and read canonically', () {
+      // 34 == 0x22 == the id a Windows build records for the `'` key.
+      const windowsRow =
+          '{"toggleBackgroundGate":[{"keyId":34,"ctrl":false,"alt":true,"shift":false}]}';
+      final decoded = KeybindCodec.decodeOverrides(windowsRow);
+      expect(
+        decoded['toggleBackgroundGate'],
+        [const KeyCombo(kApostropheKey, alt: true)],
+      );
+      final reencoded = KeybindCodec.encodeOverrides(decoded);
+      expect(reencoded, contains('"keyId":${kApostropheKey.keyId}'));
+    });
   });
 
   group('resolveEffectiveKeyMap', () {

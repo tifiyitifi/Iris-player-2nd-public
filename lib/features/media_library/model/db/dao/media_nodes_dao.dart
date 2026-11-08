@@ -2,6 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:iris/features/media_library/model/db/adapters/media_node_drift_adapter.dart';
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_query.dart';
 import 'package:iris/features/media_library/model/db/dao/for_page/media_node_page_result.dart';
+import 'package:iris/features/media_library/model/db/dao/keyset_parent_scope.dart';
 import 'package:iris/features/media_library/model/db/tables/media_nodes_table.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/enum/media_lib_sources.dart';
@@ -15,6 +16,7 @@ import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/db/storage_scope.dart';
 import 'package:iris/utils/escape_like.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/utils/path_prefix_remap.dart';
 
@@ -49,18 +51,33 @@ bool _needsNullsLast(MediaSortField field) {
   }
 }
 
-/// Leading `IS NULL` term (always ascending): 0 = has value, 1 = NULL, so NULLs
-/// land last whichever way the sort column is ordered.
+/// Leading `unknown` term (always ascending): 0 = has a value, 1 = unknown, so
+/// unknown rows land last whichever way the sort column is ordered.
+///
+/// `size_in_bytes` / `duration_ms` treat **0 as unknown too**: the listing lanes
+/// that cannot stat a file (SAF, WebDAV, FTP) report 0, and 0 is not a real
+/// value for a playable file. Without this, "unknown" files ranked as the
+/// smallest ones and the queue's size/duration sort looked plainly wrong.
 List<OrderingTerm Function(MediaNodesTable)> _nullsLastTerms(
   MediaSortField field,
   Expression<Object> Function(MediaNodesTable) sortColumn,
-) =>
-    _needsNullsLast(field)
-        ? <OrderingTerm Function(MediaNodesTable)>[
-            (t) => OrderingTerm(
-                expression: sortColumn(t).isNull(), mode: OrderingMode.asc),
-          ]
-        : const <OrderingTerm Function(MediaNodesTable)>[];
+) {
+  if (!_needsNullsLast(field)) {
+    return const <OrderingTerm Function(MediaNodesTable)>[];
+  }
+  final zeroIsUnknown = field == MediaSortField.sizeInBytes ||
+      field == MediaSortField.durationMs;
+  return <OrderingTerm Function(MediaNodesTable)>[
+    (t) {
+      final column = sortColumn(t);
+      return OrderingTerm(
+        expression:
+            zeroIsUnknown ? (column.isNull() | column.equals(0)) : column.isNull(),
+        mode: OrderingMode.asc,
+      );
+    },
+  ];
+}
 
 /// Ascending tail that turns the sort column into a total order.
 ///
@@ -73,10 +90,10 @@ List<OrderingTerm Function(MediaNodesTable)> _orderTailTerms(
   MediaSortField field,
 ) =>
     <OrderingTerm Function(MediaNodesTable)>[
-      // Redundant when the sort column already IS normalized_name.
+      // Redundant when the sort column already IS natural_name.
       if (field != MediaSortField.name)
         (t) =>
-            OrderingTerm(expression: t.normalizedName, mode: OrderingMode.asc),
+            OrderingTerm(expression: t.naturalName, mode: OrderingMode.asc),
       (t) => OrderingTerm(expression: t.path, mode: OrderingMode.asc),
     ];
 
@@ -106,6 +123,22 @@ Expression<bool> _rootChildren(MediaNodesTable t) =>
 /// parent is the storage root (see [_rootParent]); otherwise an exact match.
 Expression<bool> _parentMatches(MediaNodesTable t, String canonical) =>
     canonical.isEmpty ? _rootChildren(t) : t.parentPath.equals(canonical);
+
+/// One stored child row, reduced to the fields the incremental scan diffs.
+///
+/// See [MediaNodesDao.listChildrenForScanSync] for why the full row is not read.
+typedef ScanSyncChildRow = ({
+  String path,
+  String name,
+  MediaNodeKind nodeKind,
+  int? sizeInBytes,
+  DateTime? modifiedAt,
+  MediaType? mediaType,
+  int? durationMs,
+  int? width,
+  int? height,
+  String? subtitlesJson,
+});
 
 @DriftAccessor(tables: [MediaNodesTable])
 class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMixin {
@@ -270,6 +303,41 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
               (_) => entry,
               target: [mediaNodesTable.dataScopeId, mediaNodesTable.path],
             ),
+          );
+        }
+      });
+    }
+  }
+
+  /// Inserts rows that do not exist yet and leaves existing rows untouched.
+  ///
+  /// The recursive scan's ancestor backfill wants exactly this: create the
+  /// missing chain, never rewrite a directory that is already known (its scan
+  /// stamp and aggregates belong to a previous run). Doing it as one
+  /// `INSERT OR IGNORE` batch replaces a SELECT per ancestor level, per
+  /// directory — on a 10-level phone volume that was tens of thousands of
+  /// redundant statements.
+  Future<void> batchInsertIfAbsent(
+      List<MediaNodesTableCompanion> entries) async {
+    if (entries.isEmpty) return;
+    const chunkSize = 500;
+    for (var i = 0; i < entries.length; i += chunkSize) {
+      final chunk = entries.sublist(
+        i,
+        i + chunkSize > entries.length ? entries.length : i + chunkSize,
+      );
+      await batch((b) {
+        for (final entry in chunk) {
+          b.insert(
+            mediaNodesTable,
+            entry,
+            // Target the scan's identity key: drift's default target is the
+            // primary key, which would let a UNIQUE(data_scope_id, path) clash
+            // escape as an exception.
+            onConflict: DoNothing(target: [
+              mediaNodesTable.dataScopeId,
+              mediaNodesTable.path,
+            ]),
           );
         }
       });
@@ -462,10 +530,11 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     );
   }
 
-  /// Moves ONE node row to [newPath] (same storage), rewriting its name and
-  /// normalized name. Used for a case-only rename on a case-insensitive
-  /// filesystem: the row keeps its id, probe data and playback progress instead
-  /// of being deleted and re-inserted. Returns the number of rows affected.
+  /// Moves ONE node row to [newPath] (same storage), rewriting its name,
+  /// normalized name and natural sort key. Used for a case-only rename on a
+  /// case-insensitive filesystem: the row keeps its id, probe data and playback
+  /// progress instead of being deleted and re-inserted. Returns the number of
+  /// rows affected.
   Future<int> renameNodePath({
     required String storageId,
     required String oldPath,
@@ -480,6 +549,7 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
       path: Value(newPath),
       name: Value(name),
       normalizedName: Value(name.toLowerCase()),
+      naturalName: Value(naturalSortKey(name)),
     ));
   }
 
@@ -634,6 +704,59 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
         .get();
   }
 
+  /// Direct children as the incremental scan's diff needs them.
+  ///
+  /// WHY: the scan compares each freshly listed entry against the stored row to
+  /// decide "unchanged", so it ran one `SELECT *` per directory — 34k of them on
+  /// a phone volume, each decoding ~30 columns for rows where only ten are ever
+  /// read (`db.sync` measured 12.2 s on an unchanged rescan). This projection
+  /// carries exactly those ten and nothing else.
+  Future<List<ScanSyncChildRow>> listChildrenForScanSync(
+      String storageId, String parentPath) async {
+    final t = mediaNodesTable;
+    final canonical =
+        StoragePathCodec.relativize(storageId, canonicalDbPath(parentPath));
+    final query = selectOnly(t)
+      ..addColumns([
+        t.path,
+        t.name,
+        t.nodeKind,
+        t.sizeInBytes,
+        t.modifiedAt,
+        t.mediaType,
+        t.durationMs,
+        t.width,
+        t.height,
+        t.subtitlesJson,
+      ])
+      ..where(t.dataScopeId.equals(StorageScope.of(storageId)) &
+          _parentMatches(t, canonical));
+    final rows = await query.get();
+    return [
+      for (final r in rows)
+        (
+          path: r.read(t.path)!,
+          name: r.read(t.name)!,
+          nodeKind: r.readWithConverter(t.nodeKind)!,
+          sizeInBytes: r.read(t.sizeInBytes),
+          // The two nullable converted columns are read raw and mapped here:
+          // `readWithConverter` only accepts the non-nullable shape.
+          modifiedAt: switch (r.read(t.modifiedAt)) {
+            final int ms => DateTime.fromMillisecondsSinceEpoch(ms),
+            _ => null,
+          },
+          mediaType: switch (r.read(t.mediaType)) {
+            final String name => MediaType.values.byName(name),
+            _ => null,
+          },
+          durationMs: r.read(t.durationMs),
+          width: r.read(t.width),
+          height: r.read(t.height),
+          subtitlesJson: r.read(t.subtitlesJson),
+        ),
+    ];
+  }
+
   /// Returns a single node by storage + path.
   ///
   /// The path is canonicalized on the lookup side (like every other path-keyed
@@ -740,6 +863,152 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
           ..where((t) =>
               t.dataScopeId.equals(StorageScope.of(storageId)) & _rootChildren(t)))
         .get();
+  }
+
+  /// One directory row as the scan's aggregate pass needs it (no child bodies).
+  ///
+  /// WHY: the aggregate phase used to materialize EVERY direct child row of
+  /// EVERY directory (`SELECT *`, ~30 columns each) — twice, once for the sums
+  /// and once for the scan-done probe. That is the whole table read several
+  /// times over, and on a 34k-directory phone volume it dominated the scan.
+  /// This flat read plus [fileAggregatesByParent] replaces it.
+  Future<
+      List<
+          ({
+            String path,
+            String? parentPath,
+            int pathDepth,
+            bool isScanDone,
+            int totalMediaCount,
+            int totalDirCount,
+            int totalItemCount,
+            int totalSizeInBytes,
+            int totalDurationMs,
+          })>> listDirAggregateRows(String storageId) async {
+    final rows = await customSelect(
+      'SELECT path, parent_path, path_depth, is_scan_done, '
+      'total_media_count, total_dir_count, total_item_count, '
+      'total_size_in_bytes, total_duration_ms FROM media_nodes '
+      "WHERE data_scope_id = ? AND node_kind = 'directory'",
+      variables: [Variable.withString(StorageScope.of(storageId))],
+      readsFrom: {mediaNodesTable},
+    ).get();
+    return [
+      for (final r in rows)
+        (
+          path: r.read<String>('path'),
+          parentPath: r.readNullable<String>('parent_path'),
+          pathDepth: r.read<int>('path_depth'),
+          isScanDone: r.read<bool>('is_scan_done'),
+          totalMediaCount: r.read<int>('total_media_count'),
+          totalDirCount: r.read<int>('total_dir_count'),
+          totalItemCount: r.read<int>('total_item_count'),
+          totalSizeInBytes: r.read<int>('total_size_in_bytes'),
+          totalDurationMs: r.read<int>('total_duration_ms'),
+        ),
+    ];
+  }
+
+  /// Per-parent file facts in ONE grouped query.
+  ///
+  /// `parentPath` is `''` for the storage root (rows stored with a NULL parent
+  /// and the legacy empty form are the same level everywhere else in the DAO).
+  Future<
+      Map<
+          String,
+          ({
+            int mediaCount,
+            int fileCount,
+            int sizeBytes,
+            int durationMs,
+          })>> fileAggregatesByParent(String storageId) async {
+    final rows = await customSelect(
+      "SELECT COALESCE(parent_path, '') AS parent_path, "
+      'COUNT(*) AS file_count, '
+      "SUM(CASE WHEN media_type IS NOT NULL AND media_type <> 'unknown' "
+      'THEN 1 ELSE 0 END) AS media_count, '
+      'COALESCE(SUM(size_in_bytes), 0) AS size_bytes, '
+      'COALESCE(SUM(duration_ms), 0) AS duration_ms FROM media_nodes '
+      "WHERE data_scope_id = ? AND node_kind = 'file' "
+      'GROUP BY COALESCE(parent_path, \'\')',
+      variables: [Variable.withString(StorageScope.of(storageId))],
+      readsFrom: {mediaNodesTable},
+    ).get();
+    return {
+      for (final r in rows)
+        r.read<String>('parent_path'): (
+          mediaCount: r.read<int>('media_count'),
+          fileCount: r.read<int>('file_count'),
+          sizeBytes: r.read<int>('size_bytes'),
+          durationMs: r.read<int>('duration_ms'),
+        ),
+    };
+  }
+
+  /// Writes a whole aggregate pass in batched transactions.
+  ///
+  /// One UPDATE per affected directory inside a batch (instead of a SELECT of
+  /// every child + a SELECT for done-ness + an UPDATE, all autocommit). The
+  /// chunks are committed separately and yield to the event loop between them:
+  /// the database runs on the UI isolate, and a 34k-row transaction would freeze
+  /// the app for seconds.
+  Future<void> batchWriteDirAggregates({
+    required String storageId,
+    required List<
+            ({
+              String path,
+              int directMediaCount,
+              int directDirCount,
+              int directItemCount,
+              int totalMediaCount,
+              int totalDirCount,
+              int totalItemCount,
+              int totalSizeInBytes,
+              int totalDurationMs,
+              bool markDone,
+            })>
+        rows,
+  }) async {
+    if (rows.isEmpty) return;
+    final scope = StorageScope.of(storageId);
+    final now = DateTime.now();
+    const chunkSize = 500;
+    for (var i = 0; i < rows.length; i += chunkSize) {
+      final chunk = rows.sublist(
+        i,
+        i + chunkSize > rows.length ? rows.length : i + chunkSize,
+      );
+      await batch((b) {
+        for (final row in chunk) {
+          b.update(
+            mediaNodesTable,
+            MediaNodesTableCompanion(
+              directMediaCount: Value(row.directMediaCount),
+              directDirCount: Value(row.directDirCount),
+              directItemCount: Value(row.directItemCount),
+              totalMediaCount: Value(row.totalMediaCount),
+              totalDirCount: Value(row.totalDirCount),
+              totalItemCount: Value(row.totalItemCount),
+              totalSizeInBytes: Value(row.totalSizeInBytes),
+              totalDurationMs: Value(row.totalDurationMs),
+              // A directory that is not provably complete keeps its stamp: the
+              // settle pass owns "scanning → error".
+              scanState: row.markDone
+                  ? const Value('scanDone')
+                  : const Value.absent(),
+              isScanDone:
+                  row.markDone ? const Value(true) : const Value.absent(),
+              lastScanAt: row.markDone ? Value(now) : const Value.absent(),
+            ),
+            where: (t) =>
+                t.dataScopeId.equals(scope) & t.path.equals(row.path),
+          );
+        }
+      });
+      if (i + chunkSize < rows.length) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
   }
 
   /// Updates aggregate counts on a directory node.
@@ -896,6 +1165,8 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
     int? width,
     int? height,
     int? pixelCount,
+    int? sizeInBytes,
+    DateTime? modifiedAt,
   }) async {
     final storedPath = await _resolveStoredPath(storageId, path);
     if (storedPath == null) return 0;
@@ -910,7 +1181,190 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
       height: height == null ? const Value.absent() : Value(height),
       pixelCount:
           pixelCount == null ? const Value.absent() : Value(pixelCount),
+      // Same unknown-never-overwrites rule as the upsert funnel: a caller that
+      // could not stat the file passes 0/null and must not erase a known value.
+      sizeInBytes: (sizeInBytes == null || sizeInBytes <= 0)
+          ? const Value.absent()
+          : Value(sizeInBytes),
+      modifiedAt:
+          modifiedAt == null ? const Value.absent() : Value(modifiedAt),
     ));
+  }
+
+  /// File rows under [storageId] (optionally under [pathPrefix]) that a metadata
+  /// pass has to look at, ordered by id.
+  ///
+  /// Keyset pagination on `id` (not OFFSET) is deliberate: metadata backfill
+  /// updates rows while paging, and OFFSET would rescan the prefix and can skip
+  /// or duplicate rows on a 500k table. `duration_ms IS NULL` is served by
+  /// `idx_node_media_duration` / the per-parent sort indexes.
+  ///
+  /// [includeExisting] selects the WORK LIST SEMANTICS:
+  /// - `false` (gap filling): only rows that still lack a usable duration. This
+  ///   is what a background pass may do while the user is playing.
+  /// - `true` (verification): EVERY playable row in scope. A re-encoded file, or
+  ///   a row poisoned by an older cross-file write-back, has a duration the
+  ///   listing cannot correct — size/mtime heal from the listing, the duration
+  ///   only from a probe. Without this a rescan could never repair it.
+  ///
+  /// The current values are returned too, so the caller can skip a write when
+  /// the probe merely agrees with what is already stored.
+  ///
+  /// [pathPrefix] is canonicalized like every other path key; null/empty means
+  /// "the whole storage". Only present video/audio rows count as work: a
+  /// directory has no duration, and a missing file cannot be probed.
+  Future<
+      List<
+          ({
+            int id,
+            String path,
+            String? uri,
+            String name,
+            int? sizeInBytes,
+            int? durationMs,
+            int? width,
+            int? height,
+          })>> listFilesForMetadata(
+    String storageId, {
+    String? pathPrefix,
+    int afterId = 0,
+    int limit = 256,
+    bool includeExisting = false,
+  }) async {
+    final scope = StorageScope.of(storageId);
+    final prefix = (pathPrefix == null || pathPrefix.isEmpty)
+        ? null
+        : StoragePathCodec.relativize(
+            storageId, canonicalDbPath(pathPrefix));
+    final hasPrefix = prefix != null && prefix.isNotEmpty;
+    final rows = await customSelect(
+      'SELECT id, path, uri, name, size_in_bytes, duration_ms, width, height '
+      'FROM media_nodes '
+      "WHERE data_scope_id = ? AND node_kind = 'file' AND is_present = 1 "
+      "AND media_type IN ('video', 'audio')"
+      '${includeExisting ? '' : ' AND (duration_ms IS NULL OR duration_ms <= 0)'}'
+      '${hasPrefix ? " AND path LIKE ? ESCAPE '\\'" : ''} '
+      'AND id > ? ORDER BY id LIMIT ?',
+      variables: [
+        Variable.withString(scope),
+        if (hasPrefix) Variable.withString('${escapeLike(prefix)}/%'),
+        Variable.withInt(afterId),
+        Variable.withInt(limit),
+      ],
+      readsFrom: {mediaNodesTable},
+    ).get();
+    return [
+      for (final r in rows)
+        (
+          id: r.read<int>('id'),
+          path: r.read<String>('path'),
+          uri: r.readNullable<String>('uri'),
+          name: r.read<String>('name'),
+          sizeInBytes: r.readNullable<int>('size_in_bytes'),
+          durationMs: r.readNullable<int>('duration_ms'),
+          width: r.readNullable<int>('width'),
+          height: r.readNullable<int>('height'),
+        ),
+    ];
+  }
+
+  /// Number of rows [listFilesForMetadata] would return, for the progress
+  /// denominator. Same predicate, so the two can never disagree.
+  Future<int> countFilesForMetadata(
+    String storageId, {
+    String? pathPrefix,
+    bool includeExisting = false,
+  }) async {
+    final scope = StorageScope.of(storageId);
+    final prefix = (pathPrefix == null || pathPrefix.isEmpty)
+        ? null
+        : StoragePathCodec.relativize(
+            storageId, canonicalDbPath(pathPrefix));
+    final hasPrefix = prefix != null && prefix.isNotEmpty;
+    final row = await customSelect(
+      'SELECT COUNT(*) AS c FROM media_nodes '
+      "WHERE data_scope_id = ? AND node_kind = 'file' AND is_present = 1 "
+      "AND media_type IN ('video', 'audio')"
+      '${includeExisting ? '' : ' AND (duration_ms IS NULL OR duration_ms <= 0)'}'
+      '${hasPrefix ? " AND path LIKE ? ESCAPE '\\'" : ''}',
+      variables: [
+        Variable.withString(scope),
+        if (hasPrefix) Variable.withString('${escapeLike(prefix)}/%'),
+      ],
+      readsFrom: {mediaNodesTable},
+    ).getSingle();
+    return row.read<int>('c');
+  }
+
+  /// Directory rows the stored snapshot already knows under [roots].
+  ///
+  /// WHY: the scan shows a percentage while it walks, and a depth-first walk
+  /// discovers a directory immediately before scanning it — so "discovered so
+  /// far" is NOT a usable denominator. Measured on a 34,005-directory phone
+  /// volume, `scanned/discovered` sat at 97.7% after 32% of the elapsed time and
+  /// at 99.9% for the last minute (the panel said "3 s left" for three more
+  /// minutes). The previous run's rows are the only trustworthy estimate of the
+  /// tree's size; the scan keeps this as a floor and grows it when the tree
+  /// turns out to be larger. Zero means "never scanned" — the UI must then say
+  /// "discovering" instead of inventing a fraction.
+  Future<int> countDirsUnder(String storageId, List<String> roots) async {
+    // Per-root completeness gate (was: the global `path == \'\'` row).
+    //
+    // A database restored from a backup (or left behind by a killed scan) can
+    // hold an arbitrary PREFIX of the tree: measured on a phone, a restored
+    // snapshot had 15,877 of 34,005 directories, so the bar sat at 99% for
+    // half the run and then had to be corrected downwards. `is_scan_done` on
+    // each requested root row is written only when the aggregate pass finished
+    // that scope.
+    //
+    // The old gate keyed on the `\'\'` container row, which SAF scopes never
+    // create (their root row carries the full `content://...` URI, see
+    // `RecursiveScanService._ensureSelfDirNode`). Every SAF estimate therefore
+    // read 0 ("discovering" forever). Each root now proves its own
+    // completeness; any incomplete root means "no estimate", never a partial one.
+    if (roots.isEmpty) return 0;
+    // A completed whole-scope snapshot trusts every subcount: the aggregate
+    // pass stamps the tree bottom-up, so a finished volume implies finished
+    // subtrees (and older snapshots predate per-folder stamps entirely).
+    final globalRoot = await getRootNode(storageId);
+    final globalDone = globalRoot != null && globalRoot.isScanDone;
+    if (!globalDone) {
+      // No completed whole-scope snapshot. SAF scopes never create the `''`
+      // container row (their root row carries the full `content://...` URI),
+      // so each requested root must prove its own completeness instead; any
+      // incomplete root means "no estimate", never a partial one.
+      for (final r in roots) {
+        if (r.isEmpty) return 0;
+        final rel = StoragePathCodec.relativize(storageId, canonicalDbPath(r));
+        if (rel.isEmpty) return 0;
+        final row = await getByPath(storageId, rel);
+        if (row == null || !row.isScanDone) return 0;
+      }
+    }
+    final scope = StorageScope.of(storageId);
+    var total = 0;
+    for (final root in roots) {
+      final prefix = root.isEmpty
+          ? null
+          : StoragePathCodec.relativize(storageId, canonicalDbPath(root));
+      final hasPrefix = prefix != null && prefix.isNotEmpty;
+      final row = await customSelect(
+        'SELECT COUNT(*) AS c FROM media_nodes '
+        "WHERE data_scope_id = ? AND node_kind = 'directory' "
+        'AND is_present = 1'
+        // The root's own row counts too, so a partial scan of one folder has a
+        // denominator that includes that folder.
+        '${hasPrefix ? " AND (path = ? OR path LIKE ? ESCAPE '\\')" : ''}',
+        variables: [
+          Variable.withString(scope),
+          if (hasPrefix) Variable.withString(prefix),
+          if (hasPrefix) Variable.withString('${escapeLike(prefix)}/%'),
+        ],
+        readsFrom: {mediaNodesTable},
+      ).getSingle();
+      total += row.read<int>('c');
+    }
+    return total;
   }
 
   /// File rows under a SAF storage whose persisted `uri` is still missing.
@@ -1024,18 +1478,27 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
   }
 
   /// Recomputes totalDurationMs for [dirPath] by summing its direct children.
+  ///
+  /// A single aggregate query, not `SELECT *` + a Dart sum: the metadata pass
+  /// calls this once per affected directory AND once per ancestor on the way up,
+  /// so on a phone volume it was ~100k full-row reads (decoded on the UI
+  /// isolate) and dominated the pass. Only two columns matter to the sum.
   Future<void> recomputeDurationAggregate(
       String storageId, String dirPath) async {
     final canonical = StoragePathCodec.relativize(storageId, canonicalDbPath(dirPath));
-    final children = await getDirectChildren(storageId, canonical);
-    int totalDurationMs = 0;
-    for (final child in children) {
-      if (child.nodeKind == MediaNodeKind.directory) {
-        totalDurationMs += child.totalDurationMs;
-      } else {
-        totalDurationMs += child.durationMs ?? 0;
-      }
-    }
+    final hasPrefix = canonical.isNotEmpty;
+    final row = await customSelect(
+      'SELECT COALESCE(SUM(CASE WHEN node_kind = \'directory\' '
+      'THEN COALESCE(total_duration_ms, 0) ELSE COALESCE(duration_ms, 0) END), 0) '
+      'AS s FROM media_nodes WHERE data_scope_id = ? '
+      '${hasPrefix ? 'AND parent_path = ?' : "AND (parent_path IS NULL OR parent_path = '') AND path <> ''"}',
+      variables: [
+        Variable.withString(StorageScope.of(storageId)),
+        if (hasPrefix) Variable.withString(canonical),
+      ],
+      readsFrom: {mediaNodesTable},
+    ).getSingle();
+    final totalDurationMs = row.read<int>('s');
     await (update(mediaNodesTable)
           ..where((t) =>
               t.dataScopeId.equals(StorageScope.of(storageId)) &
@@ -1058,6 +1521,130 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
   }
 
   // --- Complex Paginated Queries ---
+
+  /// A keyset page of `(id, parent_path, natural_name, path)` rows in natural
+  /// order.
+  ///
+  /// Offset paging re-walks every preceding row, so materialising a 500k order
+  /// in 20k pages costs ~69 s for the grouped shape (and ~94 s for the plain one
+  /// before the natural index existed); a keyset walk visits each row exactly
+  /// once (~6 s). `SharedMediaOrder.build` uses this for every name order.
+  ///
+  /// The cursor mirrors the ORDER BY the DAO issues for `MediaSortField.name`:
+  /// - plain:   `natural_name <dir>, path ASC`
+  /// - grouped: `parent_path <dir>, natural_name <dir>, path ASC`
+  ///
+  /// `path` stays ASCENDING in both directions, like every other tie-break.
+  ///
+  /// Root-level files carry a NULL `parent_path` (rows written before the
+  /// scanner normalization fix carry `''`), and SQLite sorts NULL FIRST on ASC
+  /// and LAST on DESC. A plain `parent_path > ?` cursor would silently drop the
+  /// whole NULL group, so the grouped predicate spells it out instead of
+  /// relying on comparison semantics (NULL never compares true).
+  ///
+  /// [hasCursor] false = first page. [afterParentPath] is only read with a
+  /// cursor, where null means "the cursor sits inside the NULL group".
+  Future<
+      List<
+          ({
+            int id,
+            String? parentPath,
+            String key,
+            String path,
+          })>> getFilePagesByNaturalKey({
+    required String storageId,
+    required List<MediaType> mediaTypes,
+    required SortDirection direction,
+    bool grouped = false,
+    KeysetParentScope parentScope = KeysetParentScope.any,
+    bool hasCursor = false,
+    String? afterParentPath,
+    String? afterKey,
+    String? afterPath,
+    required int limit,
+  }) async {
+    final asc = direction == SortDirection.asc;
+    // An empty type set must not render `IN ()` (a syntax error).
+    final typeFilter = mediaTypes.isEmpty
+        ? ''
+        : 'AND media_type IN (${mediaTypes.map((e) => "'${e.name}'").join(',')}) ';
+    final scopeFilter = switch (parentScope) {
+      KeysetParentScope.any => '',
+      KeysetParentScope.nonNull => 'AND parent_path IS NOT NULL ',
+      KeysetParentScope.nullOnly => 'AND parent_path IS NULL ',
+    };
+    final tail = asc
+        ? '(natural_name > ?4 OR (natural_name = ?4 AND path > ?5))'
+        : '(natural_name < ?4 OR (natural_name = ?4 AND path > ?5))';
+
+    var cursor = '';
+    if (hasCursor) {
+      final cmp = asc ? '>' : '<';
+      if (!grouped) {
+        cursor = 'AND $tail ';
+      } else if (parentScope == KeysetParentScope.nullOnly) {
+        cursor = 'AND $tail ';
+      } else if (parentScope == KeysetParentScope.nonNull) {
+        // The redundant bound (`>=` / `<=`) is what lets SQLite SEEK instead of
+        // walking the index from the start for every page; the OR alone is
+        // opaque to the planner.
+        cursor = 'AND parent_path ${asc ? '>=' : '<='} ?3 '
+            'AND (parent_path $cmp ?3 OR (parent_path = ?3 AND $tail)) ';
+      } else if (afterParentPath == null) {
+        // The cursor sits inside the NULL group (usually larger than one page).
+        cursor = asc
+            // ASC: the NULL group leads, so the rest of it plus every non-null
+            // row still lie ahead.
+            ? 'AND (parent_path IS NOT NULL '
+                'OR (parent_path IS NULL AND $tail)) '
+            // DESC: the NULL group trails, so only the rest of it is left.
+            : 'AND (parent_path IS NULL AND $tail) ';
+      } else {
+        // A real parent path, single-query shape. ASC seeks (see the EXPLAIN in
+        // the tests); DESC keeps an OR here because the trailing NULL group is
+        // still ahead — callers walk it as a second phase so that both halves
+        // stay seekable.
+        cursor = asc
+            ? 'AND parent_path IS NOT NULL '
+                'AND (parent_path $cmp ?3 OR (parent_path = ?3 AND $tail)) '
+            : 'AND (parent_path IS NULL '
+                'OR (parent_path IS NOT NULL '
+                'AND (parent_path $cmp ?3 OR (parent_path = ?3 AND $tail)))) ';
+      }
+    }
+
+    final rows = await customSelect(
+      'SELECT id, parent_path, natural_name, path FROM media_nodes '
+      'WHERE data_scope_id = ?1 AND path IS NOT NULL '
+      "AND node_kind = 'file' "
+      '$typeFilter'
+      '$scopeFilter'
+      '$cursor'
+      'ORDER BY ${grouped ? 'parent_path ${asc ? 'ASC' : 'DESC'}, ' : ''}'
+      'natural_name ${asc ? 'ASC' : 'DESC'}, path ASC '
+      'LIMIT ?2',
+      variables: [
+        Variable.withString(StorageScope.of(storageId)),
+        Variable.withInt(limit),
+        if (hasCursor) ...[
+          // Unused when the cursor is in the NULL group; a null binding can't
+          // be compared, so the group is a separate SQL shape instead.
+          Variable.withString(afterParentPath ?? ''),
+          Variable.withString(afterKey ?? ''),
+          Variable.withString(afterPath ?? ''),
+        ],
+      ],
+    ).get();
+    return [
+      for (final row in rows)
+        (
+          id: row.read<int>('id'),
+          parentPath: row.read<String?>('parent_path'),
+          key: row.read<String>('natural_name'),
+          path: row.read<String>('path'),
+        ),
+    ];
+  }
 
   /// Executes a dynamic paginated query.
   /// Hides the SQL complexity from the Repository.
@@ -1155,7 +1742,7 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
       Expression<Object> sortColumn(MediaNodesTable t) {
         switch (query.sortField) {
           case MediaSortField.name:
-            return t.normalizedName;
+            return t.naturalName;
           case MediaSortField.path:
             return t.path;
           case MediaSortField.modifiedAt:
@@ -1173,7 +1760,7 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
           case MediaSortField.totalDurationMs:
             return t.totalDurationMs;
           default:
-            return t.normalizedName;
+            return t.naturalName;
         }
       }
 
@@ -1388,7 +1975,7 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
       Expression<Object> sortColumn(MediaNodesTable t) {
         switch (sortField) {
           case MediaSortField.name:
-            return t.normalizedName;
+            return t.naturalName;
           case MediaSortField.path:
             return t.path;
           case MediaSortField.modifiedAt:
@@ -1399,12 +1986,17 @@ class MediaNodesDao extends DatabaseAccessor<AppDatabase> with _$MediaNodesDaoMi
             return t.sizeInBytes;
           case MediaSortField.durationMs:
             return t.durationMs;
+          case MediaSortField.pixelCount:
+            // The DEFAULT below is `natural_name`, so a missing case does not
+            // fail loudly — the library's "resolution" sort silently became a
+            // name sort. Keep this aligned with `getPagedNodes`.
+            return t.pixelCount;
           case MediaSortField.totalSizeInBytes:
             return t.totalSizeInBytes;
           case MediaSortField.totalDurationMs:
             return t.totalDurationMs;
           default:
-            return t.normalizedName;
+            return t.naturalName;
         }
       }
 

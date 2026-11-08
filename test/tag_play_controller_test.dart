@@ -575,6 +575,142 @@ void main() {
     });
   });
 
+  group('neighbour landing (explicit start index)', () {
+    setUp(() async {
+      // enterView is gated on the metadata-driven era; flip the master gate.
+      final app = useAppStore();
+      app.set(app.state.copyWith(useMetadataSettings: true));
+    });
+
+    tearDown(() async {
+      final store = useTagPlayStore();
+      store.set(store.state.copyWith(
+        activeViewTagId: null,
+        viewStackTagIds: const [],
+      ));
+    });
+
+    Future<(TagPlayTag, TagPlayController)> seed() async {
+      final tag = await repo.createTag(name: 'N');
+      var at = DateTime.utc(2026, 8, 1);
+      for (final p in ['n1.mp4', 'n2.mp4', 'n3.mp4']) {
+        await repo.addMember(
+            tagId: tag.id, storageId: 's1', pathSegments: [p], at: at);
+        at = at.add(const Duration(hours: 1));
+      }
+      final c = await makeController([
+        item('/n1.mp4', 'n1'),
+        item('/n2.mp4', 'n2'),
+        item('/n3.mp4', 'n3'),
+      ]);
+      return (tag, c);
+    }
+
+    Future<void> bookmarkOldest(TagPlayTag tag) async {
+      await repo.saveState(
+        ((await repo.stateOf(tag.id)) ??
+                TagViewResolver.defaultStateFor(tag.id))
+            .copyWith(
+          tagId: tag.id,
+          lastMediaKey: canonicalKey('s1', '/n1.mp4'),
+          lastPlayedAt: DateTime.now(),
+        ),
+      );
+    }
+
+    test('an explicit index wins over the bookmark anchor', () async {
+      final (tag, c) = await seed();
+      // The bookmark sits on the OLDEST member (index 2 in addedAt-desc order),
+      // so a bookmark-derived anchor can never coincide with the shipped target.
+      await bookmarkOldest(tag);
+
+      final entry = await c.enterView(tag.id, scenarioId: 'sc', startIndex: 0);
+      expect(entry, isNotNull);
+      expect(entry!.key, canonicalKey('s1', '/n3.mp4'),
+          reason: 'the index the SOURCE window resolved must win');
+      expect(c.currentCachedEntry!.key, canonicalKey('s1', '/n3.mp4'));
+    });
+
+    test('a shipped file key opens that member of the entry', () async {
+      final (tag, c) = await seed();
+      await bookmarkOldest(tag);
+
+      final entry = await c.enterView(
+        tag.id,
+        scenarioId: 'sc',
+        startIndex: 1,
+        startFileKey: canonicalKey('s1', '/n2.mp4'),
+      );
+      expect(entry?.key, canonicalKey('s1', '/n2.mp4'));
+      expect(c.currentCachedEntry!.key, canonicalKey('s1', '/n2.mp4'));
+    });
+
+    test('the step fallback still applies when no index is shipped', () async {
+      final (tag, c) = await seed();
+      await bookmarkOldest(tag);
+
+      // n1 is index 2; stepping back lands on index 1 (n2).
+      final entry = await c.enterView(tag.id, scenarioId: 'sc', startStep: -1);
+      expect(entry?.key, canonicalKey('s1', '/n2.mp4'));
+    });
+
+    test('an out-of-range index reports no neighbour instead of clamping',
+        () async {
+      final (tag, c) = await seed();
+      final entry = await c.enterView(tag.id, scenarioId: 'sc', startIndex: 9);
+      expect(entry, isNull);
+    });
+
+    test('a vanished bookmark cannot veto the shipped neighbour', () async {
+      final (tag, c) = await seed();
+      // The bookmark's file is NOT in the view and still inside the resume
+      // window → `resolveStart` reports "bookmark lost". That verdict belongs
+      // to a bookmarked resume; an EXPLICIT index never reads the bookmark, so
+      // it must not be blocked (the source window's live position is the only
+      // anchor for this gesture).
+      await repo.saveState(
+        ((await repo.stateOf(tag.id)) ??
+                TagViewResolver.defaultStateFor(tag.id))
+            .copyWith(
+          tagId: tag.id,
+          lastMediaKey: canonicalKey('s1', '/gone.mp4'),
+          lastPlayedAt: DateTime.now(),
+        ),
+      );
+      await usePlayQueueStore().clear();
+
+      final entry = await c.enterView(tag.id, scenarioId: 'sc', startIndex: 0);
+      expect(entry, isNotNull,
+          reason: 'a dead bookmark must not cancel a valid neighbour');
+      expect(entry!.key, canonicalKey('s1', '/n3.mp4'));
+      expect(usePlayQueueStore().state.playQueue, isNotEmpty,
+          reason: 'the bookmark-lost branch used to CLEAR the feed queue');
+      expect(useAppStore().state.autoPlay, isTrue,
+          reason: 'it also parked autoplay on a window that should be playing');
+    });
+
+    test('a mismatched target key is refused instead of playing the index',
+        () async {
+      final (tag, c) = await seed();
+      await bookmarkOldest(tag);
+      await usePlayQueueStore().clear();
+
+      // The source shipped index 1 but named a DIFFERENT file: its cached view
+      // and this window's fresh resolve disagree. Playing index 1 would show
+      // the wrong video behind the OSD label the source displayed.
+      final entry = await c.enterView(
+        tag.id,
+        scenarioId: 'sc',
+        startIndex: 1,
+        startFileKey: canonicalKey('s1', '/n1.mp4'),
+      );
+      expect(entry, isNull);
+      expect(c.currentCachedEntry, isNull,
+          reason: 'nothing may be fed when the decision cannot be replayed');
+      expect(usePlayQueueStore().state.playQueue, isEmpty);
+    });
+  });
+
   group('view stack persistence (tagplay.viewStackEnabled)', () {
     tearDown(() async {
       // The meta rows live in the shared bootstrap DB — clear them so the

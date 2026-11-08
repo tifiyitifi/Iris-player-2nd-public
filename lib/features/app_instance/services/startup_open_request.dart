@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:iris/features/app_instance/model/new_window_request.dart';
 import 'package:iris/features/media_library/store/use_media_lib_browser_store.dart';
 import 'package:iris/features/media_library/view/content/store/use_media_lib_content_store.dart';
+import 'package:iris/features/scenario_playback/actions/scenario_mirror_actions.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_actions.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_source_kind.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
@@ -57,6 +58,7 @@ void resetStartupOpenRequestSeam() => debugBeforeApply = null;
 @visibleForTesting
 bool startupRequestHasAction(NewWindowRequest request) =>
     _hasText(request.scenarioId) ||
+    _hasText(request.mirrorScenarioId) ||
     _hasText(request.libraryId) ||
     _hasText(request.openStorageId) ||
     _hasText(request.startFile?.storageId) ||
@@ -134,6 +136,35 @@ Future<bool> applyStartupOpenRequest(BuildContext context) async {
       }
       await scenarioStore.setActiveScenario(scenarioId);
       await ScenarioPlaybackActions.resumeScenarioPlayback();
+      return true;
+    }
+
+    // Multi-window neighbour playback: mirror the source window's playback
+    // context into THIS window's private workspace, step once and play.
+    final String? mirrorScenarioId = request.mirrorScenarioId;
+    if (mirrorScenarioId != null) {
+      if (!context.mounted) {
+        _applied = false;
+        return false;
+      }
+      final bool ok = await ScenarioMirrorActions.playMirroredNeighbor(
+        sourceScenarioId: mirrorScenarioId,
+        tagViewId: request.mirrorTagViewId,
+        forward: request.mirrorForward,
+        targetIndex: request.mirrorTargetIndex,
+        targetFileKey: request.mirrorTargetFileKey,
+      );
+      if (!ok) {
+        // The mirror never produced a feed (vanished scenario, empty view, …).
+        // Do NOT consume the intent: the generic resume still runs and keeps
+        // playing whatever this window's cloned workspace currently holds —
+        // but say so, instead of leaving the user with a window that silently
+        // shows something other than the requested neighbour. Not awaited: the
+        // resume must not wait for the dismissal.
+        _applied = false;
+        if (context.mounted) unawaited(_showMirrorFailedDialog(context));
+        return false;
+      }
       return true;
     }
 
@@ -271,6 +302,25 @@ void _showBrowser(BuildContext context) {
         : const StoragesDb(),
     direction: useAppStore().state.defaultPopupDirection,
   ));
+}
+
+/// Explains that the requested neighbour could not be resolved in the mirrored
+/// queue, while the window keeps playing its current item.
+Future<void> _showMirrorFailedDialog(BuildContext context) async {
+  final t = getLocalizations(context);
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(t.new_window_play_failed_title),
+      content: Text(t.new_window_mirror_failed_body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: Text(t.ok),
+        ),
+      ],
+    ),
+  );
 }
 
 Future<void> _showPlayFailedDialog(BuildContext context) async {

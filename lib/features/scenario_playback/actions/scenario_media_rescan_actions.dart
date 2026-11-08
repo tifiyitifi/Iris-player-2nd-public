@@ -143,6 +143,24 @@ abstract final class ScenarioMediaRescanActions {
                 (foldCase && f.name.toLowerCase() == name.toLowerCase())),
       );
 
+  /// The listing entry [filePresent] accepted, so the rescan can write that
+  /// listing's size/mtime back to the row (the queue sorts by them, and the
+  /// probe alone cannot heal a container it cannot open). Null when absent.
+  static FileItem? listedEntry({
+    required List<FileItem> listed,
+    required String name,
+    required bool foldCase,
+  }) {
+    for (final f in listed) {
+      if (f.isDir) continue;
+      if (f.name == name ||
+          (foldCase && f.name.toLowerCase() == name.toLowerCase())) {
+        return f;
+      }
+    }
+    return null;
+  }
+
   /// Whether this storage compares names case-insensitively.
   ///
   /// A Windows network (SMB/UNC) share always folds; a filesystem path folds
@@ -181,10 +199,11 @@ abstract final class ScenarioMediaRescanActions {
       return;
     }
 
+    final foldCase = foldsCaseFor(storage, path);
     final present = filePresent(
       listed: listed,
       name: path.last,
-      foldCase: foldsCaseFor(storage, path),
+      foldCase: foldCase,
     );
     if (!present) {
       // Genuinely gone: remove the stale node, then inform (never delete on a
@@ -211,12 +230,21 @@ abstract final class ScenarioMediaRescanActions {
       path,
       uri: item.media.maybeMap(file: (f) => f.uri, orElse: () => null),
     );
+    // The listing above already stat-ed the file; hand its size/mtime to the
+    // write-back so "rescan file" heals a 0/NULL row even without a probe.
+    final entry = listedEntry(
+      listed: listed,
+      name: path.last,
+      foldCase: foldCase,
+    );
     final probe = debugProbeOverride ?? probeExplicitFiles;
     final touched = await probe([
       ExplicitFileProbeTarget(
         storageId: storage.id,
         path: canonicalDbPath(path.join('/')),
         uri: uri,
+        sizeInBytes: entry?.size,
+        modifiedAt: entry?.lastModified,
       ),
     ]);
     if (touched.isNotEmpty) {
@@ -320,7 +348,11 @@ abstract final class ScenarioMediaRescanActions {
     bool? probeEnabled,
   }) async {
     final probe = probeEnabled ??
-        await showScanOptionsDialog(context, storageType: storage.type);
+        await showScanOptionsDialog(
+          context,
+          storage: storage,
+          rootPath: root,
+        );
     if (probe == null || !context.mounted) return;
     final service = RecursiveScanService(
       storage: storage,

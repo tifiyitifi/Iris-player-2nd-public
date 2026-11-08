@@ -22,6 +22,7 @@ import 'package:iris/features/scenario_playback/resolver/shared_index_codec.dart
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/models/db/app_database.dart';
+import 'package:iris/utils/path_conv.dart';
 
 VirtualMediaRule _mergeRule({
   String id = 'r1',
@@ -214,6 +215,46 @@ void main() {
         }
       }
       expect(represented.length, 6);
+    });
+
+    test('SAF single-picked files keep their own identity (uri, not path)', () {
+      // A SAF single pick has `path == []` and its only stable identity is the
+      // persisted document uri. Keying on `path.join('/')` collapsed EVERY such
+      // file of one storage onto `storageId:`, so the second pick resolved to
+      // the first one's rank and reappeared as an extra standalone row while
+      // still being counted as a group member.
+      EffectivePlaybackItem saf(String uri, int rank) => EffectivePlaybackItem(
+            media: MediaNode.file(
+              id: 'saf$rank',
+              storageId: 'saf1',
+              path: const <String>[],
+              parentPath: '',
+              name: 'pick$rank.mp4',
+              mediaType: MediaType.video,
+              durationMs: 60000,
+              uri: uri,
+            ),
+            scenarioId: 'sc1',
+            available: true,
+            virtualIndex: rank,
+            occurrenceId: PlaybackOccurrenceId(storageId: 'saf1', path: uri),
+          );
+      final plan = ScenarioQueueBuilder.build(
+        stream: [saf('content://doc/a', 0), saf('content://doc/b', 1)],
+        // A rule path of '' roots at the storage, so it covers both picks.
+        rules: [_mergeRule(paths: const [''])],
+        mediaNodeIdOf: (rank, item) => rank,
+      );
+      expect(plan.groups, hasLength(1));
+      expect(plan.groups.single.segmentCount, 2);
+      expect(plan.groups.single.members.map((m) => m.mediaNodeId).toList(),
+          [0, 1]);
+      // One group row only: no member rank survives as a standalone file row.
+      expect(plan.entries, hasLength(1));
+      expect(plan.entries.single.isGroup, isTrue);
+      // The identity the exclusion/lookup side computes must agree.
+      expect(canonicalKey('saf1', 'content://doc/a'),
+          isNot(canonicalKey('saf1', '')));
     });
   });
 

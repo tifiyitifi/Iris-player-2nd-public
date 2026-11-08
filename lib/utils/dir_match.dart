@@ -102,8 +102,8 @@ class DirPatternEntry {
 /// directory rule.
 ///
 /// [paths] are canonical storage-relative picker paths (a UNION); the file's
-/// parent may be absolute in the DB (`E:/yb/...`) while the rule path is
-/// relative (`yb/...`), so directory equality compares segment TAILS.
+/// parent may be absolute in the DB (`E:/vault/...`) while the rule path is
+/// relative (`vault/...`), so directory equality compares segment TAILS.
 ///
 /// Hot loops (resolve × files) must use [compileDirRule] once per rule plus
 /// [compiledDirRuleMatchesFile] per file instead — this entry compiles on
@@ -282,8 +282,8 @@ List<DirPatternEntry> decodeDirPatterns(String json) {
 
 /// Whether media path [fullPath] falls under directory [root].
 ///
-/// The DB stores ABSOLUTE windows paths (`E:/yb/20260614/sub/c.mp4`) while
-/// rules store STORAGE-RELATIVE picker paths (`yb/20260614`). Both are
+/// The DB stores ABSOLUTE windows paths (`E:/vault/003/sub/c.mp4`) while
+/// rules store STORAGE-RELATIVE picker paths (`vault/003`). Both are
 /// canonical segment sequences; the file's parent directory (fullPath minus
 /// its last name segment) must CONTAIN the rule's directory segments as a
 /// contiguous run.

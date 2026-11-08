@@ -4,6 +4,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/resolver/vm_preflight.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
+import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -219,13 +220,18 @@ class VirtualMediaService {
 
   /// Enabled rules (drift `vm_rules`), cached until the next rule change.
   /// One small DB read per rule edit — never per resolve page. Empty when
-  /// the feature is gated off or nothing is enabled.
+  /// the feature is gated off, the master switch is paused, or nothing is
+  /// enabled.
   Future<List<VirtualMediaRule>> enabledRules() async {
     final cached = _rulesCache;
     if (cached != null) return cached;
     if (!VirtualMediaGate.enabled) {
       _log.w('vm gate DISABLED: legacy=${useAppStore().state.useLegacyStoragePersistence} '
           'meta=${useAppStore().state.useMetadataSettings}');
+      return _rulesCache = const [];
+    }
+    if (!await VmPrefs.masterEnabled()) {
+      _log.i('vm master switch OFF: merge paused (rules kept)');
       return _rulesCache = const [];
     }
     try {
