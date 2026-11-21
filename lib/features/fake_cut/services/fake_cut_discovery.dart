@@ -72,7 +72,7 @@ abstract final class FakeCutDiscovery {
   /// multi-megabyte JSON is far more likely to be a mis-extension than a plan.
   static const int maxProjectBytes = 4 * 1024 * 1024;
 
-  /// The projects that belong to [videoPath] — its own 简播 plans, in the same
+  /// The projects that belong to [videoPath] — its own 虚拟剪播 plans, in the same
   /// default (file-name) order its sibling subtitles are listed in.
   ///
   /// A video owns ZERO..N projects: `movie.llc` and `movie.cut2.llc` are two

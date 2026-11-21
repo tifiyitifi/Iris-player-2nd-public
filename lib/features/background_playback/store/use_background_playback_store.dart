@@ -677,7 +677,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
 
   void setPlaying(bool playing) {
     if (!state.enabled || !state.gateOpen) return;
-    // Only a REAL transport change clears the 简播 suspension. A redundant
+    // Only a REAL transport change clears the 虚拟剪播 suspension. A redundant
     // `setPlaying(false)` arrives from mirrors that still re-assert the paused
     // state, and clearing the flag there would silently lose the auto-resume
     // when the foreground leaves the cut.
@@ -789,8 +789,17 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     final total = state.queueTotal > 0 ? state.queueTotal : n;
     final current = state.queueWindowStart + state.currentIndex;
     if (repeat == Repeat.none) {
-      final g = current + (forward ? 1 : -1);
-      return (g >= 0 && g < total) ? [g] : const [];
+      // A non-looping walk stops at the list's ends, but a COLLISION is not an
+      // end (GATE-5): the immediate neighbour being the foreground file must
+      // not make 下一首 dead when the entry after it is playable. Two
+      // candidates, like the wrap modes (the guard rejects at most one).
+      final out = <int>[];
+      for (var i = 1; i <= 2; i++) {
+        final g = current + (forward ? i : -i);
+        if (g < 0 || g >= total) break;
+        out.add(g);
+      }
+      return out;
     }
     final out = <int>[];
     var g = current;
@@ -865,38 +874,11 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     return result.whenComplete(() => _movePending--);
   }
 
-  /// Natural completion of the current media. [Repeat.one] replays the same
-  /// file (index unchanged); otherwise [step] forward with the real repeat
-  /// rules.
-  ///
-  /// Returns `true` when the same file should be replayed in place (repeat-one,
-  /// or a single-track queue wrapped back onto itself under repeat-all/none).
-  /// Returns `false` when the queue advanced to a different file (the open
-  /// effect re-fires on that [fileKey] change) or playback stopped (repeat-none
-  /// at the end).
-  Future<bool> advanceOnCompleted({String? excludedKey}) async {
-    if (state.bgRepeat == Repeat.one && state.currentIndex >= 0) {
-      set(state.copyWith(
-        bgAutoPlay: true,
-        // Repeat-one never runs out: clear a previous queue-end hand-back.
-        bgQueueEnded: false,
-        bgStepSeq: state.bgStepSeq + 1,
-      ));
-      return true;
-    }
-    final prevIndex = state.currentIndex;
-    final moved = await step(forward: true, excludedKey: excludedKey);
-    if (!moved) {
-      // `step` already latched `bgQueueEnded` when the list itself is over;
-      // a double-play collision keeps the pair, so do not touch it here.
-      set(state.copyWith(bgAutoPlay: false));
-      return false;
-    }
-    // Stepping wrapped back onto the very same index (a one-item queue under
-    // repeat-all/none). Since the file identity didn't change, the open effect
-    // won't re-fire — the caller must replay it in place.
-    return state.currentIndex == prevIndex;
-  }
+  // Natural completion is owned by the engine host
+  // (`BackgroundPlaybackScope.onCompleted` → queue-end / repeat-one / the
+  // runtime observer's continuation). A second decision table lived here once
+  // and had no production caller; keeping it invited two opposite answers (see
+  // R7 in `docs/features/background-playback/recurrences.md`).
 
   // ── Prefs ──
 
@@ -1190,9 +1172,9 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
         fakeCutHeldRouting: false));
   }
 
-  // ── 简播 (fake cut) 临时停用 ──
+  // ── 虚拟剪播 (virtual cut) 临时停用 ──
 
-  /// Suspends 副音 while the foreground plays a 简播 cut.
+  /// Suspends 副音 while the foreground plays a 虚拟剪播 cut.
   ///
   /// The cut owns the picture AND the timeline (virtual milliseconds that mean
   /// nothing on the 副音 side), so the pair must not stay linked — but this is a
@@ -1244,7 +1226,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     ));
   }
 
-  /// The foreground left the 简播 video: restore the transport and the routing a
+  /// The foreground left the 虚拟剪播 video: restore the transport and the routing a
   /// cut interrupted.
   ///
   /// No-op unless something was actually remembered ([bgSuspendedByFakeCut] for
@@ -1493,7 +1475,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
     set(state.copyWith(vmSessionActive: value));
   }
 
-  /// How 作用范围「仅当前」reads a Virtual Media foreground (`bg.vmScopeMode`).
+  /// How 作用范围「仅当前」reads a Virtual Merge foreground (`bg.vmScopeMode`).
   Future<void> setBgVmScopeMode(BgVmScopeMode value) async {
     set(state.copyWith(bgVmScopeMode: value));
     await _writeAux(_kAuxVmScopeMode, value.name);
@@ -1634,6 +1616,12 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
       bgDurationFailedKeys: Set<String>.unmodifiable(failed),
       bgDurationUnknownKeys: Set<String>.unmodifiable(unknown),
       bgDurationProbing: probing,
+      // A FINISHED pass may have written durations back to `media_nodes`: the
+      // runtime observer re-reads the queue through this seq (the write-back
+      // does not change the queue, which is what its duration read is keyed on).
+      bgDurationResolvedSeq: probing
+          ? state.bgDurationResolvedSeq
+          : state.bgDurationResolvedSeq + 1,
     ));
   }
 
@@ -1904,7 +1892,7 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
   /// Drops the E 節 override (a mapped file, or a silence hold) WITHOUT
   /// advancing the natural queue and WITHOUT touching transport.
   ///
-  /// Used when the pair stops applying to the current media (scope exit, 简播):
+  /// Used when the pair stops applying to the current media (scope exit, 虚拟剪播):
   /// [exitMappedNatural] would `step` the queue and [resumeNatural] would set
   /// `bgAutoPlay` true — both undo the scope pause. The override itself is
   /// media-scoped, so it is simply forgotten; re-entering scope re-evaluates the
@@ -1989,6 +1977,10 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
         // already; an explicit re-activation goes through [openGate], which
         // re-anchors.
         bgQueueEnded: false,
+        // A deliberate row pick RE-ACTIVATES a run parked by stopRestoreFg:
+        // leaving the latch set made the engine sound muted (the duck gate reads
+        // the pair as inactive) until a later alignment cleared it.
+        bgExhausted: false,
         bgStepSeq: state.bgStepSeq + 1,
         bgUserAlignSeq:
             userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,
@@ -2063,6 +2055,8 @@ class BackgroundPlaybackStore extends PersistentStore<BackgroundPlaybackState> {
         // Scope verdict belongs to the observer (see [jumpTo]); only the queue
         // hand-back latch is cleared by a deliberate move.
         bgQueueEnded: false,
+        // Same as [jumpTo]: an explicit row pick re-activates the terminal run.
+        bgExhausted: false,
         bgStepSeq: state.bgStepSeq + 1,
         bgUserAlignSeq:
             userInitiated ? state.bgUserAlignSeq + 1 : state.bgUserAlignSeq,

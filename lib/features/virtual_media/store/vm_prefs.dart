@@ -7,7 +7,7 @@ import 'package:iris/features/virtual_media/rule/vm_naming.dart'
         parseVmNamingStrategy;
 import 'package:iris/features/virtual_media/vm_gate.dart';
 
-/// AUX-row backed preferences for the Virtual Media feature.
+/// AUX-row backed preferences for the Virtual Merge feature.
 ///
 /// `virtualmedia.*` rows live OUTSIDE the `app.%` wipe scope (same contract
 /// as `tagplay.*`), so they survive settings snapshots. Gate-OFF runs

@@ -70,3 +70,6 @@ app-*.apk
 .opencode/
 /.opensquilla/
 /.commandcode/
+
+# Local privacy gate: the filled-in deny list never leaves this machine
+.local_privacy/

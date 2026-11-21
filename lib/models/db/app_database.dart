@@ -103,6 +103,7 @@ import 'package:iris/models/db/migration/v50_migration.dart';
 import 'package:iris/models/db/migration/v51_migration.dart';
 import 'package:iris/models/db/migration/v52_migration.dart';
 import 'package:iris/models/db/migration/v53_migration.dart';
+import 'package:iris/models/db/migration/v54_migration.dart';
 import 'package:iris/models/db/tables/app_meta_table.dart';
 import 'package:iris/models/db/tables/navigation_table.dart';
 import 'package:iris/models/db/tables/storage_table.dart';
@@ -160,7 +161,7 @@ Otherwise generated drift/freezed files remain stale.
     VideoTagViewStatesTable,
     VideoTagPinPresetsTable,
 
-    // Virtual Media tables (schema version 16; rules v2 schema in v18;
+    // Virtual Merge tables (schema version 16; rules v2 schema in v18;
     //   progress per scenario/tag in v21)
     VmRulesTable,
     VirtualMediaStatesTable,
@@ -194,7 +195,7 @@ class AppDatabase extends _$AppDatabase {
 
   /// Increment schema version whenever the database structure changes.
   @override
-  int get schemaVersion => 53;
+  int get schemaVersion => 54;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -415,6 +416,10 @@ class AppDatabase extends _$AppDatabase {
 
           if (from < 53) {
             await MigrationV53(this).run(m);
+          }
+
+          if (from < 54) {
+            await MigrationV54(this).run(m);
           }
         },
 

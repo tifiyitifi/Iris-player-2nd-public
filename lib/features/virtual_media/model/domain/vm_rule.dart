@@ -91,7 +91,7 @@ abstract class VirtualMediaRule with _$VirtualMediaRule {
     @Default(true) bool useCountCap,
 
     /// Excludes single videos longer than [maxSingleDurationMinutes] from
-    /// the merge (they are not "算入虚拟合并"). Unknown durations (null/0)
+    /// the merge (they are not "算入虚拟合播"). Unknown durations (null/0)
     /// are never excluded — they still take part and degrade via preflight.
     @Default(true) bool useExcludeOverlong,
 
@@ -106,6 +106,11 @@ abstract class VirtualMediaRule with _$VirtualMediaRule {
     /// Lit title tags in lighting order (= concatenation order).
     @Default(<VmTitleTag>[VmTitleTag.dirName, VmTitleTag.seq])
     List<VmTitleTag> titleTags,
+
+    /// Whether an ENABLED rule uses ([VmRuleUseMode.use], historical
+    /// behaviour) or excludes ([VmRuleUseMode.notUse]) the directories it
+    /// matches from virtual merging. Independent of [enabled].
+    @Default(VmRuleUseMode.use) VmRuleUseMode useMode,
 
     /// Disabled rules are ignored by the resolver entirely.
     @Default(true) bool enabled,

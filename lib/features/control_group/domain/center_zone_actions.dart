@@ -1,8 +1,8 @@
 import 'package:flutter/widgets.dart';
+import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/control_group/store/use_control_group_store.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/models/store/app_state.dart';
-import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_player_ui_store.dart';
 import 'package:provider/provider.dart';
 
@@ -33,14 +33,14 @@ void handleCenterZoneAction({
       return;
     case CircleSliderCenterAction.togglePlayPause:
       showControl?.call();
+      // The dial's centre is mounted under the control-target override, so the
+      // resolved player may be the 副音 engine: the flag written must follow it
+      // (ADR 0017).
+      setActiveTransportFlag(context, playing: !isPlaying);
       if (isPlaying) {
-        // ignore: discarded_futures
-        useAppStore().updateAutoPlay(false);
         // ignore: discarded_futures
         player.pause();
       } else {
-        // ignore: discarded_futures
-        useAppStore().updateAutoPlay(true);
         // ignore: discarded_futures
         player.play();
       }

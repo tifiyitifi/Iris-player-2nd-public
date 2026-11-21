@@ -62,9 +62,8 @@ String composeVmTitle({
   return pieces.join(' · ');
 }
 
-/// Player title replacement for a virtual item (spec §9.2):
-/// replaces the single-file name part with
-/// “目录<sep>序号/总数<sep>原名”.
+/// Player title replacement for a virtual item (spec §9.2): replaces the
+/// single-file name part with `dirName + sep + index/total + sep + origName`.
 String vmPlayerTitle({
   required String dirName,
   required int innerIndex,
@@ -72,7 +71,9 @@ String vmPlayerTitle({
   required String origName,
   String separator = ':',
 }) {
-  final sep = separator.isEmpty ? ':' : separator[0];
+  // Honour the configured separator verbatim; truncating to its first code
+  // unit silently changed a multi-character choice.
+  final sep = separator.isEmpty ? ':' : separator;
   return '$dirName$sep$innerIndex/$innerTotal$sep$origName';
 }
 

@@ -12,7 +12,7 @@ import 'package:iris/utils/logger.dart';
 
 final areaKeyLog = AreaKeyLog(ScenarioLogKeys.playback);
 
-/// Keeps the ACTIVE scenario's current item in step with the Virtual Media
+/// Keeps the ACTIVE scenario's current item in step with the Virtual Merge
 /// session that is actually playing.
 ///
 /// A merged group's row identity is one physical file (the group's anchor), and

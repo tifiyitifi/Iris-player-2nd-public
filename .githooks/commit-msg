@@ -1,0 +1,6 @@
+#!/bin/sh
+# Local privacy gate: check the message git is about to use.
+# $1 is the file git handed the hook: COMMIT_EDITMSG for a normal commit and
+# MERGE_MSG for a merge. Passing it through keeps merges checked instead of
+# reading the previous commit's COMMIT_EDITMSG.
+IRIS_GATE_MODE=message . scripts/local-gate.sh "$@"

@@ -2,6 +2,7 @@ import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/domain/effective_playback_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
+import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/resolver/vm_preflight.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
@@ -103,7 +104,7 @@ VmGroupsCacheAction vmGroupsCacheAction({
 /// diagnostic for "no rule matched anything", which the rule pipeline itself
 /// reports only as an empty result.
 ///
-/// [excludedMediaKeys] carries the 简播 exclusion (a video with a sibling
+/// [excludedMediaKeys] carries the 虚拟剪播 exclusion (a video with a sibling
 /// LosslessCut `.llc` never merges — see `vm_fake_cut_exclusions.dart`). It is
 /// injected rather than looked up here so this stays a PURE function: the
 /// filesystem answer is async, and every production caller resolves it once per
@@ -165,7 +166,21 @@ VmStreamGroups resolveGroupsForStream(
       byKey[seg.mediaKey] = item;
     }
   }
-  return VmStreamGroups(byKey: byKey, inOrder: items, failByKey: partitioned.failByKey, failedGroups: partitioned.failed);
+  // A file can belong to two rules: one feasible, one infeasible. The failed
+  // group attributes its whole membership (including the feasible file) to
+  // failByKey, which would make the overlay show a merged row that the planner
+  // refuses to start. The valid group owns that file, so its key must not be
+  // marked failed.
+  final failByKey = Map<String, VmFailInfo>.from(partitioned.failByKey);
+  for (final key in byKey.keys) {
+    failByKey.remove(key);
+  }
+  return VmStreamGroups(
+    byKey: byKey,
+    inOrder: items,
+    failByKey: failByKey,
+    failedGroups: partitioned.failed,
+  );
 }
 
 /// Delete-time boundary capture for [VmMembershipPin] (pure, unit-testable).
@@ -214,24 +229,34 @@ String vmNoMatchReport({
   required List<VirtualMediaRule> rules,
   required List<VirtualSegment> streamOrdered,
 }) {
+  // An exclusion rule never merges, so it cannot explain an empty merge: only
+  // `use` rules are attributed here.
+  final merging = [
+    for (final r in rules)
+      if (r.useMode == VmRuleUseMode.use) r,
+  ];
   if (streamOrdered.isEmpty) {
-    return '[vm] no rule matched stream. rules=${rules.length} empty stream';
+    return '[vm] no rule matched stream. rules=${merging.length} empty stream';
+  }
+  if (merging.isEmpty) {
+    // Defensive: only reachable if a caller bypasses the production guard.
+    return '[vm] no rule matched stream. rules=0 without a use rule to attribute';
   }
   final first = streamOrdered.first;
   final perRule = <String, int>{};
-  for (final rule in rules) {
+  for (final rule in merging) {
     var count = 0;
     for (final seg in streamOrdered) {
       if (vmRuleCoversFile(rule, seg)) count++;
     }
     perRule[rule.id] = count;
   }
-  return '[vm] no rule matched stream. rules=${rules.length} '
+  return '[vm] no rule matched stream. rules=${merging.length} '
       'perRule=$perRule '
       'firstStorage=${first.storageId} firstParent=${first.parentPath} '
       'firstFull=${first.fullPath} firstKey=${first.mediaKey} '
-      'firstMode=${rules.first.matchMode.name} '
-      'firstPaths=${rules.first.paths} '
-      'firstPatterns=${rules.first.patterns.map((p) => "${p.kind.name}:${p.text}").toList()}';
+      'firstMode=${merging.first.matchMode.name} '
+      'firstPaths=${merging.first.paths} '
+      'firstPatterns=${merging.first.patterns.map((p) => "${p.kind.name}:${p.text}").toList()}';
 }
 

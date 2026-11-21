@@ -14,9 +14,14 @@ library;
 const String kTagCommandOperators = '+-*';
 
 /// The no-tag play target: `*0` plays the original (untagged) list, the same
-/// destination as the sheet's "no tag" row. Only `*` accepts it — `+0`/`-0`
-/// name no tag and stay meaningless.
+/// destination as the sheet's "no tag" row. Only `*` accepts it as a play
+/// target.
 const int kTagCommandNoTagOrdinal = 0;
+
+/// The "all tags" target of `+`/`-`: `+0` adds the current file to every tag
+/// and `-0` removes it from every tag. It only applies when `0` stands alone;
+/// in a mixed line such as `+0.2` the `0` is ignored and only `2` is used.
+const int kTagCommandAllTagsOrdinal = 0;
 
 /// What the command does with the tagged ordinals.
 enum TagCommandKind {
@@ -34,10 +39,18 @@ enum TagCommandKind {
 /// order (pins first — see `tagPlayDisplayOrder`). Duplicates collapse to
 /// first-seen order so `+1.1` is the same command as `+1`.
 class TagCommand {
-  const TagCommand({required this.kind, required this.ordinals});
+  const TagCommand({
+    required this.kind,
+    required this.ordinals,
+    this.allTags = false,
+  });
 
   final TagCommandKind kind;
   final List<int> ordinals;
+
+  /// `+0` / `-0`: apply to every tag instead of [ordinals]. A lone `0` sets
+  /// this; a mixed line such as `+0.2` drops the `0` and leaves [ordinals].
+  final bool allTags;
 }
 
 /// Why a command line could not be understood. Rendered as inline red text
@@ -136,23 +149,36 @@ TagCommandParseResult parseTagCommand(String raw) {
       return const TagCommandInvalid(TagCommandError.missingOperator);
   }
 
-  final ordinals = <int>[];
+  // `int.parse` folds leading zeros (`02` → 2). Blank segments name no tag
+  // and are skipped instead of failing the line. `0` is the no-tag target for
+  // `*`, and for `+`/`-` it means "all tags" when it stands alone (a mixed
+  // line drops it).
+  final values = <int>[];
   for (final segment in cleaned.substring(1).split(_separator)) {
-    // `int.parse` folds leading zeros (`02` → 2). Blank segments name no tag
-    // and are skipped instead of failing the line; `0` is the no-tag target
-    // for `*` and meaningless for `+`/`-`.
     final value = int.tryParse(segment);
     if (value == null) continue;
-    if (value < 1 && !(kind == TagCommandKind.play && value == 0)) continue;
-    if (!ordinals.contains(value)) ordinals.add(value);
+    if (!values.contains(value)) values.add(value);
   }
-  if (ordinals.isEmpty) {
+
+  if (kind == TagCommandKind.play) {
+    if (values.isEmpty) {
+      return const TagCommandInvalid(TagCommandError.noOrdinals);
+    }
+    if (values.length != 1) {
+      return const TagCommandInvalid(TagCommandError.playNeedsSingle);
+    }
+    return TagCommandParsed(TagCommand(kind: kind, ordinals: values));
+  }
+
+  // add / remove: a lone 0 addresses every tag; any other line drops the 0.
+  final allTags =
+      values.length == 1 && values.first == kTagCommandAllTagsOrdinal;
+  final ordinals = values.where((v) => v > 0).toList(growable: false);
+  if (ordinals.isEmpty && !allTags) {
     return const TagCommandInvalid(TagCommandError.noOrdinals);
   }
 
-  if (kind == TagCommandKind.play && ordinals.length != 1) {
-    return const TagCommandInvalid(TagCommandError.playNeedsSingle);
-  }
-
-  return TagCommandParsed(TagCommand(kind: kind, ordinals: ordinals));
+  return TagCommandParsed(
+    TagCommand(kind: kind, ordinals: ordinals, allTags: allTags),
+  );
 }

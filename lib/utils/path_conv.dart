@@ -439,7 +439,7 @@ String canonicalKey(String storageId, String path) =>
 /// A SAF single pick has an EMPTY [path] (the row was added by the picker, not
 /// by a directory scan), so `path.join('/')` would collapse EVERY such file of
 /// one storage onto `storageId:` — they then dedupe, rank and merge as ONE file,
-/// and a 简播 exclusion keyed on the uri form never matches. [path] is used
+/// and a 虚拟剪播 exclusion keyed on the uri form never matches. [path] is used
 /// whenever it is non-empty, so ordinary rows keep the historical key.
 ///
 /// Mirrors `MediaNode.occurrencePath`; every producer of a Virtual-Media

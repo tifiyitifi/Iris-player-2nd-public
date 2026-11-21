@@ -547,7 +547,7 @@ void main() {
     });
 
     test('a fake-cut source-timeline write may move backward', () async {
-      // 简播: out-of-order / repeated ranges project the virtual position onto an
+      // 虚拟剪播: out-of-order / repeated ranges project the virtual position onto an
       // EARLIER source position. The live monotonic lock must not drop it, or
       // the stored progress freezes at the first cut boundary.
       await seedNode(positionMs: 60000);

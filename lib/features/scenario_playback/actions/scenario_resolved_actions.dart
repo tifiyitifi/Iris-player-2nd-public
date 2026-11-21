@@ -537,11 +537,11 @@ class ScenarioResolvedActions {
         ),
       );
       // Partial results are already persisted (incremental write-back), so
-      // they land even when the user stops the scan. Shell-empty files
-      // (VT_EMPTY duration — only a demux can read them) skip the fast path
-      // for the rest of the session; leftovers below route straight to the
-      // slow-harvest confirm.
-      service.markShellUnsupported(scanOutcome.failedKeys);
+      // they land even when the user stops the scan. Only genuinely Shell-empty
+      // files (VT_EMPTY duration — only a demux can read them) skip the fast
+      // path for the rest of the session; a write-back no-op can succeed once
+      // its media_nodes row exists, so it must be retried.
+      service.markShellUnsupported(scanOutcome.shellEmptyKeys);
       await applyHealed(scanOutcome.succeededKeys.toSet());
       if (scanOutcome.timedOut &&
           scanOutcome.report != null &&

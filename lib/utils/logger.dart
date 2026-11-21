@@ -303,7 +303,7 @@ void logError(String message, {String key = LogKeys.legacyMisc}) {
   AreaKeyLog(key).e(message);
 }
 
-/// Development diag channel for the Virtual Media merge feature (`log.media_probe`)
+/// Development diag channel for the Virtual Merge merge feature (`log.media_probe`)
 /// is enabled by default in debug builds so the merge pipeline can be verified
 /// on-device. Flip to `false` once verified to silence it WITHOUT touching call
 /// sites.

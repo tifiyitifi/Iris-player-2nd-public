@@ -28,7 +28,7 @@ String _fmt(int ms) {
       : '${m}m${s.toString().padLeft(2, '0')}s';
 }
 
-/// Virtual Media rules management sheet: active-session panel (with chapter
+/// Virtual Merge rules management sheet: active-session panel (with chapter
 /// list) plus rule tiles.
 ///
 /// Tile front = 启用开关 + 置顶图钉（"最前面依旧是激活启用与 pin 固定优先

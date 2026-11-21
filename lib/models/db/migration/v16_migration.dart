@@ -4,7 +4,7 @@ import 'package:iris/utils/logger.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyDb);
 
-/// Schema v16: Virtual Media resume-anchor state.
+/// Schema v16: Virtual Merge resume-anchor state.
 ///
 /// Creates `virtual_media_states` when missing (fresh installs get it via
 /// onCreate). Re-entrant.

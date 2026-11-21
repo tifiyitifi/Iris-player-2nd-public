@@ -281,7 +281,7 @@ class RingDialStyleControl extends HookWidget {
               // ignore: discarded_futures
               useAppStore().updateRingDialHideChunkWhenUnchunked(v),
         ),
-        // Virtual media only: keep the progress-ring drag inside the current
+        // Virtual Merge only: keep the progress-ring drag inside the current
         // file instead of walking into the neighbour file at 0/100%.
         SwitchListTile(
           key: const Key('ring-dial-vm-progress-lock'),

@@ -1,8 +1,13 @@
 #!/bin/sh
-# Light warning only (never blocks push): if split APKs still sit in the
-# build output, remind the author that manual device installs must use the
-# universal apk (see AGENTS.md:469 and scripts/check-apk-install.* threshold 600).
+# Two checks run on push:
+#
+#   1. a split-APK warning (never blocks): if split APKs still sit in the build
+#      output, remind the author that manual device installs must use the
+#      universal apk (see AGENTS.md and scripts/check-apk-install.* threshold 600);
+#   2. the local privacy gate (blocking): check the exact commits about to leave
+#      the machine, which is what catches a commit made with --no-verify.
 set -eu
+
 found=""
 # shellcheck disable=SC2044,SC2154
 # 2>/dev/null lives outside the for-list: inside the [ ... ] tests the
@@ -21,4 +26,8 @@ if [ -n "$found" ]; then
   echo "[pre-push] Pending versionCode jump >600 is blocked by scripts/check-apk-install.* (split +2000 vs universal)." >&2
   echo "[pre-push] CI split apks (--split-per-abi) are for distribution only (ci.yml:96)." >&2
 fi
-exit 0
+
+# Local privacy gate (blocking): never skip this one. It reads the ref list from
+# stdin and checks the range git reports for each pushed ref. Sourcing keeps the
+# hook working even when `sh` is not on the caller's PATH.
+IRIS_GATE_MODE=pushed . scripts/local-gate.sh

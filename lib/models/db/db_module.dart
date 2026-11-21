@@ -79,7 +79,7 @@ class DbModule {
   static late final VideoTagViewStatesDao videoTagViewStatesDao;
   static late final VideoTagPinPresetsDao videoTagPinPresetsDao;
 
-  // Virtual Media DAOs
+  // Virtual Merge DAOs
   static late final VirtualMediaRulesDao virtualMediaRulesDao;
   static late final VirtualMediaStatesDao virtualMediaStatesDao;
   static late final VirtualMediaProgressDao virtualMediaProgressDao;

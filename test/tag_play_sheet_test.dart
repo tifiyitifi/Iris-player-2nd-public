@@ -465,7 +465,7 @@ void main() {
   testWidgets('an invalid submit clears the digits and keeps the operator',
       (tester) async {
     await pumpSheet(tester, initialCommand: '+');
-    await tester.enterText(find.byKey(const ValueKey('tagInputField')), '+0');
+    await tester.enterText(find.byKey(const ValueKey('tagInputField')), '+.');
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -494,7 +494,7 @@ void main() {
 
   testWidgets('typing after an error clears the message', (tester) async {
     await pumpSheet(tester, initialCommand: '+');
-    await tester.enterText(find.byKey(const ValueKey('tagInputField')), '+0');
+    await tester.enterText(find.byKey(const ValueKey('tagInputField')), '+.');
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pumpAndSettle();
     expect(find.text('至少输入一个 tag 序号'), findsOneWidget);
@@ -705,7 +705,7 @@ void main() {
       initialCommand: '+',
       openViaShortcut: true,
     );
-    await submitText(tester, '+0');
+    await submitText(tester, '+.');
     expect(tester.takeException(), isNull);
     // The user must see why it failed and be able to fix the line.
     expect(find.byKey(const ValueKey('tagInputField')), findsOneWidget);

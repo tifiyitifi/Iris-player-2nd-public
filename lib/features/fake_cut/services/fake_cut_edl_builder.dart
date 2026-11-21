@@ -102,7 +102,7 @@ String fakeCutCacheKeyOfBytes(List<int> bytes) {
 
 /// Directory under the app temp root that holds every generated artefact
 /// (EDL + remapped subtitles). Kept out of the user's media folders on purpose:
-/// 简播 must never write next to the source.
+/// 虚拟剪播 must never write next to the source.
 Directory fakeCutCacheDirectory(Directory tempRoot) =>
     Directory(p.join(tempRoot.path, 'iris_fake_cut'));
 

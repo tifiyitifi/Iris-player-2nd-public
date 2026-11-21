@@ -59,7 +59,7 @@ abstract final class KvKeys {
   /// mode.
   static const String controlGroupState = 'control_group_state';
 
-  /// 简播: the LosslessCut plan each file is currently playing with
+  /// 虚拟剪播: the LosslessCut plan each file is currently playing with
   /// (`{ "<fileKey>": "<abs .llc path>" }`). Session-scoped: two windows may
   /// watch the same file with different plans.
   static const String fakeCutActivePlans = 'fake_cut_active_plans';

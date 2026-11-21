@@ -22,7 +22,7 @@ String? currentForegroundMediaKey() {
 
 /// [currentForegroundMediaKey] for 作用范围 purposes.
 ///
-/// While a Virtual Media session runs under `wholeVirtual`, the VM link
+/// While a Virtual Merge session runs under `wholeVirtual`, the VM link
 /// publishes the whole virtual video's identity as
 /// [BackgroundPlaybackState.vmScopeKeyOverride]; scope decisions (apply-to-
 /// current, anchors) must use that same identity or the toggle and the anchor

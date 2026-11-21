@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyPlayer);
 
-/// One live 简播 playback: the plan plus the EDL media that was opened for it.
+/// One live 虚拟剪播 playback: the plan plus the EDL media that was opened for it.
 ///
 /// The session is a SNAPSHOT. The player hook keeps it in a ref and reads it at
 /// every progress write, so switching plans cannot retroactively re-map the
@@ -58,7 +58,7 @@ class FakeCutSession {
 ///
 /// Returns null when the timeline cannot be prepared (unwritable temp dir, or a
 /// source path that is not a readable file). The caller then opens the plain
-/// source: 简播 must never make a playable file unplayable.
+/// source: 虚拟剪播 must never make a playable file unplayable.
 Future<FakeCutSession?> prepareFakeCutSession({
   required FakeCutPlan plan,
   required FileItem file,

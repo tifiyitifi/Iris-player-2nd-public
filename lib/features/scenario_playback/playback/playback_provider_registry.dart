@@ -37,12 +37,17 @@ class PlaybackProviderRegistry {
   static late final TagPlayController _tagPlay;
   static BackgroundPlaybackRouter? _bgRouter;
 
+  /// False until [init] ran. Guards entry points that commands may call before
+  /// the playback layer is wired (unit tests, early startup).
+  static bool _ready = false;
+
   static void init() {
     _scenario = ScenarioPlaybackProvider();
     _legacy = LegacyQueueProvider();
     _tagPlay = TagPlayController(
       noTagDelegate: ScenarioNoTagDelegate(_scenario),
     );
+    _ready = true;
   }
 
   /// Registers the 副音 router (BackgroundPlaybackBootstrap). While its
@@ -107,10 +112,38 @@ class PlaybackProviderRegistry {
     PlaybackPositionSignal.instance.clear();
   }
 
+  /// Binds the file that is ALREADY playing to its merged group without
+  /// reopening it (a rule change made the live single mergeable).
+  ///
+  /// Only the provider that owns the current feed may adopt: the scenario
+  /// stream in no-tag mode, the tag snapshot in a tag view. Legacy queue mode
+  /// has no merge stream, so it is a no-op. [expectedMediaKey] is the physical
+  /// file the caller acted on; a provider whose current item is a different
+  /// file refuses (playback moved on while the caller was resolving).
+  static Future<bool> adoptCurrentFeedAsVirtual({
+    required String expectedMediaKey,
+  }) async {
+    if (!_ready) return false;
+    try {
+      if (_useTagViewMode) {
+        return await tagPlay.adoptCurrentFeedAsVirtual(
+            expectedMediaKey: expectedMediaKey);
+      }
+      if (_useScenarioMode) {
+        return await scenario.adoptCurrentFeedAsVirtual(
+            expectedMediaKey: expectedMediaKey);
+      }
+      return false;
+    } catch (_) {
+      // A failed adoption must never surface as a rule-toggle failure.
+      return false;
+    }
+  }
+
   /// Steps to the previous/next entry, feeding the player when running in
   /// scenario-driven mode.
   ///
-  /// Virtual media contract (spec §4): user Next/Prev always cross virtual
+  /// Virtual Merge contract (spec §4): user Next/Prev always cross virtual
   /// bodies (perceptually “one file”). Inner stepping is reserved for
   /// natural completion / chapter clicks via [VirtualMediaController.step]
   /// and [maybeHandleCompleted]; this method therefore clears the virtual
@@ -248,7 +281,7 @@ class PlaybackProviderRegistry {
     // scenario position valid.
     beginExternalFeed();
     await useAppStore().updateAutoPlay(false);
-    // Virtual Media session: unload feed + flush anchor + deactivate.
+    // Virtual Merge session: unload feed + flush anchor + deactivate.
     if (VirtualMediaController.instance.isActive) {
       await VirtualMediaController.instance.stop();
       return;

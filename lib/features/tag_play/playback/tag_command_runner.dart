@@ -150,7 +150,13 @@ class TagCommandRunner {
 
       case TagCommandKind.add:
       case TagCommandKind.remove:
-        if (resolved.isEmpty) {
+        // `+0` / `-0` target every tag, numbered in sheet display order.
+        final targets = command.allTags
+            ? <(int, TagPlayTag)>[
+                for (var i = 0; i < ordered.length; i++) (i + 1, ordered[i]),
+              ]
+            : resolved;
+        if (targets.isEmpty) {
           return TagCommandOutcome(unknownOrdinals: unknown);
         }
         final file = await usePlayQueueStore().getCurrentFile();
@@ -162,7 +168,7 @@ class TagCommandRunner {
         }
         final appliedIds = <int>[];
         final appliedOrdinals = <int>[];
-        for (final entry in resolved) {
+        for (final entry in targets) {
           try {
             if (command.kind == TagCommandKind.add) {
               await _repo.addMember(

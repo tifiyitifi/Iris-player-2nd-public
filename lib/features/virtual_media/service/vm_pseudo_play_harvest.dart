@@ -148,15 +148,18 @@ Future<VmScanOutcome> harvestVmDurations(
   return finish();
 }
 
-/// Production opener: one background media_kit [Player] PER FILE (no video
-/// controller, no rendering surface) that opens the segment with
-/// `play: false` purely to read `duration` (+ video dims when available).
+/// Production opener: one background media_kit [Player] REUSED for the whole
+/// scan (no video controller, no rendering surface). It opens each segment
+/// with `play: false` purely to read `duration` (+ video dims when available).
 ///
-/// Per-file instances (scheme A): a timed-out file's late `duration` event
-/// can never satisfy the NEXT file's `firstWhere` — each open subscribes to
-/// its own player's stream, and the stray player disposes itself when its own
-/// internal budgets fire. Sharing one Player across files caused exactly
-/// that cross-attribution (wrong duration persisted for the wrong file).
+/// One Player per scan (current scheme): creating and disposing a Player per
+/// file hits media_kit's disposal race (a late wakeup after
+/// `mpv_terminate_destroy` aborts the process). `stop()` clears the previous
+/// file's playlist/state before the next open; the duration stream is
+/// broadcast with no replay, so a value from the previous file cannot be
+/// replayed to the next wait. The trade-off is that a late event that arrives
+/// after the next open depends on that stop/broadcast guarantee — the stub
+/// opener test does not exercise the production sequence.
 ///
 /// URI/header construction mirrors the player hooks exactly
 /// (`use_media_kit_player` open block): FTP goes through the local
@@ -170,11 +173,30 @@ class MediaKitHarvestOpener {
 
   final Duration _perFileTimeout;
 
+  /// ONE Player per scan opener, reused for every file and disposed ONCE when
+  /// the scan ends.
+  ///
+  /// Creating and disposing a Player per file hits media_kit's disposal race:
+  /// it closes the mpv wakeup `NativeCallable` before `mpv_terminate_destroy`
+  /// joins the core thread, and a late wakeup then aborts the process (SIGABRT
+  /// "Callback invoked after it has been deleted") — observed while a video was
+  /// already playing. Reusing one instance cuts that risk from once per file to
+  /// once per scan; `stop()` clears each file's playlist/state before the next
+  /// open.
+  Player? _player;
+
+  Player _ensurePlayer() => _player ??= Player();
+
   Future<HarvestedMedia?> call(VirtualSegment seg) async {
-    final player = Player();
+    final player = _ensurePlayer();
     try {
       final target = _openTarget(seg);
       if (target == null) return null;
+      // Clear the previous file first. The duration stream is broadcast (no
+      // replay), so a stale value cannot satisfy the wait below.
+      try {
+        await player.stop();
+      } catch (_) {}
       try {
         await player.setVolume(0);
       } catch (_) {}
@@ -209,11 +231,9 @@ class MediaKitHarvestOpener {
     } catch (_) {
       return null;
     } finally {
+      // Leave the reused Player idle; [dispose] releases it once per scan.
       try {
         await player.stop();
-      } catch (_) {}
-      try {
-        player.dispose();
       } catch (_) {}
     }
   }
@@ -225,9 +245,20 @@ class MediaKitHarvestOpener {
         : budget;
   }
 
-  /// No-op retained for call-site compatibility: players are now owned and
-  /// disposed per file inside [call].
-  Future<void> dispose() async {}
+  /// Releases the reused Player once the scan is over. Kept as a single
+  /// deliberate disposal (not per file) so the media_kit disposal race is hit at
+  /// most once per scan, while the app is normally still active.
+  Future<void> dispose() async {
+    final player = _player;
+    _player = null;
+    if (player == null) return;
+    try {
+      await player.stop();
+    } catch (_) {}
+    try {
+      await player.dispose();
+    } catch (_) {}
+  }
 
 
   /// Builds the exact open target the player hooks would use for [seg].

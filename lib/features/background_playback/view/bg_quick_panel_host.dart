@@ -32,7 +32,7 @@ class BgQuickPanelHost extends HookWidget {
 
   // Base card sizes; clamped to the host on small screens. The scope card is
   // the tallest of the set — it carries the scope, its persistence switch and
-  // the two Virtual Media rules — so it is sized to fit them without scrolling
+  // the two Virtual Merge rules — so it is sized to fit them without scrolling
   // on a desktop window.
   static const Size _scopeSize = Size(320, 470);
   static const Size _ratioSize = Size(320, 460);

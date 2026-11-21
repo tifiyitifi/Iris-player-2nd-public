@@ -21,7 +21,6 @@ import 'package:iris/models/db/db_module.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/store/use_storage_store.dart';
-import 'package:iris/utils/path_conv.dart';
 
 import 'helpers/sqlite3_loader.dart';
 

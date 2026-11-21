@@ -87,7 +87,7 @@ class MappingScope extends HookWidget {
     final String fgCanonicalPath =
         fgFile == null ? '' : canonicalDbPath(fgFile.path.join('/'));
 
-    // 简播 suspends the pair for THIS media; the E 節 driver must stand down
+    // 虚拟剪播 suspends the pair for THIS media; the E 節 driver must stand down
     // exactly like the scope observer does (it used to re-enter mapped segments
     // and play over the cut).
     final bool fakeCutActive = fakeCutBlocksBackground(

@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
+import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/speed/model/enum/speed_gesture_mode.dart';
 import 'package:iris/features/speed/model/speed_gesture_math.dart';
 import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
@@ -197,13 +200,13 @@ Gesture useRegionGesture({
     },
     GestureActionType.playPause: (_, __, ___, ____, ctx) {
       if (ctx.player.isPlaying) {
-        ctx.app.updateAutoPlay(false);
+        setActiveTransportFlag(context, playing: false);
         ctx.player.pause();
         if (ctx.app.state.showControlsOnPlayToPause) {
           showControl();
         }
       } else {
-        ctx.app.updateAutoPlay(true);
+        setActiveTransportFlag(context, playing: true);
         ctx.player.play();
       }
     },
@@ -251,8 +254,11 @@ Gesture useRegionGesture({
       final next = (base + delta).clamp(1, 120);
 
       if (next != ctx.app.state.seekStepSeconds) {
-        liveSeekStep.value = next; //  immediate UI feedback
-        ctx.app.updateSeekStepSeconds(next); //  persisted
+        liveSeekStep.value = next; // immediate UI feedback
+        // Memory only while the drag moves: a pan fires dozens of times and
+        // each persist re-encodes the whole AppState. `_resetPanState` commits
+        // once on release/cancel (see updateSeekStepSecondsLive's contract).
+        ctx.app.updateSeekStepSecondsLive(next);
       }
     },
     GestureActionType.adjustBrightness: (_, __, ___, frame, ctx) {
@@ -490,10 +496,10 @@ Gesture useRegionGesture({
         if (scheme == KeyboardShortcutScheme.potplayer) {
           final player = context.read<MediaPlayer>();
           if (player.isPlaying) {
-            appStore.updateAutoPlay(false);
+            setActiveTransportFlag(context, playing: false);
             player.pause();
           } else {
-            appStore.updateAutoPlay(true);
+            setActiveTransportFlag(context, playing: true);
             player.play();
           }
         } else {
@@ -674,6 +680,11 @@ Gesture useRegionGesture({
     }
 
     gestureState.value.resetPan();
+
+    // The seek-step drag mutates memory only (see adjustSeekStep); persist the
+    // final value once here so a high-frequency drag never hammers storage and
+    // the last value still lands. No-op when nothing was adjusted.
+    unawaited(appStore.commitSeekStepSeconds());
 
     setValueAdjustMode(ValueGestureAdjustMode.none);
 

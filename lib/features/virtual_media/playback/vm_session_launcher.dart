@@ -1,6 +1,7 @@
 import 'package:iris/features/scenario_playback/model/domain/effective_playback_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
+import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resume_target.dart';
 import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -33,7 +34,7 @@ class VmSessionStartPlan {
 
 /// Decides whether [storageId]/[path] — an entry of the scenario's effective
 /// [stream] that is ABOUT to be fed to the player — starts (or re-enters) a
-/// Virtual Media session instead of playing as an ordinary single file.
+/// Virtual Merge session instead of playing as an ordinary single file.
 ///
 /// Pure derivation over already-fetched data (enabled rules + effective
 /// stream + per-file progress), so it is unit-testable without DB wiring and
@@ -158,6 +159,41 @@ VmSessionStartPlan? planVmSessionStartFromGroups({
 /// target and deliberately skip the per-file DB read (the planner never reads
 /// progress for a located target).
 const Map<String, SegmentProgress> noSegmentProgress = {};
+
+/// Binds the file that is ALREADY playing to its merged group, WITHOUT
+/// re-feeding the player.
+///
+/// A rule change can make the live single mergeable (the More-menu folder
+/// toggle). Re-entering through [planVmSessionStart] + `startSession` would
+/// open the same physical file again and restart its position; the product
+/// contract is "keep playing, only the display/timeline layer changes". So the
+/// plan is derived here and handed to
+/// [VirtualMediaController.adoptLiveSession], which only attaches the VM state.
+///
+/// Returns false when [mediaKey] is not a member of a feasible group, or when
+/// the play queue has already moved off that file (the controller's own guard);
+/// callers keep the ordinary single playback in that case.
+Future<bool> adoptLiveVirtualSession({
+  required VmStreamGroups groups,
+  required String mediaKey,
+  required String storageId,
+  required String path,
+}) async {
+  if (groups.isEmpty) return false;
+  final plan = planVmSessionStartFromGroups(
+    storageId: storageId,
+    path: path,
+    groups: groups,
+    progressByKey: noSegmentProgress,
+    targetMediaKey: mediaKey,
+  );
+  if (plan == null) return false;
+  return VirtualMediaController.instance.adoptLiveSession(
+    queue: plan.queue,
+    queueIndex: plan.queueIndex,
+    segmentIndex: plan.segmentIndex,
+  );
+}
 
 /// Reads the per-file progress of every segment in [group] from the media
 /// nodes table (identity-keyed, so it survives re-resolutions). Failures

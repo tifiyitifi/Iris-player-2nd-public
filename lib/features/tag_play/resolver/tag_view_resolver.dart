@@ -92,7 +92,7 @@ class TagViewSnapshot {
 
   /// The view's stream BEFORE the display overlay merged virtual groups.
   ///
-  /// Virtual Media sessions must derive their grouping from this raw stream
+  /// Virtual Merge sessions must derive their grouping from this raw stream
   /// (the same derivation the list display used), so a merged entry maps
   /// back to its full group. Optionally false-y when empty.
   final List<EffectivePlaybackItem> vmStream;
@@ -303,7 +303,7 @@ class TagViewResolver {
     if (withVmOverlay) {
       final vmRules = await VirtualMediaService.instance.enabledRules();
       if (vmRules.isNotEmpty) {
-        // 简播: a video with a sibling `.llc` stays a single row / single feed.
+        // 虚拟剪播: a video with a sibling `.llc` stays a single row / single feed.
         groups = resolveGroupsForStream(
           resolved,
           vmRules,

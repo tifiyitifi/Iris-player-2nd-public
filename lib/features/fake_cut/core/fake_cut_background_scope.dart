@@ -1,6 +1,6 @@
 import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 
-/// Whether 简播 (a fake cut) makes 副音 unavailable for the foreground media.
+/// Whether 虚拟剪播 (a virtual cut) makes 副音 unavailable for the foreground media.
 ///
 /// The two features coexist by EXCLUSION, not by a global switch:
 ///  * a file playing a cut owns a virtual timeline that has no meaning on the

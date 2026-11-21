@@ -250,7 +250,7 @@ int clampScopedFgTarget({
 
 /// Clamps a bg-master mirror target into ONE physical foreground window.
 ///
-/// Under 仅当前 on a Virtual Media session the foreground "file" is the
+/// Under 仅当前 on a Virtual Merge session the foreground "file" is the
 /// segment playing right now, not the merged total: clamping against the total
 /// still lets a bg-master target land on another segment (a cross-segment jump
 /// the scope forbids). [windowStartMs] is the window's virtual start and

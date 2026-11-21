@@ -464,7 +464,7 @@ class MoreMenuButton extends HookWidget {
     );
   }
 
-  /// Virtual Media sheet — rules → virtual sequential items (spec v2).
+  /// Virtual Merge sheet — rules → virtual sequential items (spec v2).
   PopupMenuItem _virtualMediaItem(BuildContext context, t) {
     return PopupMenuItem(
       child: ListTile(

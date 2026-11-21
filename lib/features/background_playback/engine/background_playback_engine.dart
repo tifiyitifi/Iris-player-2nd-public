@@ -63,6 +63,13 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
   bool isInitializing = false;
   String? errorText;
 
+  /// True from the natural-end signal until playback actually resumes (or a new
+  /// open/stop supersedes it). The cross-runtime mirror reads this to tell "the
+  /// master ENDED" from "the master was PAUSED": an ended master's silence is
+  /// owned by the completion continuation, so mirroring it as a pause froze the
+  /// foreground on the completed file.
+  bool completionPending = false;
+
   double _rate = 1.0;
   int _volume0to100 = 100;
   bool _ended = false;
@@ -96,7 +103,10 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
 
       _subs.add(player.stream.playing.listen((v) {
         isPlaying = v;
-        if (v) _ended = false;
+        if (v) {
+          _ended = false;
+          completionPending = false;
+        }
         // Transport state drives the fg↔bg mirror; never let the throttle drop
         // the final sample (a swallowed pause leaves the other side playing).
         _notify();
@@ -137,6 +147,9 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
       _fireCompleted();
     } else {
       _ended = false;
+      if (v.isPlaying) {
+        completionPending = false;
+      }
     }
     if (transportChanged) {
       _notify();
@@ -156,6 +169,12 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
     // previous file must also stop sounding — otherwise the engine keeps
     // playing a ghost while `file` points at the entry that never opened.
     if (next.uri.isEmpty) {
+      // Invalidate any open still in flight BEFORE unloading: `_haltPlayback`
+      // releases the current runtime, and a slower open that still believes it
+      // is current would finish by configuring/playing its media while `file`
+      // and `errorText` describe THIS refused entry (a ghost track behind a
+      // failure record).
+      _openGen++;
       await _haltPlayback();
       file = next;
       isInitializing = false;
@@ -170,6 +189,9 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
     file = next;
     isInitializing = true;
     _ended = false;
+    // A new file supersedes the parked completion: the continuation has moved
+    // on, so the mirror may own the pair again.
+    completionPending = false;
     errorText = null;
     _notify();
 
@@ -303,11 +325,16 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
       _log.w('background halt failed: $e');
     }
     isPlaying = false;
+    completionPending = false;
     position = Duration.zero;
     duration = Duration.zero;
   }
 
   Future<void> play() async {
+    // A real play is a definite transport state: it ends the completion hold
+    // even when there is nothing to resume (a refused open unloaded the
+    // runtime), otherwise the mirror would stay stood down.
+    completionPending = false;
     if (_ended) {
       await replay();
       return; // replay() already resumed playback.
@@ -325,6 +352,10 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    // An explicit pause is the owner's transport decision: it must END the
+    // completion hold. Leaving the latch set stood the transport mirror down
+    // for good after a pause that interleaved with a completion.
+    completionPending = false;
     if (backend == PlayerBackend.mediaKit) {
       await _mk?.pause();
     } else {
@@ -358,18 +389,21 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
     errorText = null;
     isInitializing = false;
     isPlaying = false;
+    completionPending = false;
     position = Duration.zero;
     duration = Duration.zero;
     _notify();
   }
 
   Future<void> seek(Duration target) async {
-    // A seek means "no longer parked at the natural end": drop the completion
-    // latch so a following [play] resumes AT the sought position instead of
-    // re-entering [replay] (which would jump to 00:00). The cross-file
-    // continuation parks the pair inside the file that is already open, where
-    // no re-open would ever clear the latch.
+    // A seek means "no longer parked at the natural end": drop BOTH latches so
+    // a following [play] resumes AT the sought position instead of re-entering
+    // [replay] (which would jump to 00:00), and so the completion hold stops
+    // standing the transport mirror down. The cross-file continuation parks the
+    // pair inside the file that is already open, where no re-open would ever
+    // clear them.
     _ended = false;
+    completionPending = false;
     final clamped = _clamp(target);
     if (backend == PlayerBackend.mediaKit) {
       await _mk?.seek(clamped);
@@ -417,10 +451,20 @@ class BackgroundPlaybackEngine extends ChangeNotifier {
   void _fireCompleted() {
     if (_ended) return;
     _ended = true;
+    completionPending = true;
     isPlaying = false;
     _notify();
     onCompleted?.call();
   }
+
+  /// Test seam: deliver the natural-end signal without a native backend.
+  @visibleForTesting
+  void debugFireCompleted() => _fireCompleted();
+
+  /// Test seam: the generation token a superseding open/stop bumps. A stale
+  /// `open()` compares against it and stands down when it moved.
+  @visibleForTesting
+  int get debugOpenGeneration => _openGen;
 
   // ── MediaPlayer bridge (shared controls read this while targeted) ──
 

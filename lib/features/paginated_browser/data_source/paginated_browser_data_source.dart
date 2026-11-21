@@ -170,7 +170,7 @@ abstract class PaginatedBrowserDataSource<T> extends ChangeNotifier {
   /// Context-free so the selection controller can filter bulk operations
   /// (select-all / invert / range) without a [BuildContext]. Surfaces override
   /// this to grey out rows whose non-playback operations are unsupported —
-  /// e.g. Virtual Media merged groups in scenario search (they stay tappable
+  /// e.g. Virtual Merge merged groups in scenario search (they stay tappable
   /// to play, but cannot be selected).
   bool isItemSelectable(T item) => true;
 

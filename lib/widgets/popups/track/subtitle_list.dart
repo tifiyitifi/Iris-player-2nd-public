@@ -105,7 +105,7 @@ class SubtitleList extends HookWidget {
                 final navigator = Navigator.of(context, rootNavigator: true);
                 final t0 = getLocalizations(context);
                 Navigator.of(context).pop();
-                // 简播: an external subtitle is timed against the SOURCE file,
+                // 虚拟剪播: an external subtitle is timed against the SOURCE file,
                 // so the fake timeline needs its own re-timed copy. A null
                 // result means the remap failed and already explained itself —
                 // loading the original would show a mis-timed subtitle.

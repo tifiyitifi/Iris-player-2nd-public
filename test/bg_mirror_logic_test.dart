@@ -8,7 +8,7 @@ import 'package:iris/features/background_playback/services/background_sync_logic
 /// foreground→副音 branch checking neither the control master nor whether the
 /// foreground jump was one it had just issued itself. The landed jumps were
 /// therefore mirrored back, walking the 副音 queue (`wrap: true`) and jumping
-/// the foreground across Virtual Media segments — the ping-pong this file locks
+/// the foreground across Virtual Merge segments — the ping-pong this file locks
 /// down. The decision is now a pure function over the whole truth table.
 void main() {
   group('resolveBgMirrorAction', () {

@@ -4,7 +4,7 @@ import 'package:path/path.dart' as path;
 /// comparison (Windows/NTFS and SMB are case-insensitive).
 ///
 /// Shared by every "which sibling file belongs to this video" rule — external
-/// subtitles ([getSubtitleMap]) and LosslessCut `.llc` projects (简播) — so the
+/// subtitles ([getSubtitleMap]) and LosslessCut `.llc` projects (虚拟剪播) — so the
 /// two cannot drift into different answers for the same folder.
 List<String> nameTokens(String fileName) =>
     path.basenameWithoutExtension(fileName).toLowerCase().split('.');

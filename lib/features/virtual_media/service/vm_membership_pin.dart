@@ -25,7 +25,7 @@ class PinnedVmChunk {
   });
 }
 
-/// Session-scoped Virtual Media boundary freeze (desktop physical delete).
+/// Session-scoped Virtual Merge boundary freeze (desktop physical delete).
 ///
 /// WHY: VM grouping is a pure function of a rule + the current file set
 /// (`resolveVirtualMedia`), so removing a `media_nodes` row normally makes the

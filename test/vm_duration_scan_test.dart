@@ -113,6 +113,9 @@ void main() {
     );
     expect(outcome.ok, isFalse);
     expect(outcome.failedKeys, ['st1:Shorts/bad.mp4']);
+    // A probe that returned no duration is genuinely Shell-empty: fast-skip
+    // it for the rest of the session.
+    expect(outcome.shellEmptyKeys, ['st1:Shorts/bad.mp4']);
     expect(wb.calls, hasLength(1));
   });
 
@@ -369,6 +372,41 @@ void main() {
     expect(outcome.ok, isFalse);
     expect(outcome.scanned, 0);
     expect(outcome.failedKeys, ['st1:Shorts/1.mp4']);
+    // The probe succeeded; only the row was missing. It must NOT be
+    // fast-skipped for the session, or a later scan after the row appears
+    // could never heal it.
+    expect(outcome.shellEmptyKeys, isEmpty);
+  });
+
+  test('timeout report never shows a negative remainder on a mixed group',
+      () async {
+    final probe = FakeProbe({'3.mp4': 60000});
+    final outcome = await scanVmGroupDurations(
+      // Two known + one unknown: `done` includes the known rows, but the
+      // remaining work is measured over `local` only.
+      [
+        seg('1.mp4').withDuration(60000),
+        seg('2.mp4').withDuration(60000),
+        seg('3.mp4'),
+      ],
+      probeService: probe,
+      writeBack: ({
+        required String storageId,
+        required String path,
+        int? durationMs,
+        int? width,
+        int? height,
+      }) async {
+        return true;
+      },
+      storageTypeOf: (_) => StorageType.internal,
+      budget: Duration.zero,
+      l10n: AppLocalizationsEn(),
+    );
+    expect(outcome.timedOut, isTrue);
+    expect(outcome.report, isNotNull);
+    expect(outcome.report, isNot(contains('-1')));
+    expect(outcome.report, contains('1 left'));
   });
 }
 

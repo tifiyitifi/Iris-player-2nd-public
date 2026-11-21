@@ -120,7 +120,7 @@ class BackgroundQuickBar extends HookWidget {
     // (`useForegroundRatioKey`), so the call count must not depend on whether
     // the bar is visible.
     final String? fgScopeKey = useForegroundScopeKey(context);
-    // 简播: this media is playing a fake cut → 副音 is temporarily unavailable
+    // 虚拟剪播: this media is playing a virtual cut → 副音 is temporarily unavailable
     // HERE only (the run, its queue and every other media are untouched).
     final fakeCutActive = fakeCutBlocksBackground(
       fgScopeKey,
@@ -196,7 +196,7 @@ class BackgroundQuickBar extends HookWidget {
             ? Icons.stop_circle_rounded
             : Icons.play_circle_rounded,
         active: gateActive,
-        // 简播 owns the pair's timeline: the gate cannot be opened here.
+        // 虚拟剪播 owns the pair's timeline: the gate cannot be opened here.
         enabled: !fakeCutActive,
         color: color,
         overlayColor: overlayColor,

@@ -55,9 +55,13 @@ void main() {
       expect(cmd.ordinals, [1, 2]);
     });
 
-    test('zero and blank segments name no tag and are skipped', () {
+    test('a mixed zero is ignored, leaving only the real ordinals', () {
       final cmd = (parseTagCommand('+0.3') as TagCommandParsed).command;
       expect(cmd.ordinals, [3]);
+      expect(cmd.allTags, isFalse);
+      final reversed = (parseTagCommand('+3.0') as TagCommandParsed).command;
+      expect(reversed.ordinals, [3]);
+      expect(reversed.allTags, isFalse);
       final blank = (parseTagCommand('+1..2') as TagCommandParsed).command;
       expect(blank.ordinals, [1, 2]);
     });
@@ -84,10 +88,20 @@ void main() {
       expect(errorOf('*.'), TagCommandError.noOrdinals);
     });
 
-    test('0 names no tag for +/- but is the play no-tag target', () {
-      expect(errorOf('+0'), TagCommandError.noOrdinals);
-      expect(errorOf('-0'), TagCommandError.noOrdinals);
-      expect(parseTagCommand('*0'), isA<TagCommandParsed>());
+    test('a lone 0 is valid: all tags for +/-, no-tag for *', () {
+      for (final raw in ['+0', '-0', '+0.0', '-0.0']) {
+        final cmd = (parseTagCommand(raw) as TagCommandParsed).command;
+        expect(cmd.allTags, isTrue, reason: raw);
+        expect(cmd.ordinals, isEmpty, reason: raw);
+      }
+      expect((parseTagCommand('+0') as TagCommandParsed).command.kind,
+          TagCommandKind.add);
+      expect((parseTagCommand('-0') as TagCommandParsed).command.kind,
+          TagCommandKind.remove);
+
+      final play = (parseTagCommand('*0') as TagCommandParsed).command;
+      expect(play.ordinals, [kTagCommandNoTagOrdinal]);
+      expect(play.allTags, isFalse);
     });
 
     test('play accepts exactly one ordinal', () {

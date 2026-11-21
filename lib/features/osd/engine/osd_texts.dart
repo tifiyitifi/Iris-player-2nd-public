@@ -214,7 +214,7 @@ abstract final class OsdTexts {
       );
 
   /// Alt+; pressed while 副音 is not in effect for this media (gate closed,
-  /// outside the 作用范围, 简播, …). Says why the key did nothing instead of
+  /// outside the 作用范围, 虚拟剪播, …). Says why the key did nothing instead of
   /// leaving a dead shortcut.
   static OsdEntry controlTargetUnavailable(AppLocalizations t) => OsdEntry(
         line1: t.osd_control_unavailable,

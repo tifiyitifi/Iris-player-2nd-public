@@ -154,6 +154,54 @@ void main() {
     expect(await repo.membersOf(two.id), isEmpty);
   });
 
+  test('add 0 tags the current file in every tag', () async {
+    final one = await repo.createTag(name: 'one');
+    final two = await repo.createTag(name: 'two');
+    final three = await repo.createTag(name: 'three');
+    await seedQueueFile();
+
+    final outcome = await runner().run(
+      const TagCommand(kind: TagCommandKind.add, ordinals: [], allTags: true),
+    );
+
+    expect(outcome.appliedTagIds..sort(), [one.id, two.id, three.id]..sort());
+    expect(outcome.unknownOrdinals, isEmpty);
+    expect(await repo.membersOf(one.id), hasLength(1));
+    expect(await repo.membersOf(two.id), hasLength(1));
+    expect(await repo.membersOf(three.id), hasLength(1));
+  });
+
+  test('remove 0 takes the current file out of every tag', () async {
+    final one = await repo.createTag(name: 'one');
+    final two = await repo.createTag(name: 'two');
+    for (final tag in [one, two]) {
+      await repo
+          .addMember(tagId: tag.id, storageId: 's1', pathSegments: ['a.mp4']);
+    }
+    await seedQueueFile();
+
+    final outcome = await runner().run(
+      const TagCommand(
+          kind: TagCommandKind.remove, ordinals: [], allTags: true),
+    );
+
+    expect(outcome.appliedTagIds..sort(), [one.id, two.id]..sort());
+    expect(await repo.membersOf(one.id), isEmpty);
+    expect(await repo.membersOf(two.id), isEmpty);
+  });
+
+  test('add 0 is a silent no-op when no tags exist', () async {
+    await seedQueueFile();
+
+    final outcome = await runner().run(
+      const TagCommand(kind: TagCommandKind.add, ordinals: [], allTags: true),
+    );
+
+    expect(outcome.appliedTagIds, isEmpty);
+    expect(outcome.unknownOrdinals, isEmpty);
+    expect(outcome.noCurrentFile, isFalse);
+  });
+
   test('out-of-range ordinals are reported and skipped', () async {
     await repo.createTag(name: 'one');
     await seedQueueFile();

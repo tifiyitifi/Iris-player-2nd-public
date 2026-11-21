@@ -144,7 +144,7 @@ class PhoneRingDialScrubber extends HookWidget {
         .select(context, (state) => state.ringDialAssignment);
     final bool hideChunkWhenUnchunked = useAppStore()
         .select(context, (state) => state.ringDialHideChunkWhenUnchunked);
-    // Virtual media: clamp the progress-ring DRAG inside the current file
+    // Virtual Merge: clamp the progress-ring DRAG inside the current file
     // (user setting, default ON). The chunk ring keeps whole-timeline travel.
     final bool lockVmProgress = useAppStore()
         .select(context, (state) => state.ringDialVmProgressLock);
@@ -470,7 +470,7 @@ class PhoneRingDialScrubber extends HookWidget {
                                 rng: m.Random(),
                                 // MUST stay on the grid `_classify` derived
                                 // hit.sector from: capped (11) slots for real
-                                // media, one sector per file for virtual media.
+                                // media, one sector per file for virtual merge.
                                 // maxBlocks == kMaxInnerSlots keeps real media
                                 // 1:1, but the cap remains as a defensive
                                 // guard. Passing the raw blockCount here once
@@ -1228,7 +1228,7 @@ class _DialPainter extends CustomPainter {
   /// the chunk wayfinding ring (and its thumb / VM marks) is not painted.
   final bool showChunk;
 
-  /// The active Virtual Media item driving VM-specific partitioning. When non
+  /// The active Virtual Merge item driving VM-specific partitioning. When non
   /// null the dial treats each video file as one EQUAL block: the progress ring
   /// maps the CURRENT file's local 0–100%, and the chunk ring renders one equal
   /// sector per file (blockCount == segments.length).
@@ -1257,7 +1257,7 @@ class _DialPainter extends CustomPainter {
     final double safeDur = m.max(1.0, durationMs);
     // ── Block model ─────────────────────────────────────────────────────
     // Real single file: time-derived uniform blocks (blockCount blocks of
-    // equal duration). Virtual media: every real video file is ONE block of
+    // equal duration). Virtual Merge: every real video file is ONE block of
     // EQUAL arc length, so the block the cursor sits in IS the current file
     // and the progress fraction is the file's local 0–100%.
     final VirtualMediaItem? vm = vmItem;
@@ -1500,7 +1500,7 @@ class _DialPainter extends CustomPainter {
     final double bufGlobal = (bufferMs / safeDur).clamp(0.0, 1.0).toDouble();
     final VirtualMediaItem? vm = vmItem;
     if (vm != null) {
-      // Virtual media: one EQUAL sector per real file. The cursor maps onto
+      // Virtual Merge: one EQUAL sector per real file. The cursor maps onto
       // the equal-arc index space (idx + file-local fraction) / count, so a
       // sector's fill tracks how far through its own arc the cursor sits —
       // the precision trade-off of continuous cross-file viewing (spec).

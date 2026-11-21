@@ -8,7 +8,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/models/db/app_database.dart';
 
-/// Rule CRUD + anchor persistence for the Virtual Media feature.
+/// Rule CRUD + anchor persistence for the Virtual Merge feature.
 ///
 /// Row ↔ domain mapping is centralized here so callers never see Drift
 /// companions or raw JSON columns. JSON columns decode defensively:
@@ -41,6 +41,20 @@ class VirtualMediaRepository {
 
   Future<void> setRuleEnabled(String id, bool enabled) =>
       rulesDao.setEnabled(id, enabled);
+
+  /// Flips the use/exclude polarity of a rule.
+  ///
+  /// The polarity changes which scope semantics the rule's chunks carry, so both
+  /// the per-scenario `vm_progress` rows and the resume anchors for this rule
+  /// are dropped in the SAME transaction: a position recorded while the folder
+  /// merged must never resurrect after it stopped merging (and vice versa).
+  Future<void> setRuleUseMode(String id, VmRuleUseMode useMode) async {
+    await rulesDao.db.transaction(() async {
+      await rulesDao.setUseMode(id, useMode);
+      await progressDao.deleteForRule(id);
+      await statesDao.deleteByRule(id);
+    });
+  }
 
   Future<void> setRulePinned(String id, bool pinned) =>
       rulesDao.setPinned(id, pinned);
@@ -164,6 +178,7 @@ class VirtualMediaRepository {
       titleTags: tags.isEmpty
           ? const [VmTitleTag.dirName, VmTitleTag.seq]
           : tags,
+      useMode: row.useMode,
       enabled: row.enabled,
       pinned: row.pinned,
       playerTitleSeparator: row.playerTitleSeparator.isEmpty
@@ -199,6 +214,7 @@ class VirtualMediaRepository {
       maxSingleDurationMinutes: Value(r.maxSingleDurationMinutes),
       skipSingleSegment: Value(r.skipSingleSegment),
       titleTags: Value(jsonEncode([for (final t in r.titleTags) t.name])),
+      useMode: Value(r.useMode),
       enabled: Value(r.enabled),
       pinned: Value(r.pinned),
       playerTitleSeparator: Value(r.playerTitleSeparator),

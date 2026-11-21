@@ -28,7 +28,7 @@ void main() {
       totalSegments: 3,
     );
     await tester.pumpAndSettle();
-    expect(find.text('虚拟合并缺失时长'), findsOneWidget);
+    expect(find.text('虚拟合播缺失时长'), findsOneWidget);
     await tester.tap(find.text('立即扫描'));
     expect(await future, isTrue);
   });

@@ -2,7 +2,7 @@ import 'package:iris/features/fake_cut/core/fake_cut_preflight.dart';
 import 'package:iris/features/fake_cut/model/domain/fake_cut_plan.dart';
 import 'package:iris/l10n/app_localizations.dart';
 
-/// Localized explanation for a blocked 简播 environment.
+/// Localized explanation for a blocked 虚拟剪播 environment.
 ///
 /// Kept out of the widget so every mapping is unit-testable and no user-facing
 /// text can drift into a hardcoded literal (house rule: l10n only).

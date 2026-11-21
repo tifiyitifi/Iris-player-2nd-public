@@ -164,5 +164,44 @@ void main() {
       expect(engine.isInitializing, isFalse);
       expect(engine.errorText, isNull);
     });
+
+    test('an empty-uri refusal supersedes an open still in flight', () async {
+      final engine = BackgroundPlaybackEngine(
+        backend: PlayerBackend.fvp,
+        attachNative: false,
+      );
+      addTearDown(engine.dispose);
+
+      // Open A, then refuse B for its empty uri while A is still initializing.
+      final int before = engine.debugOpenGeneration;
+      final openA = engine.open(_f('a'), autoplay: true);
+      await pumpEventQueue();
+      expect(engine.errorText, isNull);
+
+      await engine.open(
+        FileItem(name: 'b', uri: '', path: <String>['b']),
+        autoplay: true,
+      );
+      await pumpEventQueue();
+
+      // The refusal unloads the current runtime AND must invalidate the open it
+      // interrupted: a stale open that still believes it is current finishes by
+      // configuring/playing its own media while `file`/`errorText` describe the
+      // refused entry (a ghost track behind a failure record).
+      expect(engine.debugOpenGeneration, greaterThan(before),
+          reason: 'the refusal supersedes the in-flight open');
+      expect(engine.errorText, isNotNull);
+      expect(engine.file?.name, 'b',
+          reason: 'the failure record describes the refused entry');
+      expect(engine.isInitializing, isFalse);
+      expect(fake.playCalls, isEmpty);
+
+      // A's controller was disposed by the refusal, so its initialize never
+      // completes; the superseded open must not resurrect it either.
+      unawaited(openA);
+      await pumpEventQueue();
+      expect(fake.playCalls, isEmpty);
+      expect(engine.errorText, isNotNull);
+    });
   });
 }

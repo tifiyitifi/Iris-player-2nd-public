@@ -1,12 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/virtual_media/commands/vm_actions.dart';
+import 'package:iris/features/virtual_media/commands/vm_dir_toggle.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
+import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
+import 'package:iris/features/virtual_media/rule/vm_dir_use.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
+import 'package:iris/features/virtual_media/view/vm_conflict_dialog.dart';
 import 'package:iris/features/virtual_media/view/vm_master_switch.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/file.dart';
+import 'package:iris/models/storages/storage.dart';
+import 'package:iris/store/use_play_queue_store.dart';
+import 'package:iris/store/use_storage_store.dart';
 import 'package:iris/utils/get_localizations.dart';
+import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/a11y_tooltip.dart' show rowTooltip;
 import 'package:iris/widgets/popup.dart';
 
@@ -23,7 +33,9 @@ String _fmt(int ms) {
   final h = d.inHours;
   final m = d.inMinutes.remainder(60);
   final s = d.inSeconds.remainder(60);
-  return h > 0 ? '${h}h${m.toString().padLeft(2, '0')}m' : '${m}m${s.toString().padLeft(2, '0')}s';
+  return h > 0
+      ? '${h}h${m.toString().padLeft(2, '0')}m'
+      : '${m}m${s.toString().padLeft(2, '0')}s';
 }
 
 class VmManagerPage extends HookWidget {
@@ -35,6 +47,20 @@ class VmManagerPage extends HookWidget {
     final resolved = useState<ResolvedRules?>(null);
     final loading = useState(true);
     final revision = useState(0);
+
+    // Freeze the file playing when the manager OPENED. Playback may advance to
+    // the next episode while the popup stays open; the folder toggle must keep
+    // acting on the original video's direct folder (product contract).
+    final playQueue = usePlayQueueStore().select(context, (s) => s.playQueue);
+    final currentIndex =
+        usePlayQueueStore().select(context, (s) => s.currentIndex);
+    final storages = useStorageStore().select(context, (s) => s.storages);
+    final currentFile = useMemoized<FileItem?>(
+      () => (currentIndex < 0 || currentIndex >= playQueue.length)
+          ? null
+          : playQueue[currentIndex].file,
+      const [],
+    );
 
     useEffect(() {
       var cancelled = false;
@@ -86,6 +112,12 @@ class VmManagerPage extends HookWidget {
             onChanged: () async => revision.value++,
           ),
         ),
+        _DirTogglePanel(
+          file: currentFile,
+          rules: resolved.value?.rules ?? const [],
+          storages: storages,
+          onMutated: afterMutate,
+        ),
         Divider(
           height: 0,
           color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.25),
@@ -102,13 +134,11 @@ class VmManagerPage extends HookWidget {
                       // Materialize once per build: entries is a lazy
                       // Iterable.map — length + elementAt(i) per row is O(n²).
                       final snapshot = resolved.value!;
-                      final entries =
-                          snapshot.entries.toList(growable: false);
+                      final entries = snapshot.entries.toList(growable: false);
                       return ListView.separated(
                         padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
                         itemCount: entries.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 8),
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
                         itemBuilder: (context, i) {
                           final entry = entries[i];
                           return _ManagerCard(
@@ -146,6 +176,154 @@ class VmManagerPage extends HookWidget {
   }
 }
 
+/// "Use / not use this video's direct folder" panel.
+///
+/// Non-recursive by construction: the toggle writes a `specifiedDir` rule for
+/// the DIRECT parent only, so a recursive rule above it keeps covering the
+/// parent and the children while this one folder is carved out.
+class _DirTogglePanel extends StatelessWidget {
+  const _DirTogglePanel({
+    required this.file,
+    required this.rules,
+    required this.storages,
+    required this.onMutated,
+  });
+
+  final FileItem? file;
+  final List<VirtualMediaRule> rules;
+  final List<Storage> storages;
+  final Future<void> Function() onMutated;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = getLocalizations(context);
+    final scheme = Theme.of(context).colorScheme;
+
+    Widget body;
+    if (file == null) {
+      body = Text(t.vm_dir_no_current,
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant));
+    } else if (file!.path.isEmpty) {
+      // SAF single document pick: an empty path has no parent directory.
+      body = Text(t.vm_dir_no_folder,
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant));
+    } else {
+      final f = file!;
+      final parentRaw = f.path.length <= 1
+          ? ''
+          : f.path.sublist(0, f.path.length - 1).join('/');
+      final basePaths = [for (final s in storages) s.basePath.join('/')];
+      final folderPath = relativeToStoragePath(parentRaw, basePaths);
+      final seg = VirtualSegment(
+        mediaKey: canonicalMediaKey(f.storageId, f.path, uri: f.uri),
+        storageId: f.storageId,
+        path: f.path,
+        name: f.name,
+        parentPath: folderPath,
+        uri: f.uri,
+      );
+      final merged = vmFileUseState(rules, seg) == VmFileUseState.merged;
+      Storage? storage;
+      for (final s in storages) {
+        if (s.id == f.storageId) {
+          storage = s;
+          break;
+        }
+      }
+      body = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            t.vm_dir_current(f.name),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.tonalIcon(
+              onPressed: () async {
+                await toggleVmDirUseMode(
+                  storageId: f.storageId,
+                  storageName: storage?.name ?? '',
+                  name: f.name,
+                  path: f.path,
+                  storageBasePaths: basePaths,
+                  uri: f.uri,
+                );
+                await onMutated();
+              },
+              icon: Icon(merged
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined),
+              label: Text(merged ? t.vm_dir_not_use : t.vm_dir_use),
+            ),
+          ),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            title: Text(t.vm_dir_help_title,
+                style: TextStyle(fontSize: 13, color: scheme.primary)),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(t.vm_dir_help_body,
+                    style: TextStyle(
+                        fontSize: 12, color: scheme.onSurfaceVariant)),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.30),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: scheme.outline.withValues(alpha: 0.35)),
+        ),
+        child: body,
+      ),
+    );
+  }
+}
+
+/// Single fence for turning a rule ON: a non-recursive `specifiedDir` rule may
+/// not coexist (enabled) with another on the same path, so EVERY enable entry
+/// point — this card switch and the editor save — asks which one to keep.
+Future<void> _setRuleEnabledGuarded(
+  BuildContext context,
+  VirtualMediaRule rule,
+  bool enabled,
+  Future<void> Function() onMutated,
+) async {
+  if (enabled) {
+    final all = await DbModule.virtualMediaRepo.loadRules();
+    final caseInsensitive = useStorageStore()
+        .state
+        .storages
+        .any((s) => s.basePath.any(pathRidesCaseInsensitiveFs));
+    final conflicts = vmDirRuleConflicts(rule.copyWith(enabled: true), all,
+        caseInsensitive: caseInsensitive);
+    if (conflicts.isNotEmpty) {
+      if (!context.mounted) return;
+      final choice = await showVmDirConflictDialog(context, conflicts);
+      if (choice == null || choice == VmConflictChoice.keepExisting) return;
+      for (final c in conflicts) {
+        await DbModule.virtualMediaRepo.setRuleEnabled(c.id, false);
+      }
+    }
+  }
+  await DbModule.virtualMediaRepo.setRuleEnabled(rule.id, enabled);
+  await onMutated();
+}
+
 class _EmptyState extends StatelessWidget {
   const _EmptyState({required this.onCreate});
   final VoidCallback onCreate;
@@ -161,7 +339,8 @@ class _EmptyState extends StatelessWidget {
             Icon(Icons.video_collection_outlined,
                 size: 48, color: Theme.of(context).colorScheme.outline),
             const SizedBox(height: 12),
-            Text(t.vm_mgr_empty_title, style: Theme.of(context).textTheme.titleMedium),
+            Text(t.vm_mgr_empty_title,
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
             Text(t.vm_mgr_empty_body,
                 textAlign: TextAlign.center,
@@ -251,8 +430,7 @@ class _ManagerCard extends StatelessWidget {
     }
 
     final limits = [
-      if (rule.useDurationCap)
-        t.vm_mgr_limit_min(rule.maxDurationMinutes),
+      if (rule.useDurationCap) t.vm_mgr_limit_min(rule.maxDurationMinutes),
       if (rule.useCountCap) t.vm_mgr_limit_count(rule.maxItemCount),
       if (rule.useExcludeOverlong)
         t.vm_mgr_limit_exclude_min(rule.maxSingleDurationMinutes),
@@ -275,35 +453,56 @@ class _ManagerCard extends StatelessWidget {
             children: [
               Switch(
                 value: rule.enabled,
-                onChanged: (v) async {
-                  await DbModule.virtualMediaRepo.setRuleEnabled(rule.id, v);
-                  await onMutated();
-                },
+                onChanged: (v) =>
+                    _setRuleEnabledGuarded(context, rule, v, onMutated),
               ),
               const SizedBox(width: 4),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(rule.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          decoration: rule.enabled ? null : TextDecoration.lineThrough,
-                        )),
+                    Row(children: [
+                      Flexible(
+                        child: Text(rule.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              decoration: rule.enabled
+                                  ? null
+                                  : TextDecoration.lineThrough,
+                            )),
+                      ),
+                      if (rule.useMode == VmRuleUseMode.notUse) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: scheme.errorContainer,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(t.vm_mgr_excluded_badge,
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: scheme.onErrorContainer)),
+                        ),
+                      ],
+                    ]),
                     const SizedBox(height: 2),
                     Text(
                       [
                         if (rule.description.isNotEmpty) rule.description,
-                        t.vm_sheet_count_videos(items.length),
-                        if (limits.isNotEmpty)
-                          t.vm_mgr_limits_prefix(limits),
+                        rule.useMode == VmRuleUseMode.notUse
+                            ? t.vm_mgr_excluded_subtitle
+                            : t.vm_sheet_count_videos(items.length),
+                        if (limits.isNotEmpty) t.vm_mgr_limits_prefix(limits),
                       ].join(' · '),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                      style: TextStyle(
+                          fontSize: 12, color: scheme.onSurfaceVariant),
                     ),
                   ],
                 ),
@@ -312,12 +511,15 @@ class _ManagerCard extends StatelessWidget {
                 visualDensity: VisualDensity.compact,
                 tooltip: rule.pinned ? t.vm_sheet_pinned : t.vm_sheet_pin,
                 icon: Icon(
-                  rule.pinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                  rule.pinned
+                      ? Icons.push_pin_rounded
+                      : Icons.push_pin_outlined,
                   size: 18,
                   color: rule.pinned ? scheme.primary : null,
                 ),
                 onPressed: () async {
-                  await DbModule.virtualMediaRepo.setRulePinned(rule.id, !rule.pinned);
+                  await DbModule.virtualMediaRepo
+                      .setRulePinned(rule.id, !rule.pinned);
                   await onMutated();
                 },
               ),

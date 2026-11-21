@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/virtual_media/playback/vm_timeline_ownership.dart';
 
-/// The 简播 (fake-cut) resolver replaces the opened source with an EDL, so it
-/// must never run while Virtual Media owns the timeline — including the switch
+/// The 虚拟剪播 (fake-cut) resolver replaces the opened source with an EDL, so it
+/// must never run while Virtual Merge owns the timeline — including the switch
 /// window in which `isActive` is still false. The hook used to consult
 /// `isActive` alone and stacked an EDL on the segment a VM feed was opening.
 void main() {

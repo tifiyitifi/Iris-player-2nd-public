@@ -7,8 +7,9 @@
   platform builds. It never runs `flutter analyze` or `flutter test`, so a
   release can currently ship compile-clean but untested code. This script is
   the local gate that closes that hole: codegen, localization, ARB parity,
-  analyzer errors, the full test suite, and (with -Release) the release-note
-  and tree-cleanliness invariants that the squash flow depends on.
+  analyzer errors, the full test suite, the local privacy audit, and (with
+  -Release) the release-note and tree-cleanliness invariants that the squash
+  flow depends on.
 
   Deliberately NOT wired into `.githooks/pre-push`: codegen plus the full test
   suite costs minutes, and a slow push hook gets bypassed by habit. Run it by
@@ -179,6 +180,14 @@ try {
 
     # --- Release readiness: the invariants the squash/publish flow relies on ---
     if ($Release) {
+        # The privacy gate is a pre-commit hook for normal work; a release is
+        # the last place an already-committed term can still be caught before
+        # the tree is published. -All only warns about paths, but fails on
+        # private terms, the title rule and credential URLs.
+        Invoke-GateStep 'Local privacy audit (tracked tree)' {
+            Invoke-Native 'pwsh' @('-NoProfile', '-File', 'scripts/check-local-paths.ps1', '-All')
+        }
+
         Invoke-GateStep "Release readiness (CHANGELOG v$version)" {
             # Explicit UTF-8: the notes carry Chinese, and Windows PowerShell 5.1
             # decodes a BOM-less UTF-8 file with the ANSI codepage, which mangles

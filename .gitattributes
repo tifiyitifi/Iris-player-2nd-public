@@ -12,3 +12,7 @@
 *.java text eol=lf
 *.properties text eol=lf
 .githooks/pre-commit text eol=lf
+.githooks/pre-push text eol=lf
+.githooks/commit-msg text eol=lf
+.githooks/pre-merge-commit text eol=lf
+scripts/local-gate.sh text eol=lf

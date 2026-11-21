@@ -126,7 +126,53 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
   (URLs, storage keys, enum names, route paths), and test names are out of scope.
 - **Feedback:** never use SnackBar / `ScaffoldMessenger.showSnackBar`; use a Dialog
   (`showDialog`) for info, confirmation, and errors.
+- **Feature docs:** a Sub Audio behaviour change starts with a
+  `docs/features/background-playback/rules.md` row and its ADR;
+  `scripts/check-bg-rules.ps1` must pass. A Virtual Media behaviour change starts
+  with a `docs/features/virtual_media/rules.md` row and its ADR;
+  `scripts/check-vm-rules.ps1` must pass. SHAs are private provenance only.
 - **Comments:** explain the "Why"/design intent, not the "What"; concise English.
+
+## Local Privacy Gate
+
+The repository is shared and may be published; the machine it is built on is not. A
+local-only git gate keeps real paths, account names, media titles, local data files and
+credential URLs out of commits, commit messages and pushes.
+
+- **Engine:** `scripts/check-local-paths.ps1` (ASCII-only, self-tests on every run; exit
+  2 means the checker itself is broken). Modes: default (staged, or the working diff when
+  nothing is staged), `-All` (audit the tracked tree; already-committed paths are
+  warnings), `-Message` (the message file the commit-msg hook was given:
+  `COMMIT_EDITMSG` or `MERGE_MSG`) and `-Pushed` (the exact range the pre-push hook
+  reports; it also checks commit messages and every commit's added lines).
+- **Install once per clone:** `pwsh -NoProfile -File scripts/init-local-privacy-gate.ps1`.
+  It sets `core.hooksPath=.githooks` and scaffolds `.local_privacy/deny-list.txt` from
+  `scripts/local-gate-deny-list.example.txt`, then adds the account and the checkout
+  folder name. The deny list is gitignored; a fresh clone has to rebuild it.
+- **Hooks:** `pre-commit` (gate first, then the version bump), `commit-msg`,
+  `pre-merge-commit` and `pre-push`. Commit-time checks skip `*-ai-tmp-commit-*` record
+  branches (local audit trail, never pushed); `pre-push` never skips.
+- **Rejected:** drive/UNC/home paths outside the documented stand-in roots; the machine
+  profile and this checkout; `Users/<placeholder>` only; local data files (`*.sqlite`,
+  `*.db`, `*.wal`, `*.shm`, `*.journal`, `portable.flag`, `userdata/`, local scratch
+  directories); deny-list terms; `scheme://user:password@host` URLs; and a real CJK
+  title + episode in prose files (`CHANGELOG.md`, `AGENTS.md`, `README*`, `docs/**`).
+  Tests, UI strings and `lib/**` code are outside the title rule; their generic examples
+  are stand-ins.
+- **Limits:** the deny list is local, so CI cannot run the gate; `--no-verify` skips the
+  commit hooks (pre-push is the last line); binary files are only name-checked; `-All`
+  downgrades an already-committed path to a warning.
+
+### Local Files
+
+- Tracked files never carry a real local path, library root, media title or account
+  name. Use stand-ins (`C:\work\...`, `D:/Videos/...`, `E:/vault/...`, `a.mp4`, `USER`).
+  The stand-in roots the checker accepts are in `scripts/check-local-paths.ps1`; a real
+  name below one of them is not detectable there, so add it to
+  `.local_privacy/deny-list.txt`.
+- A real path or title that genuinely explains a bug belongs in the gitignored
+  `.local_privacy/` notes, never in a tracked file, test, comment, changelog, commit
+  message or issue.
 
 ## Keyboard / IME Contract
 
@@ -143,8 +189,9 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
 ## Gotchas
 
 - **Android versionCode:** lives in `android/version.properties`, auto-incremented by
-  `.githooks/pre-commit` (base 2025). Enable hooks with `git config core.hooksPath .githooks`.
-  Never edit it downward.
+  `.githooks/pre-commit` (base 2025). Enable hooks and the privacy gate with
+  `pwsh -NoProfile -File scripts/init-local-privacy-gate.ps1` (it sets
+  `core.hooksPath=.githooks`). Never edit it downward.
 - **pubspec build number:** `pubspec.yaml`'s `version: X.Y.Z+N` build number is kept
   equal to the Android `versionCode` by the same `pre-commit` hook (via
   `scripts/sync-version-code.sh`). Never hand-edit the `+N`; a release commit changes only
@@ -212,8 +259,6 @@ this file is mirrored to the public repository.
 ## AI Session Conventions
 
 - Reply in the user's language (Chinese or mixed).
-- Keep the working branch `X` **uncommitted** during a session so `git status` / `git diff`
-  show exactly what the AI changed.
 - **Explicit commit request:** commit to `X` (NOT `-ai-tmp`) the working-tree changes, with an
   English conventional-commit message — the user's if given, otherwise AI-authored.
 - `-ai-tmp` record branches are only for automatic checkpoints (audit trail).

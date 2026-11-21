@@ -24,7 +24,7 @@ int clampVmLocalMs(
   return localMs.clamp(0, maxMs);
 }
 
-/// One physical video inside a Virtual Media item.
+/// One physical video inside a Virtual Merge item.
 class VirtualSegment {
   /// Canonical media key `storageId:path` (the system-wide identity used by
   /// progress / tags / history).
@@ -145,7 +145,7 @@ class VirtualSegment {
   }
 }
 
-/// One resolved Virtual Media item: an ordered, prefix-sum-indexed list of
+/// One resolved Virtual Merge item: an ordered, prefix-sum-indexed list of
 /// segments presented to the player as a single playable unit.
 ///
 /// Position mapping contract (spec §4.2):

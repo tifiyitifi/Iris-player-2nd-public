@@ -4,7 +4,7 @@ import 'package:iris/utils/path_conv.dart' show canonicalPath;
 
 /// 指定/匹配 × 递归/非递归 — how a rule selects the directories it covers.
 ///
-/// Single source of truth shared by Virtual Media rules and 副音 source rules
+/// Single source of truth shared by Virtual Merge rules and 副音 source rules
 /// (extracted from `vm_resolver.dart`); keeping one tested implementation
 /// avoids the two matchers drifting apart.
 enum DirMatchMode {
@@ -187,7 +187,7 @@ bool compiledDirRuleMatchesFile(
     case DirMatchMode.specifiedDir:
       if (compiled.canonicalPaths.isEmpty) return false;
       return compiled.canonicalPaths
-          .any((p) => _dirsEqual(p, parentPath));
+          .any((p) => dirsEqual(p, parentPath));
 
     case DirMatchMode.specifiedDirRecursive:
       if (compiled.roots.isEmpty) return false;
@@ -307,7 +307,7 @@ bool _under(String root, String fullPath) {
 /// equal when the shorter segment sequence equals the LONGER's TAIL (the
 /// direct-parent match — subdirectories are intentionally excluded for
 /// `specifiedDir`).
-bool _dirsEqual(String a, String b) {
+bool dirsEqual(String a, String b) {
   if (a.isEmpty || b.isEmpty) return a == b;
   final aSegs = a.split('/').where((e) => e.isNotEmpty).toList();
   final bSegs = b.split('/').where((e) => e.isNotEmpty).toList();

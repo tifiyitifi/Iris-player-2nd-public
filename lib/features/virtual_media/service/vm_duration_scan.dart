@@ -25,7 +25,15 @@ class VmScanOutcome {
 
   /// Canonical mediaKeys that got a usable duration and were written back.
   final List<String> succeededKeys;
+
+  /// Every key that did not produce a usable duration (probe-empty OR a
+  /// successful probe whose write-back found no row).
   final List<String> failedKeys;
+
+  /// The subset of [failedKeys] whose probe genuinely returned no duration
+  /// (VT_EMPTY). Only these may be fast-skipped for the rest of the session;
+  /// a write-back no-op can succeed on a later scan once the row exists.
+  final List<String> shellEmptyKeys;
   final Duration elapsed;
   final String? report;
 
@@ -36,6 +44,7 @@ class VmScanOutcome {
     required this.succeededKeys,
     required this.failedKeys,
     required this.elapsed,
+    this.shellEmptyKeys = const [],
     this.cancelled = false,
     this.timedOut = false,
     this.report,
@@ -104,14 +113,14 @@ Future<ProbeResult> _probeSingle(
 
 /// One segment's persist outcome: usable probes write back, failures degrade
 /// to a failed key — never throws, so a batch [Future.wait] always settles.
-Future<({bool ok, String mediaKey})> _persistOne(
+Future<({bool ok, bool shellEmpty, String mediaKey})> _persistOne(
   VmWriteBack persist,
   VirtualSegment s,
   ProbeResult raw,
 ) async {
   final r = sanitizeProbeResult(raw);
   if (r.durationMs == null || r.durationMs! <= 0) {
-    return (ok: false, mediaKey: s.mediaKey);
+    return (ok: false, shellEmpty: true, mediaKey: s.mediaKey);
   }
   try {
     final written = await persist(
@@ -124,13 +133,14 @@ Future<({bool ok, String mediaKey})> _persistOne(
     if (!written) {
       // The probe succeeded but there is no media_nodes row to land on:
       // report a failure (truthful summary + leftover), not a phantom OK.
+      // NOT shell-empty: a later scan can succeed once the row exists.
       _log.w('[vm-scan] write-back no-op (no media_nodes row) ${s.mediaKey}');
-      return (ok: false, mediaKey: s.mediaKey);
+      return (ok: false, shellEmpty: false, mediaKey: s.mediaKey);
     }
-    return (ok: true, mediaKey: s.mediaKey);
+    return (ok: true, shellEmpty: false, mediaKey: s.mediaKey);
   } catch (e) {
     _log.w('[vm-scan] write-back failed ${s.mediaKey}: $e');
-    return (ok: false, mediaKey: s.mediaKey);
+    return (ok: false, shellEmpty: false, mediaKey: s.mediaKey);
   }
 }
 
@@ -175,9 +185,13 @@ Future<VmScanOutcome> scanVmGroupDurations(
 
   final failedKeys = <String>[];
   final succeededKeys = <String>[];
+  final shellEmptyKeys = <String>[];
   var scanned = 0;
   var skipped = 0;
   var done = 0;
+  // Remaining work is over `local` ONLY. `done` also counts known rows and
+  // skipKeys, so `local.length - done` can go negative in a mixed group.
+  var localDone = 0;
 
   VmScanOutcome finish(
       {bool cancelled = false, bool timedOut = false, String? report}) {
@@ -194,6 +208,7 @@ Future<VmScanOutcome> scanVmGroupDurations(
       skipped: skipped,
       succeededKeys: List.unmodifiable(succeededKeys),
       failedKeys: List.unmodifiable(failedKeys),
+      shellEmptyKeys: List.unmodifiable(shellEmptyKeys),
       elapsed: stopwatch.elapsed,
       cancelled: cancelled,
       timedOut: timedOut,
@@ -260,7 +275,7 @@ Future<VmScanOutcome> scanVmGroupDurations(
     if (stopwatch.elapsed > budget) {
       final t = l10n ?? AppLocalizationsEn();
       final report = t.vm_scan_timeout(budget.inSeconds, scanned,
-          local.length, local.length - done);
+          local.length, local.length - localDone);
       _log.e('[vm-scan] TIMEOUT $report');
       return finish(timedOut: true, report: report);
     }
@@ -302,14 +317,16 @@ Future<VmScanOutcome> scanVmGroupDurations(
         succeededKeys.add(o.mediaKey);
       } else {
         failedKeys.add(o.mediaKey);
+        if (o.shellEmpty) shellEmptyKeys.add(o.mediaKey);
       }
     }
     done += batch.length;
+    localDone += batch.length;
     onProgress?.call(done, segments.length, batch.last.name);
     if (overBudget) {
       final t = l10n ?? AppLocalizationsEn();
       final report = t.vm_scan_timeout(
-          budget.inSeconds, scanned, local.length, local.length - done);
+          budget.inSeconds, scanned, local.length, local.length - localDone);
       _log.e('[vm-scan] TIMEOUT $report');
       return finish(timedOut: true, report: report);
     }

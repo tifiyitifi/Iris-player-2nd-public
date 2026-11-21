@@ -103,6 +103,15 @@ Future<void> completeStartupInitialization() async {
   await useAppStore().initialized;
   await useAppStore().applyConfiguredBackends();
 
+  // A desktop window close tears the isolate down WITHOUT unmounting the tree,
+  // so AppStore.dispose() never runs (see [AppShutdown]). Seek-step edits made
+  // through the live path (held Ctrl+↑/↓, the phone gesture) would then revert
+  // to the previously persisted value on the next launch. Flush them inside the
+  // ordered shutdown.
+  if (isDesktop) {
+    AppShutdown.registerSave(() => useAppStore().commitSeekStepSeconds());
+  }
+
   // AUX preference rows are re-hydrated on gate-ON; while the gate is OFF a
   // legacy-mode run must not write them (or a stale default could clobber the
   // preserved meta-era data). Injected here so MetaSettingsModule stays
@@ -293,7 +302,7 @@ Future<void> completeStartupInitialization() async {
       globals.entryLaunchId ??= initialEntry;
     }
   }
-  // Virtual Media: absent unless the metadata-driven stack is running
+  // Virtual Merge: absent unless the metadata-driven stack is running
   // (rules live in Drift; the feature has no legacy-mode behavior at all).
   DefVisibility.registerPrefix(
     'virtualmedia.',

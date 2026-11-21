@@ -1,6 +1,6 @@
 import 'package:iris/store/use_app_store.dart';
 
-/// Feature gate for the Virtual Media feature (tag_play pattern).
+/// Feature gate for the Virtual Merge feature (tag_play pattern).
 ///
 /// The feature is entirely ABSENT when the metadata-driven stack is off:
 /// entries hidden, commands no-op with an explanatory dialog, and any

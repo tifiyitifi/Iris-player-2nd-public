@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:app_links/app_links.dart';
@@ -94,11 +95,36 @@ Widget wrapPlatformSemantics(BuildContext context, Widget? child) {
   return ExcludeSemantics(child: child);
 }
 
-void main(List<String> arguments) async {
+void main(List<String> arguments) {
+  // A single fire-and-forget callback throwing used to take the whole isolate
+  // down: the user saw a "random" close while a video was playing and there was
+  // no global handler to keep the trace. Route zone + engine errors to the log
+  // instead of aborting the process.
+  runZonedGuarded(
+    () async => _bootstrap(arguments),
+    (error, stack) => areaKeyLog.e('Uncaught zone error: $error\n$stack'),
+  );
+}
+
+Future<void> _bootstrap(List<String> arguments) async {
   areaKeyLog.i('arguments: $arguments');
   globals.arguments = arguments;
 
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Engine-level hooks: a throwing framework/platform callback must not abort
+  // the process. `onError` returning true swallows it after logging (the
+  // alternative is the engine's default fatal exit). This cannot catch native
+  // aborts (e.g. media_kit's FFI callback race), only Dart-layer errors.
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    areaKeyLog.e(
+        'FlutterError: ${details.exceptionAsString()}\n${details.stack}');
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    areaKeyLog.e('Uncaught platform error: $error\n$stack');
+    return true;
+  };
 
   // AXTree-diag: log whether the Windows UIA bridge is active at startup.
   // This directly tells us whether the engine's accessibility tree is being
@@ -194,11 +220,17 @@ class MyApp extends HookWidget {
   Widget build(BuildContext context) {
     useEffect(() {
       () async {
-        globals.storagePermissionStatus = Platform.isAndroid
-            ? await isAndroid11OrHigher()
-                ? await Permission.manageExternalStorage.status
-                : await Permission.storage.status
-            : PermissionStatus.granted;
+        // First-frame plugin channels can be unavailable; a throw here used to
+        // be an uncaught async error with no global handler.
+        try {
+          globals.storagePermissionStatus = Platform.isAndroid
+              ? await isAndroid11OrHigher()
+                  ? await Permission.manageExternalStorage.status
+                  : await Permission.storage.status
+              : PermissionStatus.granted;
+        } catch (e) {
+          areaKeyLog.w('storage permission probe failed: $e');
+        }
       }();
       return null;
     }, []);
@@ -211,28 +243,35 @@ class MyApp extends HookWidget {
 
     useEffect(() {
       () async {
-        if (uri != null && globals.initUri != uri) {
-          areaKeyLog.i('Uri: $uri');
-          if (Platform.isAndroid) {
-            final file = await SafUtil().documentFileFromUri(uri, false);
-            if (file != null) {
-              await useAppStore().updateAutoPlay(true);
-              PlaybackProviderRegistry.beginExternalFeed();
-              await usePlayQueueStore().update(
-                playQueue: [
-                  PlayQueueItem(
-                    file: FileItem(
-                      name: file.name,
-                      uri: file.uri,
-                      size: file.length,
+        // The first frame can run before the startup sequence has wired the DB
+        // and the queues; a throw here (or a platform-channel failure) must not
+        // abort the process.
+        try {
+          if (uri != null && globals.initUri != uri) {
+            areaKeyLog.i('Uri: $uri');
+            if (Platform.isAndroid) {
+              final file = await SafUtil().documentFileFromUri(uri, false);
+              if (file != null) {
+                await useAppStore().updateAutoPlay(true);
+                PlaybackProviderRegistry.beginExternalFeed();
+                await usePlayQueueStore().update(
+                  playQueue: [
+                    PlayQueueItem(
+                      file: FileItem(
+                        name: file.name,
+                        uri: file.uri,
+                        size: file.length,
+                      ),
+                      index: 0,
                     ),
-                    index: 0,
-                  ),
-                ],
-                index: 0,
-              );
+                  ],
+                  index: 0,
+                );
+              }
             }
           }
+        } catch (e) {
+          areaKeyLog.w('external URI entry failed: $e');
         }
       }();
       return null;

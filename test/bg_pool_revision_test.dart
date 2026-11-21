@@ -30,8 +30,13 @@ void main() {
   });
 
   /// Lets the coalescing timer fire and the (async) relevance probe settle.
+  ///
+  /// Deliberately generous: these are real timers, and the full suite runs many
+  /// files at once on a busy machine — a settle window close to the coalescing
+  /// window made the whole file flaky under load (the assertions are correct,
+  /// they simply ran before the 40 ms batch timer fired).
   Future<void> settle() =>
-      Future<void>.delayed(const Duration(milliseconds: 60));
+      Future<void>.delayed(const Duration(milliseconds: 250));
 
   test('a relevant membership write bumps the revision', () async {
     revision = build({7});

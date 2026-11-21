@@ -44,7 +44,7 @@ class MediaPlayer {
   /// was. Null on backends without a Dart-side step accumulator.
   final int? Function()? stepIntentTargetMs;
 
-  /// 简播: re-times an external subtitle onto the virtual (cut) timeline.
+  /// 虚拟剪播: re-times an external subtitle onto the virtual (cut) timeline.
   ///
   /// Returns the URI to hand the engine, or null when it cannot be re-timed —
   /// in which case the callback has already explained why and the caller must

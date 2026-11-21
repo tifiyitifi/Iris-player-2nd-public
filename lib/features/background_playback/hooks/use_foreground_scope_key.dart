@@ -5,7 +5,7 @@ import 'package:iris/features/background_playback/store/use_background_playback_
 
 /// The 作用范围 identity of the media playing now.
 ///
-/// Normally the physical foreground file, but while a Virtual Media session
+/// Normally the physical foreground file, but while a Virtual Merge session
 /// runs under `wholeVirtual` the VM link publishes the whole virtual video's
 /// identity instead (see `vmScopeIdentityOverride`). Scope observers — the
 /// runtime scope, the apply-to-current toggle — read THIS, so "treat the

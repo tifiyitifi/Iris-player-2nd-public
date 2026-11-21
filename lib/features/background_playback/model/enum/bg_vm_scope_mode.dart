@@ -1,4 +1,4 @@
-/// How the 作用范围「仅当前」rule treats a Virtual Media foreground.
+/// How the 作用范围「仅当前」rule treats a Virtual Merge foreground.
 ///
 /// A VM item presents a chain of physical segments as ONE video, so "the media
 /// playing now" is ambiguous: the whole virtual video, or the physical block

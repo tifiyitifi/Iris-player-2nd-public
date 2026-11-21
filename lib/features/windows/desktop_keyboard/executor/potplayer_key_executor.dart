@@ -32,7 +32,8 @@ import 'package:iris/features/windows/desktop_keyboard/controller/sequence_resol
 import 'package:iris/features/windows/desktop_keyboard/controller/speed_reset_toggle.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/speed_step.dart';
 import 'package:iris/features/windows/desktop_keyboard/model/keybind_codec.dart';
-import 'package:iris/features/tag_play/playback/tag_play_controller.dart' show TagPlayGate;
+import 'package:iris/features/tag_play/playback/tag_play_controller.dart'
+    show TagPlayGate;
 import 'package:iris/features/tag_play/commands/tag_play_actions.dart';
 import 'package:iris/features/windows/desktop_keyboard/model/potplayer_action.dart';
 import 'package:iris/features/windows/desktop_keyboard/store/key_sequence_buffer_store.dart';
@@ -251,25 +252,21 @@ class PotPlayerKeyExecutor {
 
   void _togglePlayPause() {
     final t = getLocalizations(context);
-    // While the shared controls target 副音 the toggle drives the background
-    // runtime through its store (the scope's autoplay-sync applies it to the
-    // engine); the foreground autoplay pref must stay untouched.
-    if (isBackgroundControlTarget(context)) {
-      final bg = useBackgroundPlaybackStore();
-      final next = !player.isPlaying;
-      bg.setPlaying(next);
-      _showOsd(next ? OsdTexts.playing(t) : OsdTexts.paused(t));
-      return;
+    // ONE owner publishes the transport flag (ADR 0018); the shared control
+    // target decides which runtime's preference it writes. While 副音 owns the
+    // controls the fg autoplay pref must stay untouched and the scope's
+    // autoplay-sync applies `bgAutoPlay` to the engine — so only the foreground
+    // path drives the player directly.
+    final next = !player.isPlaying;
+    setActiveTransportFlag(context, playing: next);
+    if (!isBackgroundControlTarget(context)) {
+      if (next) {
+        player.play();
+      } else {
+        player.pause();
+      }
     }
-    if (player.isPlaying) {
-      useAppStore().updateAutoPlay(false);
-      player.pause();
-      _showOsd(OsdTexts.paused(t));
-    } else {
-      useAppStore().updateAutoPlay(true);
-      player.play();
-      _showOsd(OsdTexts.playing(t));
-    }
+    _showOsd(next ? OsdTexts.playing(t) : OsdTexts.paused(t));
   }
 
   int get _stepSeconds => useAppStore().state.seekStepSeconds;
@@ -407,8 +404,7 @@ class PotPlayerKeyExecutor {
     );
   }
 
-  Future<void> _showPanel(Widget child) =>
-      showControlForHover(showPopup(
+  Future<void> _showPanel(Widget child) => showControlForHover(showPopup(
         context: context,
         child: child,
         direction: useAppStore().state.defaultPopupDirection,
@@ -539,7 +535,9 @@ class PotPlayerKeyExecutor {
   /// delete never leaves boundaries frozen.
   Future<Map<String, List<PinnedVmChunk>>> _captureVmChunks(
       String storageId, String? relPath) async {
-    if (storageId.isEmpty || relPath == null || relPath.isEmpty) return const {};
+    if (storageId.isEmpty || relPath == null || relPath.isEmpty) {
+      return const {};
+    }
     if (!VirtualMediaGate.enabled) return const {};
     final rules =
         await VirtualMediaService.instance.coveringRulesFor(storageId, relPath);
@@ -622,7 +620,9 @@ class PotPlayerKeyExecutor {
         _log.w('media node delete failed: $e');
       }
     }
-    if (media.storageId.isNotEmpty && media.relPath != null && removedRows == 0) {
+    if (media.storageId.isNotEmpty &&
+        media.relPath != null &&
+        removedRows == 0) {
       _log.w('physical delete: no media_nodes row matched '
           'storage=${media.storageId} path=${media.relPath} '
           'scopes=${scopes.join(",")}');
@@ -932,7 +932,7 @@ class PotPlayerKeyExecutor {
           // to the CURRENT foreground under the run's 作用范围 (a scope that
           // does not cover this media hands it back on its own). OSD only when
           // the pair actually flipped — a refused press (feature off, no
-          // candidates, 简播, …) already showed its own dialog.
+          // candidates, 虚拟剪播, …) already showed its own dialog.
           final bg = useBackgroundPlaybackStore();
           final bool wasActive = bg.state.bgPairInEffect;
           await BackgroundPlaybackActions.toggleGateForCurrent(context);
@@ -947,7 +947,7 @@ class PotPlayerKeyExecutor {
         {
           // The quick bar's T0 "control fg/bg" button in keyboard form. Same
           // liveness rule the button renders its enabled state from
-          // (`bgPairInEffect` + the pure 作用范围 verdict + 简播), so the
+          // (`bgPairInEffect` + the pure 作用范围 verdict + 虚拟剪播), so the
           // shortcut can never retarget the shared controls onto a 副音 that
           // is not actually sounding for this media.
           final bg = useBackgroundPlaybackStore();
@@ -1028,8 +1028,8 @@ class PotPlayerKeyExecutor {
         // popover so the visual is identical; anchor to the More button when
         // present. NOT key-bound — see SeekStepIncrease/Decrease below.
         showControl();
-        await showControlForHover(
-            showSeekStepPopover(moreMenuKeyNotifier.value?.currentContext ?? context));
+        await showControlForHover(showSeekStepPopover(
+            moreMenuKeyNotifier.value?.currentContext ?? context));
         break;
       case PotPlayerAction.seekStepIncrease:
         _adjustSeekStep(HardwareKeyboard.instance.isShiftPressed ? 10 : 1);
@@ -1080,7 +1080,8 @@ class PotPlayerKeyExecutor {
         // Metadata era: the fit key cycles the platform display mode
         // (with the two original-size modes on desktop) + OSD feedback;
         // legacy era keeps the 4-way BoxFit cycle untouched.
-        if (useAppStore().state.useMetadataSettings && MetaSettingsModule.ready) {
+        if (useAppStore().state.useMetadataSettings &&
+            MetaSettingsModule.ready) {
           await useAppStore().cycleVideoDisplayMode();
           final app = useAppStore().state;
           _showOsd(OsdTexts.videoDisplayMode(
@@ -1140,8 +1141,7 @@ class PotPlayerKeyExecutor {
       case PotPlayerAction.jumpToMiddle:
         final duration = player.duration;
         if (duration > Duration.zero) {
-          final mid =
-              Duration(milliseconds: duration.inMilliseconds ~/ 2);
+          final mid = Duration(milliseconds: duration.inMilliseconds ~/ 2);
           _showOsd(OsdTexts.seekTo(t, mid, duration));
           await player.seek(mid);
         }
@@ -1218,7 +1218,8 @@ class PotPlayerKeyExecutor {
       case PotPlayerAction.togglePlaylistDockMode:
         {
           await useAppStore().togglePlaylistPanelMode();
-          final isDocked = useAppStore().state.playlistPanelMode == PlaylistPanelMode.dockedRight;
+          final isDocked = useAppStore().state.playlistPanelMode ==
+              PlaylistPanelMode.dockedRight;
           _showOsd(OsdTexts.dockMode(isDocked, t));
         }
         break;
@@ -1260,12 +1261,14 @@ class PotPlayerKeyExecutor {
         break;
       case PotPlayerAction.alwaysOnTop:
         await usePlayerUiStore().toggleIsAlwaysOnTop();
-        _showOsd(OsdTexts.alwaysOnTop(usePlayerUiStore().state.isAlwaysOnTop, t));
+        _showOsd(
+            OsdTexts.alwaysOnTop(usePlayerUiStore().state.isAlwaysOnTop, t));
         break;
       case PotPlayerAction.toggleAutoResize:
         // Metadata era: Ctrl+R toggles the WindowFitMode enum (窗口适应视频 /
         // 固定窗口大小). Legacy era keeps the autoResize checkbox semantics.
-        if (useAppStore().state.useMetadataSettings && MetaSettingsModule.ready) {
+        if (useAppStore().state.useMetadataSettings &&
+            MetaSettingsModule.ready) {
           await useAppStore().toggleWindowFitMode();
           final fitVideo =
               useAppStore().state.windowFitMode == WindowFitMode.fitVideo;

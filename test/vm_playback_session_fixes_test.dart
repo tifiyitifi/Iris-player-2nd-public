@@ -217,6 +217,33 @@ void main() {
     await ctrl.deactivateForNavigation();
   });
 
+  test('H6: a failed FIRST feed recovers instead of freezing the session',
+      () async {
+    await seed('a0.mp4');
+    await seed('a1.mp4');
+    final a = _item('rA|d|#1', ['a0.mp4', 'a1.mp4']);
+    final ctrl = VirtualMediaController.instance;
+    ctrl.debugNodeLoaderOverride = (storageId, path) async {
+      if (path.last == 'a0.mp4') throw Exception('db down');
+      return DbModule.mediaNodeRepo
+          .getNodeByPath(storageId: storageId, path: path);
+    };
+    addTearDown(() => ctrl.debugNodeLoaderOverride = null);
+
+    await ctrl.startSession(queue: [a], queueIndex: 0);
+    await pumpEventQueue();
+    await pumpEventQueue();
+
+    // The first feed failed before any expected segment key existed, so the
+    // old `isActive` gate could never recover it. It must skip to a1 instead
+    // of leaving `transitioning` set forever with VM owning the timeline.
+    expect(ctrl.state.item, isNotNull);
+    expect(ctrl.isActive, isTrue);
+    expect(ctrl.state.segmentIndex, 1);
+
+    await ctrl.deactivateForNavigation();
+  });
+
   test('H5: stopToFirst lands paused — never flips autoPlay on', () async {
     await seed('a0.mp4');
     await seed('a1.mp4');

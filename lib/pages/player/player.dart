@@ -176,7 +176,7 @@ class Player extends HookWidget {
 
     // Plain media name — the `[cur/total]` prefix and the tag suffix are
     // rendered ONLY by the bar title area (they hide with the bottom bar).
-    // When a Virtual Media session is active, replace the single-file name
+    // When a Virtual Merge session is active, replace the single-file name
     // part with “目录:序号/总数:原名” (spec §9.2).
     final vmCtrl = VirtualMediaController.instance;
     final vmItem = vmCtrl.isActive ? vmCtrl.state.item : null;
@@ -276,7 +276,7 @@ class Player extends HookWidget {
     // 作用范围, exhausted, or has walked off the end of its queue is NOT on the
     // air, so advertising it would frame a silent engine.
     //
-    // 简播 is the exception the state cannot know about: a cut suspends the pair
+    // 虚拟剪播 is the exception the state cannot know about: a cut suspends the pair
     // for THIS media while the gate stays open, so the suffix must be suppressed
     // exactly like the menu rows and the ducking (the volume hook, the menu and
     // the icon all test the same flag).
@@ -708,7 +708,7 @@ class Player extends HookWidget {
                 const Positioned.fill(
                   child: OsdOverlay(),
                 ),
-                // Virtual Media fatal-error dialog host (renders nothing until
+                // Virtual Merge fatal-error dialog host (renders nothing until
                 // the VM controller stores a localized lastError).
                 const VmErrorDialogHost(),
                 // Desktop drag-drop split indicator: top strip appends, the

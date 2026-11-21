@@ -7,7 +7,7 @@ final _log = AreaKeyLog(LogKeys.legacyDb);
 /// Schema v21: virtual-media per-scenario progress + player title separator.
 ///
 /// - Creates `vm_progress` table (scenarioId/tagId/scopeKey → segmentKey+pos)
-///   for PotPlayer-style “whole virtual media as one file” resume.
+///   for PotPlayer-style “whole virtual merge as one file” resume.
 /// - Adds `vm_rules.playerTitleSeparator` (TEXT DEFAULT ':') for the
 ///   configurable player title “目录:序号/总数:原名” separator.
 /// Re-entrant: checks column/table existence before mutating.

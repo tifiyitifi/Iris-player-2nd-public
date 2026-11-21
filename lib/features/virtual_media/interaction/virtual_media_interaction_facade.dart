@@ -3,7 +3,7 @@ import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart
 
 /// Single entry-point for “single-media intent → hidden list operation”
 ///
-/// Real media pass through unchanged; virtual media enter the translation
+/// Real media pass through unchanged; virtual merge enter the translation
 /// layer. The player core never knows the layer exists — it still receives
 /// single-file feeds via [VirtualMediaController._feedCurrent].
 ///
@@ -40,7 +40,7 @@ abstract final class VirtualMediaInteractionFacade {
     }
   }
 
-  /// Stop: virtual media clears its own virtual progress (0) and the first
+  /// Stop: virtual merge clears its own virtual progress (0) and the first
   /// internal segment's persisted progress, then lands on segment 0 without
   /// auto-play. Real media follow the normal stop path.
   ///

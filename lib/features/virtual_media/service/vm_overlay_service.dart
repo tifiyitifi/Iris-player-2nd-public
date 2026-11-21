@@ -14,7 +14,7 @@ import 'package:iris/utils/path_conv.dart';
 
 final _log = AreaKeyLog(LogKeys.mediaProbe);
 
-/// Global Virtual Media coordination: enabled-rule access + rule-change
+/// Global Virtual Merge coordination: enabled-rule access + rule-change
 /// propagation. Deliberately holds NO media data — grouping in playback is
 /// derived from each scenario's own effective stream (scenario-first, see
 /// vm_stream_merge.dart), so there is no merge-layer snapshot to own or

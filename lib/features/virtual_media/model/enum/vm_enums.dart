@@ -1,3 +1,15 @@
+/// Whether an ENABLED rule USES or does NOT USE virtual merging for the
+/// directories it matches.
+///
+/// [use] is the historical behaviour: matching files merge into virtual items.
+/// [notUse] is an exclusion: matching files stay out of every merge. Because a
+/// rule is independent of [VirtualMediaRule.enabled], a rule can be saved but
+/// disabled while keeping its polarity for the next enable.
+enum VmRuleUseMode {
+  use,
+  notUse,
+}
+
 /// How a rule selects the directories whose media merge into virtual items.
 enum VmMatchMode {
   /// 指定目录（非递归）: only files whose direct parent is one of the
@@ -77,7 +89,7 @@ enum VmTitleTag {
   resolution,
 }
 
-/// Cross-segment drag strategy for virtual media (spec §6).
+/// Cross-segment drag strategy for virtual merge (spec §6).
 ///
 /// [directSwitch] — every drag tick jumps live (default): cross-segment
 /// ticks open WITH the intra-segment offset, throttled to one open per

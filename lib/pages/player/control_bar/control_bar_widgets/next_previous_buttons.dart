@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
-import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/windows/desktop_keyboard/view/shortcut_hints.dart';
@@ -81,11 +80,12 @@ class PrevButton extends HookWidget {
       icon: Icon(Icons.skip_previous_rounded, size: kIconSizePrimary, color: color),
       onPressed: () {
         showControl();
-        if (isBackgroundControlTarget(context)) {
-          useBackgroundPlaybackStore().step(forward: false);
-        } else {
-          PlaybackProviderRegistry.step(forward: false);
-        }
+        // Always through the router: while 副音 owns the controls it supplies
+        // the foreground double-play guard and the user-switch mark. A direct
+        // store call silently dropped both — a bg step could land on the file
+        // the video was already playing, and the position mirror then dragged
+        // the video to the wrong place.
+        PlaybackProviderRegistry.step(forward: false);
       },
       style: ButtonStyle(overlayColor: overlayColor),
     );
@@ -113,11 +113,9 @@ class NextButton extends HookWidget {
       icon: Icon(Icons.skip_next_rounded, size: kIconSizePrimary, color: color),
       onPressed: () {
         showControl();
-        if (isBackgroundControlTarget(context)) {
-          useBackgroundPlaybackStore().step(forward: true);
-        } else {
-          PlaybackProviderRegistry.step(forward: true);
-        }
+        // Always through the router: it retargets to 副音 with the foreground
+        // double-play guard and the user-switch mark (see the class note).
+        PlaybackProviderRegistry.step(forward: true);
       },
       style: ButtonStyle(overlayColor: overlayColor),
     );

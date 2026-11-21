@@ -207,7 +207,7 @@ void main() {
 
     final row = find.byKey(const ValueKey('vm_master_switch'));
     expect(row, findsOneWidget);
-    expect(find.text('虚拟合并'), findsOneWidget);
+    expect(find.text('虚拟合播'), findsOneWidget);
 
     await tester.tap(row);
     await tester.pumpAndSettle();

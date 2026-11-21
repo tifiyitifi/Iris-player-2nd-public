@@ -66,7 +66,7 @@ BackgroundVolumeContext useBackgroundVolumeContext(
         draftFg: s.segmentEditDraft?.fgPercent,
         draftBg: s.segmentEditDraft?.bgPercent,
       ));
-  // 简播 (fake cut): the cut owns the picture and a virtual timeline that no
+  // 虚拟剪播 (virtual cut): the cut owns the picture and a virtual timeline that no
   // 副音 pairing describes, so the pair is inactive for THIS media even though
   // the gate stays open. Without it the foreground stayed ducked to 30% during
   // a cut.
@@ -100,7 +100,7 @@ BackgroundVolumeContext useBackgroundVolumeContext(
     // 副音 mixes (and ducks the foreground) only while the user gate is OPEN
     // AND the pair actually applies to what is playing. Feature-armed-but-
     // stopped, the terminal "exhausted" run, a queue that ran off its end, a
-    // media outside the 作用范围 and a 简播 cut all read as inactive: the
+    // media outside the 作用范围 and a 虚拟剪播 cut all read as inactive: the
     // foreground plays at master again.
     active: BackgroundVolumePolicy.active(
       enabled: snapshot.enabled,

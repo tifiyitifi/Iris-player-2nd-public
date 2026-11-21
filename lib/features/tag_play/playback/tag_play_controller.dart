@@ -807,7 +807,7 @@ class TagPlayController {
 
   PlaybackEntry? get currentCachedEntry => _currentEntry;
 
-  /// Feeds [entry] to the player, entering a Virtual Media session when the
+  /// Feeds [entry] to the player, entering a Virtual Merge session when the
   /// ACTIVE tag view's own stream covers it (mirrors the scenario provider's
   /// merge branch, but derived from the snapshot's cached groups). Without a
   /// covering rule the entry falls through to the ordinary single-file feed.
@@ -840,7 +840,7 @@ class TagPlayController {
     );
   }
 
-  /// Starts (or re-enters) the Virtual Media session for [entry] when it is a
+  /// Starts (or re-enters) the Virtual Merge session for [entry] when it is a
   /// member of a feasible group in the active tag view. Returns true when a
   /// session was started — the caller must not feed the single file after.
   ///
@@ -901,6 +901,39 @@ class TagPlayController {
     );
     _log.i('tag vm session start key=$entryKey scope=${group.scopeKey} '
         'target=${target ?? '-'}');
+    return true;
+  }
+
+  /// Tag-view twin of the scenario provider's adoption: the live file becomes
+  /// mergeable after a rule change, so bind it WITHOUT reopening it.
+  ///
+  /// The cached snapshot predates the rule change, so it is re-resolved here
+  /// before planning (its `vmGroups` are what the feed uses).
+  Future<bool> adoptCurrentFeedAsVirtual({
+    required String expectedMediaKey,
+  }) async {
+    if (!isActive) return false;
+    if (VirtualMediaController.instance.state.item != null) return false;
+    final entry = _currentEntry;
+    if (entry == null || entry.key != expectedMediaKey) return false;
+    final sid = _scenarioId;
+    final tagId = activeTagId;
+    if (sid == null || tagId == null) return false;
+    final snap = await resolveSnapshot(tagId, sid);
+    if (snap.isEmpty) return false;
+    final groups = snap.vmGroups;
+    if (groups == null) return false;
+    final adopted = await adoptLiveVirtualSession(
+      groups: groups,
+      mediaKey: entry.key,
+      storageId: entry.storageId,
+      path: entry.path,
+    );
+    if (!adopted) return false;
+    // Stepping and the sheet must read the SAME grouping the session adopted.
+    snapshot = snap;
+    _emitViewStatus(snap, snap.indexOfFileKey(entry.key) ?? 0);
+    _log.i('tag vm adopted live feed key=${entry.key}');
     return true;
   }
 

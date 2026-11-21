@@ -11,7 +11,7 @@ enum SearchResultOrigin {
   /// current search source scope).
   explicitItem,
 
-  /// A Virtual Media merged group derived from the scenario's effective
+  /// A Virtual Merge merged group derived from the scenario's effective
   /// stream (never in the DB). [vmScopeKey] identifies it; [storageId]/[path]
   /// point at the group's FIRST segment so playback/open-folder reuse the
   /// ordinary paths.
@@ -46,7 +46,7 @@ class SearchResultItem {
   /// such entries cannot really be played (Q8 / v5-D5).
   final bool available;
 
-  /// Virtual Media group identity (`ruleId|dir|#seq`) when
+  /// Virtual Merge group identity (`ruleId|dir|#seq`) when
   /// [origin] == [SearchResultOrigin.virtualGroup]; null otherwise.
   final String? vmScopeKey;
 
@@ -73,7 +73,7 @@ class SearchResultItem {
     this.occurrenceIndex,
   });
 
-  /// True for a Virtual Media merged group.
+  /// True for a Virtual Merge merged group.
   bool get isVirtualGroup => origin == SearchResultOrigin.virtualGroup;
 
   /// Canonical stable identity across the DB and explicit segments. Virtual

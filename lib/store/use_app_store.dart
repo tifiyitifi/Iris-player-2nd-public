@@ -245,6 +245,11 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     // (or the KeyUp was swallowed by a dialog), flush it so the DB row keeps
     // the user's last speed instead of reverting on next launch.
     await commitRate();
+    // Same contract for the seek step: the popover/gesture/key paths update
+    // memory through updateSeekStepSecondsLive and commit on release. A
+    // teardown that skips that release (dialog, crash, force close) must still
+    // keep the user's last value.
+    await commitSeekStepSeconds();
     await super.dispose();
   }
 
@@ -430,7 +435,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
         'ringDialHideChunkWhenUnchunked', hide, SettingValueType.bool);
   }
 
-  /// Virtual media: clamp the progress-ring drag inside the current file.
+  /// Virtual Merge: clamp the progress-ring drag inside the current file.
   Future<void> updateRingDialVmProgressLock(bool lock) async {
     set(state.copyWith(ringDialVmProgressLock: lock));
     await _saveDialRow('ringDialVmProgressLock', lock, SettingValueType.bool);
@@ -462,7 +467,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
     await MetaSettingsModule.saveSliderRow('dialogOffset', enc);
   }
 
-  // ── Virtual media (metadata era) ───────────────────────────────────────
+  // ── Virtual Merge (metadata era) ───────────────────────────────────────
   Future<void> _saveVirtualMediaRow(
       String field, Object? value, SettingValueType type) async {
     if (!state.useMetadataSettings || !MetaSettingsModule.ready) return;
@@ -1493,7 +1498,7 @@ class AppStore extends PersistentStore<AppState> implements SettingsEngineHost {
   Future<AppState> applyVirtualMediaRows(AppState base,
       {Map<String, String>? prefetched}) async {
     // Gate ON only. The `useLegacyStoragePersistence` toggle no longer blocks
-    // rehydration: legacy storage mode does not USE virtual media, but
+    // rehydration: legacy storage mode does not USE virtual merge, but
     // switching modes must never discard the VM preferences a user chose in
     // the meta era — the rows stay in the DB, so they are always re-applied.
     if (!base.useMetadataSettings || !MetaSettingsModule.ready) return base;

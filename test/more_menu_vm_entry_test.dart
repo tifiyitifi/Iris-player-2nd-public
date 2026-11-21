@@ -49,7 +49,7 @@ MediaPlayer _player() {
   );
 }
 
-/// The Virtual Media manager door belongs to the live More menu and must
+/// The Virtual Merge manager door belongs to the live More menu and must
 /// follow the feature gate (metadata stack on, drift storage).
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -115,13 +115,13 @@ void main() {
     configure(gate: true);
     await openMoreMenu(tester);
 
-    expect(find.text('虚拟媒体'), findsOneWidget);
+    expect(find.text('虚拟合播'), findsOneWidget);
   });
 
   testWidgets('gate OFF hides the virtual media manager entry', (tester) async {
     configure(gate: false);
     await openMoreMenu(tester);
 
-    expect(find.text('虚拟媒体'), findsNothing);
+    expect(find.text('虚拟合播'), findsNothing);
   });
 }

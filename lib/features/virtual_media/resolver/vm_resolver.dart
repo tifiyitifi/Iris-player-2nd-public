@@ -2,6 +2,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/rule/vm_chunk_numbering.dart';
+import 'package:iris/features/virtual_media/rule/vm_dir_use.dart';
 import 'package:iris/utils/natural_sort_key.dart';
 import 'package:iris/features/virtual_media/rule/vm_sorter.dart';
 import 'package:iris/features/virtual_media/rule/vm_title_composer.dart';
@@ -19,7 +20,7 @@ import 'package:iris/utils/dir_match.dart';
 /// produce overlapping virtual items and the user avoids duplicates by
 /// shaping the rules ("有多条合并规则，就当成多条视频").
 ///
-/// [excludedMediaKeys] are files that must stay OUT of every group (简播: a
+/// [excludedMediaKeys] are files that must stay OUT of every group (虚拟剪播: a
 /// video with a sibling `.llc`, see `vm_fake_cut_exclusions.dart`). They are
 /// removed from the candidate set BEFORE matching, so they simply never become
 /// members and keep their ordinary single row downstream.
@@ -44,15 +45,23 @@ List<VirtualMediaItem> resolveVirtualMedia({
             if (!excludedMediaKeys.contains(seg.mediaKey)) seg,
         ];
   if (eligible.isEmpty) return const <VirtualMediaItem>[];
+  // Use/exclude polarity. FAST PATH: null when no enabled rule is a `notUse`
+  // rule, so the 500k-media pipeline never pays for the mask (nor allocates it).
+  // Only when one exists is the mask built once and indexed by candidate loops.
+  final useMask = vmEffectiveUseMask(rules, eligible);
   for (final rule in rules) {
     if (!rule.enabled) continue;
+    // A `notUse` rule is an exclusion, not a merge: it never produces items.
+    // The mask above already removed the files it excludes from every `use`
+    // rule's candidates.
+    if (rule.useMode == VmRuleUseMode.notUse) continue;
     // A rule whose boundaries a physical delete froze this session emits its
     // pinned chunks instead of re-deriving them (see VmMembershipPin).
     final pinned = applyPin ? pin.chunksFor(rule.id) : null;
     if (pinned != null) {
-      items.addAll(_resolveFromPinned(rule, pinned, eligible, t));
+      items.addAll(_resolveFromPinned(rule, pinned, eligible, t, rules));
     } else {
-      items.addAll(_resolveRule(rule, eligible, t));
+      items.addAll(_resolveRule(rule, eligible, t, useMask));
     }
   }
   return items;
@@ -71,6 +80,7 @@ List<VirtualMediaItem> _resolveFromPinned(
   List<PinnedVmChunk> pinned,
   List<VirtualSegment> library,
   AppLocalizations l10n,
+  List<VirtualMediaRule> allRules,
 ) {
   // The pin freezes only the BOUNDARY shape. Members are looked up in the
   // CURRENT library by mediaKey so they carry up-to-date metadata (duration,
@@ -84,8 +94,13 @@ List<VirtualMediaItem> _resolveFromPinned(
   for (final chunk in pinned) {
     final segments = <VirtualSegment>[
       for (final seg in chunk.originalSegments)
+        // The union of use/exclude rules must also apply INSIDE a pinned chunk,
+        // or a folder switched to "not use" mid-session would keep merging its
+        // files from the frozen boundaries.
         if (!removed.contains(seg.mediaKey) &&
-            freshByKey.containsKey(seg.mediaKey))
+            freshByKey.containsKey(seg.mediaKey) &&
+            vmFileUseState(allRules, freshByKey[seg.mediaKey]!) !=
+                VmFileUseState.excluded)
           freshByKey[seg.mediaKey]!,
     ];
     if (segments.isEmpty) continue;
@@ -142,9 +157,9 @@ List<VirtualMediaItem> resolveRuleGroups({
       applyPin: applyPin);
 }
 
-List<VirtualMediaItem> _resolveRule(
-    VirtualMediaRule rule, List<VirtualSegment> library, AppLocalizations l10n) {
-  final candidates = _collectCandidates(rule, library);
+List<VirtualMediaItem> _resolveRule(VirtualMediaRule rule,
+    List<VirtualSegment> library, AppLocalizations l10n, List<int>? useMask) {
+  final candidates = _collectCandidates(rule, library, useMask);
   if (candidates.isEmpty) return const [];
 
   final sorted = sortSegments(candidates, rule.sortField, rule.sortDir);
@@ -261,13 +276,19 @@ List<DirPatternEntry> _toDirPatterns(List<VmPatternEntry> patterns) => [
         ),
     ];
 
-List<VirtualSegment> _collectCandidates(
-    VirtualMediaRule rule, List<VirtualSegment> library) {
+List<VirtualSegment> _collectCandidates(VirtualMediaRule rule,
+    List<VirtualSegment> library, List<int>? useMask) {
   final compiled = compileVmRule(rule);
-  return [
-    for (final f in library)
-      if (vmRuleCoversCompiled(compiled, f) && !vmSegmentOverlong(rule, f)) f,
-  ];
+  final out = <VirtualSegment>[];
+  for (var i = 0; i < library.length; i++) {
+    // Excluded files cost one byte lookup, never a second match pass.
+    if (useMask != null && useMask[i] == 0) continue;
+    final f = library[i];
+    if (vmRuleCoversCompiled(compiled, f) && !vmSegmentOverlong(rule, f)) {
+      out.add(f);
+    }
+  }
+  return out;
 }
 
 // ── Grouping ──

@@ -4,7 +4,7 @@ import 'package:iris/utils/logger.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyDb);
 
-/// Schema v18: Virtual Media rule model v2.
+/// Schema v18: Virtual Merge rule model v2.
 ///
 /// - Creates `vm_rules` (simplified v2 rule schema) when missing; fresh
 ///   installs get it via onCreate. Re-entrant.

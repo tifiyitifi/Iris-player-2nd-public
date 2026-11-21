@@ -284,10 +284,10 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(<String>{})
     Set<String> bgOffMediaKeys,
 
-    /// Whether the CURRENT suspension was caused by 简播 (fake cut) rather than
+    /// Whether the CURRENT suspension was caused by 虚拟剪播 (virtual cut) rather than
     /// by the user.
     ///
-    /// 简播 pauses 副音 for the duration of a cut (its virtual timeline has no
+    /// 虚拟剪播 pauses 副音 for the duration of a cut (its virtual timeline has no
     /// meaning on the cut picture) and must resume it when the foreground moves
     /// on — but ONLY when 副音 was actually sounding when the cut began. The
     /// flag is set by [BackgroundPlaybackStore.suspendForFakeCut] from the live
@@ -389,7 +389,7 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(BgCrossAction.keepPlaying)
     BgCrossAction bgSegmentSwitch,
 
-    /// Session: a Virtual Media session is active. Published by the VM link so
+    /// Session: a Virtual Merge session is active. Published by the VM link so
     /// the bg side can tell a VM block switch (owned by [bgSegmentSwitch]) from
     /// a real list-item change (owned by [bgItemSwitch]) without importing any
     /// VM type itself.
@@ -397,7 +397,7 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(false)
     bool vmSessionActive,
 
-    /// How the 作用范围「仅当前」rule reads a Virtual Media foreground (see
+    /// How the 作用范围「仅当前」rule reads a Virtual Merge foreground (see
     /// [BgVmScopeMode]). Persisted as the `bg.vmScopeMode` AUX row; default is
     /// per-block (independent block matching).
     @JsonKey(includeToJson: false, includeFromJson: false)
@@ -405,14 +405,14 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     BgVmScopeMode bgVmScopeMode,
 
     /// Session: the 作用范围 identity to use INSTEAD of the physical file key
-    /// while a Virtual Media session is active in [BgVmScopeMode.wholeVirtual]
+    /// while a Virtual Merge session is active in [BgVmScopeMode.wholeVirtual]
     /// ("将虚拟视频视作完整视频匹配"). Published by the VM-side link
     /// (`VmSubAudioLinkScope`) so the 副音 feature stays VM-agnostic; null =
     /// ordinary physical-file identity (and always null under `perBlock`).
     @JsonKey(includeToJson: false, includeFromJson: false)
     String? vmScopeKeyOverride,
 
-    /// Session: bumped when a Virtual Media block carrying a SAVED mapping is
+    /// Session: bumped when a Virtual Merge block carrying a SAVED mapping is
     /// left. The runtime observer then restarts its per-run alignment chain so
     /// the following blocks re-align from 00:00 ("后续块会重新0000对齐").
     @JsonKey(includeToJson: false, includeFromJson: false)
@@ -669,6 +669,17 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     @Default(0)
     int bgDurationProbeSeq,
 
+    /// Session: bumped every time a duration probe pass PUBLISHES its outcome.
+    ///
+    /// The runtime observer keys its queue-duration read on this, so a duration
+    /// the probe just wrote back to `media_nodes` reaches the playback timeline
+    /// (and with it `fullyKnown` / the prefix math the cross-file roll and the
+    /// continuation need) without waiting for a queue rebuild the write-back
+    /// never causes. Never persisted.
+    @JsonKey(includeToJson: false, includeFromJson: false)
+    @Default(0)
+    int bgDurationResolvedSeq,
+
     /// MANDATORY remaining-副音 threshold, in seconds (default 5; clamped to
     /// 1..120 — it can never be disabled). When the aligned 副音 has less than
     /// this much left (`bgDur - bgPos`), the alignment popup is raised. Persisted
@@ -702,7 +713,7 @@ abstract class BackgroundPlaybackState with _$BackgroundPlaybackState {
     /// 副音 is paused for it and the pair is not a pair. WRITTEN by the runtime
     /// scope observer (`BackgroundRuntimeScope`); cleared by the paths that
     /// re-establish the pair on purpose (`openGate` re-anchors under 仅当前, the
-    /// 简播 resume, `restartForCurrent`, and every teardown). A queue move
+    /// 虚拟剪播 resume, `restartForCurrent`, and every teardown). A queue move
     /// (`step` / `jumpTo`) deliberately does NOT clear it — the observer owns
     /// the verdict, so a jump can never activate the pair on a media outside the
     /// scope. Kept separate from [controlTarget] so returning to the anchored

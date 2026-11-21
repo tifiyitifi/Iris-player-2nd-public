@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_volume_controller/flutter_volume_controller.dart';
+import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/speed/model/speed_gesture_math.dart';
 import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keyboard_scheme.dart';
@@ -147,11 +148,11 @@ Gesture useGesture({
       } else {
         // 中间 50%
         if (player.isPlaying) {
-          useAppStore().updateAutoPlay(false);
+          setActiveTransportFlag(context, playing: false);
           player.pause();
           showControl();
         } else {
-          useAppStore().updateAutoPlay(true);
+          setActiveTransportFlag(context, playing: true);
           player.play();
         }
       }
@@ -163,10 +164,10 @@ Gesture useGesture({
       );
       if (scheme == KeyboardShortcutScheme.potplayer) {
         if (player.isPlaying) {
-          useAppStore().updateAutoPlay(false);
+          setActiveTransportFlag(context, playing: false);
           player.pause();
         } else {
-          useAppStore().updateAutoPlay(true);
+          setActiveTransportFlag(context, playing: true);
           player.play();
         }
       } else {

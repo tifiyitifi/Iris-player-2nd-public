@@ -1,3 +1,25 @@
+## v2.1.1
+
+### Changelog
+
+1. Virtual Media is now Virtual Merge (虚拟合播) and the LosslessCut cut feature is Virtual Cut (虚拟剪播, "虚剪" on tight tabs); menus, dialogs, settings and the transfer section use the new names, and saved rules/settings keep working unchanged
+2. A new per-folder switch in the player's More menu: use or do not use Virtual Merge for the currently playing video's own folder only. It takes effect on the video already playing — position and audio continue, no reopen — and can carve one folder out of a recursive merge; at most one enabled folder rule may exist per path, and a conflict asks which one stays
+3. Tag commands: a lone 0 now means every tag — `+0` adds the current file to all tags, `-0` removes it from all; in a mixed line like `+0.2` the 0 is ignored, and `*0` keeps its "no tag" meaning
+4. 副音: transport presses from every surface (keyboard, gestures, ring dial, control bars) no longer rewrite the foreground's play preference while 副音 owns the controls; a stop or play issued during a slow WebDAV/FTP open now lands; a finished 副音 no longer pauses the foreground; the duck volume follows an exhausted / queue-ended / out-of-scope / 剪播 run; prev/next follows the foreground's direction, 立即更新 keeps the playing track, and a queue-row tap is audible immediately
+5. Virtual Merge fixes: a failed first feed recovers instead of freezing; one broken file advances exactly one segment; SAF single picks read duration and progress correctly; the same Windows/SMB folder spelled with different case reuses one rule; switching a folder off no longer leaves a stale resume anchor
+6. A/P/B editor: the timeline measures the file it names (an empty 副音 row is inert), and a resolved duration now reaches the timeline so cross-file rolls and lengths update without reopening
+7. Stability: reusing one player for the Virtual Merge duration scan stops the media_kit "callback invoked after it has been deleted" abort during playback; the live seek step is saved on close; startup errors are logged instead of closing the app; Android pauses playback when backgrounded
+
+### 更新日志
+
+1. 「虚拟媒体」更名为「虚拟合播」，「简播」更名为「虚拟剪播」（紧凑标签页显示「虚剪」）；菜单、对话框、设置页与设置迁移分节都使用新名称，已保存的规则和设置不受影响
+2. 播放器「更多」菜单新增按文件夹开关：只对当前视频的直接文件夹选择「使用 / 不使用」虚拟合播。对正在播放的视频立即生效——位置和声音连续、不重新打开；也能把某个文件夹从递归合并中单独剔出；同一路径最多只能有一个启用的非递归文件夹规则，冲突时会询问保留哪一个
+3. 标签命令：单独的 `0` 现在表示全部标签——`+0` 把当前文件加入所有标签，`-0` 把它从所有标签移除；在 `+0.2` 这类混合写法中 0 会被忽略，`*0` 仍表示「无标签」
+4. 副音：在副音掌控控制时，来自键盘、手势、环形表盘和控制栏的播放/暂停不再改写前台的播放偏好；慢速 WebDAV/FTP 打开过程中发出的停止或播放不再被丢弃；副音播完不再把前台带成暂停；静音避让音量跟随「已耗尽 / 队列结束 / 超出作用范围 / 剪播」状态；上一集/下一集跟随前台方向，「立即更新」保留正在播放的曲目，点击队列行立即出声
+5. 虚拟合播修复：首个 feed 失败会恢复而不是卡在切换中；一个损坏文件只前进一段；SAF 单选文件按时长与进度正确读取；Windows/SMB 上同一文件夹仅大小写不同会复用同一规则；关闭某文件夹不再留下过期的续播锚点
+6. A/P/B 编辑器：时间轴按它实际指向的文件测量（空副音行不可拖动），解析出的时长会实时进入时间轴，跨文件进位与长度无需重开即可更新
+7. 稳定性：虚拟合播时长扫描复用一个播放器，避免播放中 media_kit 的「callback invoked after it has been deleted」中止；关闭应用时会保存实时步进值；启动异常只记录日志而不再关闭应用；Android 退到后台时暂停播放
+
 ## v2.1.0
 
 ### Changelog

@@ -2,7 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 
-/// One Virtual Media rule — simplified v2 schema.
+/// One Virtual Merge rule — simplified v2 schema.
 ///
 /// Rules are DATA: the resolver interprets them, nothing about grouping or
 /// matching is hard-coded into playback code. Identity is the text [id].
@@ -75,12 +75,16 @@ class VmRulesTable extends Table {
   /// JSON array of lit [VmTitleTag] names in lighting order.
   TextColumn get titleTags => text().withDefault(const Constant('[]'))();
 
-  /// Player title separator for virtual media (spec §9.2 configurable).
+  /// Player title separator for virtual merge (spec §9.2 configurable).
   /// Default ':' so the player title becomes “目录:序号/总数:原名”.
   TextColumn get playerTitleSeparator =>
       text().withDefault(const Constant(':'))();
 
   // ── State ──
+  /// Use/exclude polarity ([VmRuleUseMode]); independent of [enabled].
+  TextColumn get useMode =>
+      textEnum<VmRuleUseMode>().withDefault(const Constant('use'))();
+
   /// Disabled rules are ignored by the resolver entirely.
   BoolColumn get enabled => boolean().withDefault(const Constant(true))();
 

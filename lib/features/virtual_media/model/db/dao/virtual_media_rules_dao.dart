@@ -1,5 +1,6 @@
 import 'package:drift/drift.dart';
 import 'package:iris/features/virtual_media/model/db/tables/virtual_media_tables.dart';
+import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/models/db/app_database.dart';
 
 part 'virtual_media_rules_dao.g.dart';
@@ -46,6 +47,11 @@ class VirtualMediaRulesDao extends DatabaseAccessor<AppDatabase>
   Future<void> setEnabled(String id, bool enabled) {
     return (update(vmRulesTable)..where((t) => t.id.equals(id)))
         .write(VmRulesTableCompanion(enabled: Value(enabled)));
+  }
+
+  Future<void> setUseMode(String id, VmRuleUseMode useMode) {
+    return (update(vmRulesTable)..where((t) => t.id.equals(id)))
+        .write(VmRulesTableCompanion(useMode: Value(useMode)));
   }
 
   Future<void> setPinned(String id, bool pinned) {

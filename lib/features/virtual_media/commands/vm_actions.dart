@@ -8,6 +8,7 @@ import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
+import 'package:iris/features/virtual_media/rule/vm_dir_use.dart';
 import 'package:iris/features/virtual_media/rule/vm_naming.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
@@ -21,7 +22,7 @@ import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/path_conv.dart';
 import 'package:iris/widgets/dialogs/show_confirm_suppressible_dialog.dart';
 
-/// Entry command for the Virtual Media sheet (tag_play pattern: one function,
+/// Entry command for the Virtual Merge sheet (tag_play pattern: one function,
 /// two doors — player more-menu now, gestures later).
 ///
 /// Gated: when the metadata-driven stack is off the feature does not exist;
@@ -342,12 +343,26 @@ Future<List<VirtualSegment>> loadPreviewLibrarySegments() async {
 Future<ResolvedRules> resolveEnabledRules() async {
   final all = await DbModule.virtualMediaRepo.loadRules();
   final lib = await loadPreviewLibrarySegments();
-  // 简播: a video with a sibling `.llc` never joins a group (same rule the
+  // 虚拟剪播: a video with a sibling `.llc` never joins a group (same rule the
   // playback derivation applies — see vm_fake_cut_exclusions.dart).
   final Set<String> fakeCutExclusions =
       await vmFakeCutExclusionKeys(lib);
+  final enabled = all.where((r) => r.enabled).toList();
+  // Cross-rule exclusion must be resolved ONCE over all enabled rules: a
+  // `notUse` rule removes its folder from a DIFFERENT `use` rule's candidates,
+  // which a per-rule isolated resolve could never see. The preview library is
+  // capped at 50k, so a materialized set is fine here (playback uses the
+  // byte-mask fast path instead).
+  final ruleExcluded = vmRuleExcludedKeys(enabled, lib);
+  final combined = <String>{...fakeCutExclusions, ...ruleExcluded};
   final map = <String, List<VirtualMediaItem>>{};
-  for (final r in all.where((r) => r.enabled)) {
+  for (final r in enabled) {
+    if (r.useMode == VmRuleUseMode.notUse) {
+      // An exclusion rule never produces a virtual item; the manager renders
+      // it with the "excluded" copy instead of a misleading "0 videos".
+      map[r.id] = const [];
+      continue;
+    }
     // The preview reads the WHOLE library, but the boundary freeze is seeded
     // from one scenario's stream — applying it here would drop members outside
     // that scenario, so the preview always re-derives.
@@ -355,7 +370,7 @@ Future<ResolvedRules> resolveEnabledRules() async {
       rules: [r],
       library: lib,
       applyPin: false,
-      excludedMediaKeys: fakeCutExclusions,
+      excludedMediaKeys: combined,
     );
   }
   return ResolvedRules(all, map, libraryCount: lib.length);

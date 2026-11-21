@@ -596,7 +596,7 @@ abstract class AppState with _$AppState {
     @Default(0.30)
     @JsonKey(includeToJson: false, includeFromJson: false)
     double ringDialRingSlotT,
-    /// Virtual media only: the progress ring (block-local, non-chunk ring)
+    /// Virtual Merge only: the progress ring (block-local, non-chunk ring)
     /// clamps its DRAG inside the current file — 0% sticks at the file head,
     /// 100% at the file tail, so a continuous gesture never walks into the
     /// neighbour file. Reversing mid-drag moves back immediately. The chunk
@@ -985,7 +985,7 @@ abstract class AppState with _$AppState {
     @JsonKey(includeToJson: false, includeFromJson: false)
     KeyboardFormGeometry keyboardFormGeometry,
 
-    // ── Virtual media (metadata era, AUX rows `virtualmedia.`) ──────────────
+    // ── Virtual Merge (metadata era, AUX rows `virtualmedia.`) ──────────────
     //
     // Persisted EXCLUSIVELY as `virtualmedia.` AUX rows (JsonKey-excluded).
     // Gate OFF degrades to defaults (direct switch, no hide, white tick).

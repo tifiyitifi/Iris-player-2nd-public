@@ -1,7 +1,7 @@
 /// Alignment of a freshly picked 副音 file against the foreground timeline.
 ///
 /// Alignment always targets the CURRENT REAL single file: the caller passes the
-/// physical foreground window (a Virtual Media merge is undone before the
+/// physical foreground window (a Virtual Merge merge is undone before the
 /// decision), never the merged virtual duration.
 ///
 /// The anchor is a pair `(fgAnchorMs, bgAnchorMs)`: the foreground position that

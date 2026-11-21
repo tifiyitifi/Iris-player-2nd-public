@@ -5,8 +5,10 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
+import 'package:iris/features/virtual_media/rule/vm_dir_use.dart';
 import 'package:iris/features/virtual_media/rule/vm_title_composer.dart';
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
+import 'package:iris/features/virtual_media/view/vm_conflict_dialog.dart';
 import 'package:iris/features/virtual_media/view/vm_info_banner.dart';
 import 'package:iris/l10n/app_localizations.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -180,12 +182,11 @@ class VmRuleEditorFormV2 extends HookWidget {
     debugOnFormBuild?.call();
     final t = getLocalizations(context);
     final r = initial;
-    final name =
-        useTextEditingController(text: r?.name ?? defaultName ?? '');
+    final name = useTextEditingController(text: r?.name ?? defaultName ?? '');
     final description = useTextEditingController(
         text: r?.description ?? defaultDescription ?? '');
-    final matchMode = useState(
-        r?.matchMode ?? defaultMatchMode ?? VmMatchMode.patternDir);
+    final matchMode =
+        useState(r?.matchMode ?? defaultMatchMode ?? VmMatchMode.patternDir);
     final paths = useState<List<String>>(r != null
         ? (r.paths.isNotEmpty ? [...r.paths] : const [])
         : (defaultPaths == null ? const [] : [...defaultPaths!]));
@@ -196,17 +197,18 @@ class VmRuleEditorFormV2 extends HookWidget {
     final boundary = useState(r?.boundary ?? VmBoundaryMode.sameDirOnly);
     final maxMinutes =
         useState(r?.maxDurationMinutes ?? kVmDefaultMaxDurationMinutes);
-    final maxCount =
-        useState(r?.maxItemCount ?? kVmDefaultMaxItemCount);
+    final maxCount = useState(r?.maxItemCount ?? kVmDefaultMaxItemCount);
     final useDuration = useState(r?.useDurationCap ?? true);
     final useCount = useState(r?.useCountCap ?? true);
     final useExcludeOverlong = useState(r?.useExcludeOverlong ?? true);
     final maxSingleMinutes = useState(
         r?.maxSingleDurationMinutes ?? kVmDefaultMaxSingleDurationMinutes);
     final skipSingle = useState(r?.skipSingleSegment ?? true);
-    final titleTags = useState<List<VmTitleTag>>(
-        r != null ? [...r.titleTags] : const [VmTitleTag.dirName, VmTitleTag.seq]);
+    final titleTags = useState<List<VmTitleTag>>(r != null
+        ? [...r.titleTags]
+        : const [VmTitleTag.dirName, VmTitleTag.seq]);
     final enabled = useState(r?.enabled ?? true);
+    final useMode = useState(r?.useMode ?? VmRuleUseMode.use);
     final separator = useState(r?.playerTitleSeparator ?? ':');
 
     Future<void> save() async {
@@ -231,9 +233,8 @@ class VmRuleEditorFormV2 extends HookWidget {
         for (final p in patterns.value)
           if (p.activated && p.text.trim().isNotEmpty) p,
       ];
-      final hasMatcher = specified
-          ? paths.value.isNotEmpty
-          : activePatterns.isNotEmpty;
+      final hasMatcher =
+          specified ? paths.value.isNotEmpty : activePatterns.isNotEmpty;
       if (!hasMatcher) {
         if (!context.mounted) return;
         final t = getLocalizations(context);
@@ -313,8 +314,8 @@ class VmRuleEditorFormV2 extends HookWidget {
         sortField: sortField.value,
         sortDir: sortDir.value,
         boundary: boundary.value,
-        maxDurationMinutes: maxMinutes.value
-            .clamp(1, kVmHardMaxDurationMinutes),
+        maxDurationMinutes:
+            maxMinutes.value.clamp(1, kVmHardMaxDurationMinutes),
         maxItemCount: maxCount.value.clamp(1, kVmHardMaxItemCount),
         useDurationCap: useDuration.value,
         useCountCap: useCount.value,
@@ -323,10 +324,13 @@ class VmRuleEditorFormV2 extends HookWidget {
             maxSingleMinutes.value.clamp(1, kVmHardMaxDurationMinutes),
         skipSingleSegment: skipSingle.value,
         titleTags: titleTags.value,
+        useMode: useMode.value,
         enabled: enabled.value,
         pinned: r?.pinned ?? false,
-        playerTitleSeparator:
-            separator.value.isEmpty ? ':' : separator.value[0],
+        // Keep a multi-character separator verbatim (players honour the whole
+        // string; truncating to its first code unit silently changed the
+        // user's choice).
+        playerTitleSeparator: separator.value.isEmpty ? ':' : separator.value,
       );
       // Structural change warning (spec §2): changing match/sort/boundary/
       // caps/title config may shift chunk boundaries and invalidates
@@ -368,6 +372,7 @@ class VmRuleEditorFormV2 extends HookWidget {
             r.maxSingleDurationMinutes != rule.maxSingleDurationMinutes ||
             r.skipSingleSegment != rule.skipSingleSegment ||
             !tagsEqual(r.titleTags, rule.titleTags) ||
+            r.useMode != rule.useMode ||
             r.playerTitleSeparator != rule.playerTitleSeparator;
         if (structural) {
           if (!context.mounted) return;
@@ -395,6 +400,28 @@ class VmRuleEditorFormV2 extends HookWidget {
           } catch (_) {}
         }
       }
+      // Same-path non-recursive uniqueness: an ENABLED `specifiedDir` rule may
+      // not silently coexist with another enabled one on the same folder. Ask
+      // which one keeps `enabled` before writing (keep-new disables the others).
+      if (rule.enabled && rule.matchMode == VmMatchMode.specifiedDir) {
+        final all = await DbModule.virtualMediaRepo.loadRules();
+        final caseInsensitive = useStorageStore()
+            .state
+            .storages
+            .any((s) => s.basePath.any(pathRidesCaseInsensitiveFs));
+        final conflicts =
+            vmDirRuleConflicts(rule, all, caseInsensitive: caseInsensitive);
+        if (conflicts.isNotEmpty) {
+          if (!context.mounted) return;
+          final choice = await showVmDirConflictDialog(context, conflicts);
+          if (choice == null || choice == VmConflictChoice.keepExisting) {
+            return;
+          }
+          for (final c in conflicts) {
+            await DbModule.virtualMediaRepo.setRuleEnabled(c.id, false);
+          }
+        }
+      }
       await DbModule.virtualMediaRepo.saveRule(rule);
       if (context.mounted) Navigator.of(context).pop(true);
     }
@@ -409,7 +436,8 @@ class VmRuleEditorFormV2 extends HookWidget {
           child: Row(
             children: [
               Expanded(
-                child: Text(initial == null ? t.vm_editor_new : t.vm_editor_edit,
+                child: Text(
+                    initial == null ? t.vm_editor_new : t.vm_editor_edit,
                     style: Theme.of(context).textTheme.titleMedium),
               ),
               IconButton(
@@ -422,8 +450,7 @@ class VmRuleEditorFormV2 extends HookWidget {
         const Divider(height: 1),
         Flexible(
           child: SingleChildScrollView(
-            keyboardDismissBehavior:
-                ScrollViewKeyboardDismissBehavior.onDrag,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: LayoutBuilder(builder: (context, constraints) {
               final isNarrow = constraints.maxWidth < 420;
@@ -434,12 +461,11 @@ class VmRuleEditorFormV2 extends HookWidget {
                   _v2Label(context, t.vm_editor_basic),
                   TextField(
                       controller: name,
-                      decoration:
-                          InputDecoration(labelText: t.vm_editor_name)),
+                      decoration: InputDecoration(labelText: t.vm_editor_name)),
                   TextField(
                       controller: description,
-                      decoration: InputDecoration(
-                          labelText: t.vm_editor_description)),
+                      decoration:
+                          InputDecoration(labelText: t.vm_editor_description)),
                   VmInfoBanner(
                     id: 'editor.match',
                     text: matchMode.value == VmMatchMode.patternDir ||
@@ -451,8 +477,8 @@ class VmRuleEditorFormV2 extends HookWidget {
                   DropdownButtonFormField<VmMatchMode>(
                     isExpanded: true,
                     initialValue: matchMode.value,
-                    decoration:
-                        InputDecoration(labelText: t.vm_editor_match_mode_label),
+                    decoration: InputDecoration(
+                        labelText: t.vm_editor_match_mode_label),
                     items: [
                       DropdownMenuItem(
                           value: VmMatchMode.specifiedDir,
@@ -470,6 +496,22 @@ class VmRuleEditorFormV2 extends HookWidget {
                     onChanged: (v) => matchMode.value = v!,
                   ),
                   const SizedBox(height: 8),
+                  DropdownButtonFormField<VmRuleUseMode>(
+                    isExpanded: true,
+                    initialValue: useMode.value,
+                    decoration:
+                        InputDecoration(labelText: t.vm_editor_use_mode),
+                    items: [
+                      DropdownMenuItem(
+                          value: VmRuleUseMode.use,
+                          child: Text(t.vm_editor_use_mode_use)),
+                      DropdownMenuItem(
+                          value: VmRuleUseMode.notUse,
+                          child: Text(t.vm_editor_use_mode_not_use)),
+                    ],
+                    onChanged: (v) => useMode.value = v!,
+                  ),
+                  const SizedBox(height: 8),
                   if (matchMode.value == VmMatchMode.specifiedDir ||
                       matchMode.value == VmMatchMode.specifiedDirRecursive)
                     _V2SpecifiedPathsSection(paths: paths)
@@ -481,8 +523,8 @@ class VmRuleEditorFormV2 extends HookWidget {
                       DropdownButtonFormField<VmSortField>(
                         isExpanded: true,
                         initialValue: sortField.value,
-                        decoration: InputDecoration(
-                            labelText: t.vm_editor_sort_field),
+                        decoration:
+                            InputDecoration(labelText: t.vm_editor_sort_field),
                         items: [
                           DropdownMenuItem(
                               value: VmSortField.fileName,
@@ -621,13 +663,13 @@ class VmRuleEditorFormV2 extends HookWidget {
                   ),
                   _v2Label(context, t.vm_editor_title_tags),
                   VmInfoBanner(
-                      id: 'editor.title',
-                      text: t.vm_editor_title_banner),
+                      id: 'editor.title', text: t.vm_editor_title_banner),
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      color:
+                          Theme.of(context).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
@@ -677,8 +719,7 @@ class VmRuleEditorFormV2 extends HookWidget {
                       helperText: t.vm_editor_separator_helper,
                     ),
                     maxLength: 1,
-                    onChanged: (v) =>
-                        separator.value = v.isEmpty ? ':' : v[0],
+                    onChanged: (v) => separator.value = v.isEmpty ? ':' : v[0],
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
@@ -707,8 +748,8 @@ class VmRuleEditorFormV2 extends HookWidget {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child:
-                    FilledButton(onPressed: save, child: Text(t.vm_editor_save)),
+                child: FilledButton(
+                    onPressed: save, child: Text(t.vm_editor_save)),
               ),
             ],
           ),
@@ -909,8 +950,7 @@ class _V2PatternEntriesSection extends HookWidget {
                       child: DropdownButtonFormField<VmPatternKind>(
                         isExpanded: true,
                         initialValue: patterns.value[i].kind,
-                        decoration:
-                            const InputDecoration(isDense: true),
+                        decoration: const InputDecoration(isDense: true),
                         items: [
                           DropdownMenuItem(
                               value: VmPatternKind.prefix,
@@ -925,8 +965,8 @@ class _V2PatternEntriesSection extends HookWidget {
                               value: VmPatternKind.regex,
                               child: Text(t.vm_editor_pattern_regex)),
                         ],
-                        onChanged: (v) => replaceAt(
-                            i, patterns.value[i].copyWith(kind: v!)),
+                        onChanged: (v) =>
+                            replaceAt(i, patterns.value[i].copyWith(kind: v!)),
                       ),
                     ),
                     IconButton(
@@ -945,16 +985,15 @@ class _V2PatternEntriesSection extends HookWidget {
                       ),
                       onPressed: () => replaceAt(
                           i,
-                          patterns.value[i].copyWith(
-                              pinned: !patterns.value[i].pinned)),
+                          patterns.value[i]
+                              .copyWith(pinned: !patterns.value[i].pinned)),
                     ),
                     IconButton(
                       visualDensity: VisualDensity.compact,
                       tooltip: t.vm_editor_tooltip_remove,
                       icon: const Icon(Icons.close, size: 18),
                       onPressed: () =>
-                          patterns.value = [...patterns.value]
-                            ..removeAt(i),
+                          patterns.value = [...patterns.value]..removeAt(i),
                     ),
                   ]),
                   Padding(
@@ -964,8 +1003,7 @@ class _V2PatternEntriesSection extends HookWidget {
                       decoration: InputDecoration(
                           hintText: t.vm_editor_pattern_hint, isDense: true),
                       onChanged: (t) {
-                        patterns.value[i] =
-                            patterns.value[i].copyWith(text: t);
+                        patterns.value[i] = patterns.value[i].copyWith(text: t);
                       },
                     ),
                   ),

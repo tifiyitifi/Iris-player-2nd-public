@@ -1,0 +1,4 @@
+#!/bin/sh
+# Local privacy gate: a conflict-free merge commits by itself, and git runs
+# pre-commit only for `git commit`, so the staged check needs this hook too.
+IRIS_GATE_MODE=staged . scripts/local-gate.sh

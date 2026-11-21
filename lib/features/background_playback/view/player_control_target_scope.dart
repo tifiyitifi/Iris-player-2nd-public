@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/engine/background_playback_engine.dart';
 import 'package:iris/features/background_playback/store/use_background_playback_store.dart';
 import 'package:iris/models/player.dart';
+import 'package:iris/store/use_app_store.dart';
 import 'package:provider/provider.dart';
 
 /// True when the shared control surface is currently retargeted to 副音.
@@ -12,6 +15,24 @@ import 'package:provider/provider.dart';
 /// flag — so deactivation can never leave the transport driving a dead bg.
 bool isBackgroundControlTarget(BuildContext context) {
   return useBackgroundPlaybackStore().state.bgOwnsControls;
+}
+
+/// Publishes one user transport command (play/pause) on the runtime the shared
+/// controls actually drive.
+///
+/// The widgets read [MediaPlayer] from the provider, which
+/// [BackgroundTargetMediaScope] retargets to the 副音 engine. Writing
+/// `useAppStore().updateAutoPlay` there was wrong twice over (ADR 0017): it left
+/// `bgAutoPlay` stale — the next 下一首 re-opened the file with `autoplay: true`,
+/// so 副音 resumed by itself after a pause — and it cleared a FOREGROUND
+/// preference the command never touched. Every transport surface that can run
+/// inside the override must go through this one function.
+void setActiveTransportFlag(BuildContext context, {required bool playing}) {
+  if (isBackgroundControlTarget(context)) {
+    useBackgroundPlaybackStore().setPlaying(playing);
+    return;
+  }
+  unawaited(useAppStore().updateAutoPlay(playing));
 }
 
 /// Resolves the player the shared controls should drive right now.

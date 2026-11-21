@@ -105,7 +105,7 @@ void main() {
         () async {
       await store.enableWithQueue(files);
       expect(store.state.bgAutoPlay, isTrue);
-      // The gate stays open: 简播 pauses the TRANSPORT, it does not stop 副音.
+      // The gate stays open: 虚拟剪播 pauses the TRANSPORT, it does not stop 副音.
       store.suspendForFakeCut();
       expect(store.state.bgAutoPlay, isFalse);
       expect(store.state.gateOpen, isTrue);
@@ -274,6 +274,29 @@ void main() {
       expect(store.state.bgAutoPlay, isFalse);
     });
 
+    test('a repeat-none step skips a colliding neighbour instead of stalling',
+        () async {
+      // files = [a, b, c] and b is the foreground file. The double-play guard
+      // rejects at most ONE entry, so `next` from a must reach c — the wrap
+      // modes already try two candidates, and a collision is not a queue end
+      // (GATE-5). Reading only the immediate neighbour made the button dead.
+      store.set(store.state.copyWith(
+        enabled: true,
+        shuffle: false,
+        queue: files,
+        currentIndex: 0,
+        bgRepeat: Repeat.none,
+        bgAutoPlay: true,
+      ));
+      final moved = await store.step(
+          forward: true, excludedKey: backgroundMediaKey(_f('b')));
+      expect(moved, isTrue);
+      expect(backgroundMediaKey(store.currentFile!),
+          backgroundMediaKey(_f('c')));
+      expect(store.state.bgQueueEnded, isFalse,
+          reason: 'a collision is not the end of the queue');
+    });
+
     test('toggleShuffle flips the flag and keeps the current file', () async {
       store.set(store.state.copyWith(
         enabled: true,
@@ -328,52 +351,6 @@ void main() {
       await store.toggleFgMute();
       expect(store.state.fgMuted, isFalse);
       expect(store.state.bgMuted, isTrue);
-    });
-
-    test('advanceOnCompleted replays a single-track queue in place', () async {
-      final solo = [_f('a')];
-      store.set(store.state.copyWith(
-        enabled: true,
-        shuffle: false,
-        bgRepeat: Repeat.all,
-        queue: solo,
-        currentIndex: 0,
-        bgAutoPlay: true,
-      ));
-      final replay = await store.advanceOnCompleted();
-      expect(store.state.currentIndex, 0);
-      expect(store.state.bgAutoPlay, isTrue);
-      expect(replay, isTrue, reason: 'single-track repeat-all must loop in place');
-    });
-
-    test('advanceOnCompleted steps to a different file in a multi-track queue',
-        () async {
-      store.set(store.state.copyWith(
-        enabled: true,
-        shuffle: false,
-        bgRepeat: Repeat.all,
-        queue: files,
-        currentIndex: 0,
-        bgAutoPlay: true,
-      ));
-      final replay = await store.advanceOnCompleted();
-      expect(replay, isFalse, reason: 'multi-track advance opens a new file');
-      expect(store.state.currentIndex, 1);
-    });
-
-    test('advanceOnCompleted stops (no replay) at repeat-none boundary', () async {
-      final solo = [_f('a')];
-      store.set(store.state.copyWith(
-        enabled: true,
-        shuffle: false,
-        bgRepeat: Repeat.none,
-        queue: solo,
-        currentIndex: 0,
-        bgAutoPlay: true,
-      ));
-      final replay = await store.advanceOnCompleted();
-      expect(replay, isFalse);
-      expect(store.state.bgAutoPlay, isFalse);
     });
 
     test('cycleBgRepeat is its own track and leaves the rest of state intact',
@@ -496,17 +473,27 @@ void main() {
       expect(store.state.bgStepSeq, before + 1);
     });
 
-    test('repeat-one completion bumps bgStepSeq (a replay is a step)', () async {
+    test('a row tap re-activates a run that stopped for good', () async {
+      // stopRestoreFg parks the run as terminal (bgExhausted). A deliberate row
+      // pick IS the re-activation: without clearing the latch the engine plays
+      // muted (the duck gate reads the pair as inactive) and the mirrors stay
+      // stood down until some later alignment lands one.
       store.set(store.state.copyWith(
         enabled: true,
         shuffle: false,
-        bgRepeat: Repeat.one,
         queue: files,
         currentIndex: 0,
+        bgAutoPlay: true,
       ));
-      final before = store.state.bgStepSeq;
-      await store.advanceOnCompleted();
-      expect(store.state.bgStepSeq, before + 1);
+      store.markBgExhausted();
+      expect(store.state.bgExhausted, isTrue);
+
+      await store.jumpTo(2);
+
+      expect(store.state.bgExhausted, isFalse,
+          reason: 'an explicit row pick re-activates the pair');
+      expect(store.state.bgAutoPlay, isTrue);
+      expect(store.state.currentIndex, 2);
     });
 
     test('setAlignAutoPauseRemainSec clamps into 1..120 (never off)', () async {

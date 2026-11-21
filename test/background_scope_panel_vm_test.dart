@@ -13,7 +13,7 @@ import 'package:iris/store/use_app_store.dart';
 import 'package:provider/provider.dart';
 import 'package:zustand/zustand.dart';
 
-/// 作用范围 card content: the Virtual Media rules it carries.
+/// 作用范围 card content: the Virtual Merge rules it carries.
 ///
 /// Kept in its own file (separate test isolate) from the pure/store VM rule
 /// tests — a store-writing test followed by a widget test in the SAME file

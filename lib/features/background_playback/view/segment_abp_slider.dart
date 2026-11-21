@@ -63,31 +63,47 @@ const double kSegmentLabelWidth = 52;
 const double kSegmentRowPadding = 10;
 const double kSegmentTrackRowHeight = 30;
 const double kSegmentGapAfterFg = 2;
-const double kSegmentBgNameRowHeight = 20;
-const double kSegmentGapAfterBgName = 2;
 
 /// Vertical centre of the fg track inside the editor's timeline section.
 const double kSegmentFgTrackCenter =
     kSegmentTrackRowHeight / 2;
 
 /// Vertical centre of the bg track inside the editor's timeline section.
+///
+/// The section's column is `fg row → gap → bg row` ONLY (`_Timeline._build`).
+/// Budgeting a bg file-NAME row that the layout never emits put this centre (and
+/// the link painter drawing on it) 22px BELOW the bg track, with a blank strip
+/// under the section.
 const double kSegmentBgTrackCenter = kSegmentTrackRowHeight +
     kSegmentGapAfterFg +
-    kSegmentBgNameRowHeight +
-    kSegmentGapAfterBgName +
     kSegmentTrackRowHeight / 2;
 
-/// Total height of the two-axis section (both rows + the bg filename row).
+/// Total height of the two-axis section (both rows + the gap between them).
 const double kSegmentTimelineHeight = kSegmentTrackRowHeight +
     kSegmentGapAfterFg +
-    kSegmentBgNameRowHeight +
-    kSegmentGapAfterBgName +
     kSegmentTrackRowHeight;
 
 /// A signed readout for the A handle: the bg time skipped before A
 /// (`-mm:ss`), or empty when bg starts exactly at A.
 String segmentLeadReadout(int leadInMs) =>
     leadInMs <= 0 ? '' : '-${formatDurationHms(Duration(milliseconds: leadInMs))}';
+
+/// The foreground position the bg row's slider maps [value] to, or null when
+/// that row has no axis at all.
+///
+/// With no 副音 file loaded ([bgDurMs] <= 0) the row still paints a live
+/// [Slider] over a `0..1` track; dragging it projected `value - bgOffsetMs`
+/// onto the foreground axis, so TOUCHING the empty row yanked the video
+/// playhead. Null means "not a gesture": the row must be inert.
+int? bgRowDragTargetMs({
+  required double value,
+  required int bgDurMs,
+  required int bgOffsetMs,
+  required int fgDurMs,
+}) {
+  if (bgDurMs <= 0 || fgDurMs <= 0) return null;
+  return (value.round() - bgOffsetMs).clamp(0, fgDurMs);
+}
 
 /// The readout for the B handle: the UNUSED bg tail after B, always printed
 /// with a `-` (「丢失了多少 bg 时间」). Empty when bg ends exactly at B. A raw

@@ -7,7 +7,7 @@ import 'package:iris/features/fake_cut/playback/fake_cut_session.dart';
 import 'package:iris/models/file.dart';
 import 'package:path/path.dart' as p;
 
-/// Resolving the 简播 session for an OPEN is total: a project that cannot be
+/// Resolving the 虚拟剪播 session for an OPEN is total: a project that cannot be
 /// read, a source that moved, an unwritable cache — every one of them means
 /// "play the untouched source", never an exception out of `init`.
 ///

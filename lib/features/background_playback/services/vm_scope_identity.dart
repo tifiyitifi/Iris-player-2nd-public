@@ -1,4 +1,4 @@
-/// Effective 作用范围 identity for a Virtual Media foreground.
+/// Effective 作用范围 identity for a Virtual Merge foreground.
 ///
 /// The 作用范围 observers compare an opaque "media key" against the run's
 /// anchor. For a VM session the play queue holds the PHYSICAL block currently

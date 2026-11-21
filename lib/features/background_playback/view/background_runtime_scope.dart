@@ -75,14 +75,14 @@ class BackgroundRuntimeScope extends HookWidget {
     final anchorKey = bg.select(context, (s) => s.scopeAnchorKey);
     final offMediaKeys = bg.select(context, (s) => s.bgOffMediaKeys);
     final gateOpen = bg.select(context, (s) => s.gateOpen);
-    // 简播: while the foreground plays a fake cut, 副音 stands down for THAT
+    // 虚拟剪播: while the foreground plays a virtual cut, 副音 stands down for THAT
     // media only (see `fake_cut_background_scope.dart`). Selected here — not
     // read inside the effects — so the observer rebuilds the moment the cut
     // actually starts or stops. It is `playingKey`, not `activePaths`: a plan
     // that is only REMEMBERED (or whose EDL never opened) must not suspend 副音.
     final fakeCutPlayingKey = useFakeCutStore()
         .select(context, (FakeCutStoreState s) => s.playingKey);
-    // A Virtual Media session owns its own timeline: its segments are fed as
+    // A Virtual Merge session owns its own timeline: its segments are fed as
     // ordinary single files and never open an EDL (`use_media_kit_player`
     // skips the cut while the controller is active), so a member that merely
     // HAS a plan is not playing one.
@@ -188,7 +188,7 @@ class BackgroundRuntimeScope extends HookWidget {
     );
     // The SINGLE physical foreground window (the VM segment, or the whole file
     // when not virtualized). The mirror clamps a 仅当前 bg-master target into
-    // it so it can never land on another Virtual Media segment.
+    // it so it can never land on another Virtual Merge segment.
     final fgWindow = useForegroundWindow(context);
 
     // ── Saved 副音 pairing of the foreground file (smart scope) ──
@@ -229,7 +229,7 @@ class BackgroundRuntimeScope extends HookWidget {
 
     // ── 1. 作用范围: pause/resume/auto-start on a foreground media switch ──
     //
-    // 简播 is part of the same decision: while the foreground plays a fake cut
+    // 虚拟剪播 is part of the same decision: while the foreground plays a virtual cut
     // the pair is not a pair, so 副音 pauses for THAT media under every scope
     // and resumes when the foreground leaves it. The suspension is remembered
     // in the store, so only a run that was actually sounding comes back.
@@ -315,7 +315,7 @@ class BackgroundRuntimeScope extends HookWidget {
     // ── 1b. 跨视频: a real LIST-ITEM switch may start a new 副音 track ──
     //
     // `bgItemSwitch` (default newBg). Only the NON-VM case is handled here: an
-    // active Virtual Media session owns its own block/video transitions in the
+    // active Virtual Merge session owns its own block/video transitions in the
     // VM link (which can tell a segment switch from a new virtual item).
     //
     // 作用范围 wins: a scope transition (pause/resume/start, including leaving
@@ -501,6 +501,19 @@ class BackgroundRuntimeScope extends HookWidget {
         transportRetry.value = null;
         return null;
       }
+      // The background MASTER reached its natural end. Its `isPlaying=false` is
+      // a completed file, not a user pause — the completion continuation owns
+      // the pair and will re-open/replay it asynchronously. Mirroring this
+      // ended pause paused the video, and because the continuation's landing
+      // did not always re-issue a foreground play, the pair stayed frozen. Stand
+      // down until the engine actually resumes (`completionPending` clears on
+      // the next open / real play / stop).
+      if (engine.completionPending) {
+        transportRetry.value?.cancel();
+        transportRetry.value = null;
+        _mirrorLog.d('transport hold: bg master ended (continuation owns it)');
+        return null;
+      }
       // While a scrub drag owns the foreground, only the DRAG's pause travels:
       // the reverse direction never runs, so a bg-master session cannot drive
       // the foreground back to playing under the user's finger (which used to
@@ -621,6 +634,7 @@ class BackgroundRuntimeScope extends HookWidget {
       scopeApplied,
       fgPlaying,
       engine.isPlaying,
+      engine.completionPending,
       engine.isInitializing,
       isScrubbing,
     ]);
@@ -633,12 +647,19 @@ class BackgroundRuntimeScope extends HookWidget {
     // position (a virtual continuous track).
     //
     // Direction follows the control target: while the panel drives the
-    // FOREGROUND, fg → bg (feeding a 副音 position back into a Virtual Media
+    // FOREGROUND, fg → bg (feeding a 副音 position back into a Virtual Merge
     // foreground is what once made it jump to an earlier segment, "闪回第一个
     // 块"). While the panel drives 副音, bg → fg instead, so operating the
     // Sub Audio seek visibly moves the video too.
     final queue = bg.select(context, (s) => s.queue);
     final currentIndex = bg.select(context, (s) => s.currentIndex);
+    // A finished probe pass may have written durations back to `media_nodes`.
+    // That write does not change the QUEUE, so keying the read on the queue
+    // alone kept the understated timeline (and `fullyKnown` / the prefix math)
+    // for the rest of the session: cross-file rolls were skipped and every
+    // continuation restarted at the file head.
+    final bgDurationResolvedSeq =
+        bg.select(context, (s) => s.bgDurationResolvedSeq);
 
     final durationsFuture = useFuture(
       useMemoized(
@@ -655,7 +676,7 @@ class BackgroundRuntimeScope extends HookWidget {
             return <int>[for (var i = 0; i < queue.length; i++) 0];
           }
         },
-        [queue],
+        [queue, bgDurationResolvedSeq],
       ),
     );
 
@@ -1879,7 +1900,7 @@ class BackgroundRuntimeScope extends HookWidget {
       alignVirtualOffset,
     ]);
 
-    // A Virtual Media block carrying a SAVED mapping outranks the VM scope rule
+    // A Virtual Merge block carrying a SAVED mapping outranks the VM scope rule
     // ("任何实际视频保存的规则映射大于这个规则"): the VM link bumps this when
     // such a block is LEFT, so the following blocks restart the alignment chain
     // and re-align from 00:00 instead of chaining onto the mapped block.

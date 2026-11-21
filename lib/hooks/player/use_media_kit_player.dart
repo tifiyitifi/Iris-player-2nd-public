@@ -19,6 +19,7 @@ import 'package:iris/features/virtual_media/interaction/controller/virtual_seek_
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
 import 'package:iris/hooks/player/live_progress_attribution.dart';
 import 'package:iris/hooks/player/media_info_writeback.dart';
@@ -218,14 +219,14 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
           : playQueue[currentPlayIndex].file,
       [playQueue, currentPlayIndex]);
 
-  // 简播: the LosslessCut plan this file has activated. `revision` is bumped ONLY
+  // 虚拟剪播: the LosslessCut plan this file has activated. `revision` is bumped ONLY
   // by an explicit activation/deactivation, so a background scan or a lazily
   // materialized plan can never reopen the media.
   final FakeCutStore fakeCutStore = useFakeCutStore();
   final int fakeCutRevision =
       fakeCutStore.select(context, (FakeCutStoreState s) => s.revision);
 
-  /// The 简播 session THIS media was opened with (null = the plain source file).
+  /// The 虚拟剪播 session THIS media was opened with (null = the plain source file).
   ///
   /// A SNAPSHOT, never a lookup: the cleanup that saves progress while a plan
   /// switch is reopening the media must map the leaving position with the
@@ -403,7 +404,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     );
   }
 
-  // ── 简播 (fake cut) coordinate helpers ─────────────────────────────
+  // ── 虚拟剪播 (virtual cut) coordinate helpers ─────────────────────────────
   //
   // While an EDL is open, mpv reports the VIRTUAL (cut) timeline in `position`
   // and `duration`, which is exactly what every existing seek / step / AB-loop /
@@ -425,7 +426,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   /// Duration handed to the progress funnel's head guard.
   ///
   /// The EDL's duration is the CUT length and is never a real media duration, so
-  /// a 简播 write carries the container duration (or null when it was never
+  /// a 虚拟剪播 write carries the container duration (or null when it was never
   /// probed) and leaves `media_nodes.duration_ms` untouched.
   int? progressDurationMs(int fakeDurationMs) {
     final FakeCutSession? session = fakeCutSession.value;
@@ -477,7 +478,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     await player.seek(Duration(milliseconds: target));
   }
 
-  /// The URI to hand mpv for an external subtitle: re-timed for 简播.
+  /// The URI to hand mpv for an external subtitle: re-timed for 虚拟剪播.
   ///
   /// Returns [uri] unchanged without a session, and null when the subtitle
   /// cannot be re-timed — in which case the reason has already been shown and
@@ -521,7 +522,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       return;
     }
     isInitializing.value = true;
-    // 简播: the session is cleared BEFORE the first await. Everything below may
+    // 虚拟剪播: the session is cleared BEFORE the first await. Everything below may
     // take a while (directory listing, WebDAV target resolution, EDL write) or
     // bail out early (an unresolved WebDAV host returns before the open), and
     // the progress writers in between (1 s live tick, file-change cleanup,
@@ -569,7 +570,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         playUri = target.uri!;
       }
 
-      // 简播: build the EDL BEFORE the open so the media identity is right on
+      // 虚拟剪播: build the EDL BEFORE the open so the media identity is right on
       // the first try (no source open followed by an EDL reopen). VM owns its
       // own virtual timeline, so a fake-cut session is never stacked on it.
       //
@@ -704,7 +705,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
           areaKeyLog.i('Save progress: ${file.name}, position: $sanePosition, duration: ${player.state.duration}');
           persistPlaybackProgress(
             file: file,
-            // 简播: persist the SOURCE position, never the virtual one.
+            // 虚拟剪播: persist the SOURCE position, never the virtual one.
             position: Duration(milliseconds: toSourceMs(posMs)),
             durationMs: progressDurationMs(durMs),
             writeTag: 'cleanup',
@@ -823,7 +824,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       // position (and a resume-ahead tick could be persisted from the store
       // by another surface). mpv's single media context has no such sample.
       if (!positionLock.value.blocksWrites) {
-        // 简播: progress surfaces (media-library chips, live progress) always
+        // 虚拟剪播: progress surfaces (media-library chips, live progress) always
         // show the SOURCE axis, so a cut's virtual position is projected back.
         usePlaybackProgressStore().update(
           fileId,
@@ -898,7 +899,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   useEffect(() {
     final sub = errorStream.listen((e) {
       diagLog.w('player.error: $e');
-      // Virtual Media: a broken segment is skipped, session survives.
+      // Virtual Merge: a broken segment is skipped, session survives.
       if (VirtualMediaController.instance.isActive) {
         VirtualMediaController.instance.handleSegmentError();
       }
@@ -1014,7 +1015,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         } else {
           final dbPos = await readPlaybackProgress(file);
           final budget = await readHistoryRestoreBudget(file);
-          // 简播: the resume decision is made on the SOURCE axis — the stored
+          // 虚拟剪播: the resume decision is made on the SOURCE axis — the stored
           // positions are source milliseconds. The end-safety clamp is disabled
           // (duration 0 = unknown) because the cut mapping already resolves an
           // out-of-range position (removed gap → next range, past the end →
@@ -1099,7 +1100,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
           mediaStreamUrl: mediaStream.url ?? '',
         );
         areaKeyLog.i('External subtitle uri: $uri');
-        // 简播: an external subtitle is an INDEPENDENT demuxer that mpv does not
+        // 虚拟剪播: an external subtitle is an INDEPENDENT demuxer that mpv does not
         // shift, so it must be re-timed onto the cut timeline first.
         final String? loadUri = await resolveSubtitleUriForCut(uri, sub.name);
         if (loadUri == null) {
@@ -1157,7 +1158,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     final vpW = vp?.w ?? 0;
     final vpH = vp?.h ?? 0;
     final gate = mediaInfoGate.value;
-    // 简播: `duration` is the CUT length. Writing it to media_nodes.duration_ms
+    // 虚拟剪播: `duration` is the CUT length. Writing it to media_nodes.duration_ms
     // would poison every duration sort/size estimate, so the duration backfill
     // is skipped entirely while an EDL is open (dimensions are still the real
     // video's and stay writable).
@@ -1317,7 +1318,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       );
     }
     try {
-      // Virtual Media session: segment end never reaches Context.next()
+      // Virtual Merge session: segment end never reaches Context.next()
       // (spec §9.1). Repeat-one stays on the backend loop by design.
       final int? vmSegmentBefore = currentVmSegmentIndex();
       if (await VirtualMediaController.instance.maybeHandleCompleted()) {
@@ -1344,7 +1345,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         // suppress every future resume (skip-resume branch).
         persistPlaybackProgress(
           file: file,
-          // 简播: persist where the cut ended on the SOURCE axis, and never
+          // 虚拟剪播: persist where the cut ended on the SOURCE axis, and never
           // flag the source as finished — the cut may cover only part of it
           // (the previous flag is preserved, hence `completed: null`).
           position: Duration(milliseconds: toSourceMs(rawPosMs)),
@@ -1604,7 +1605,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     final bool onCut = isCutActive();
     unawaited(persistPlaybackProgress(
       file: w.file,
-      // 简播: the seek target lives on the virtual axis; persist its SOURCE
+      // 虚拟剪播: the seek target lives on the virtual axis; persist its SOURCE
       // projection. The payload itself stays virtual so the burst dedupe keeps
       // comparing one coordinate system.
       position: Duration(milliseconds: toSourceMs(w.position.inMilliseconds)),
@@ -1745,7 +1746,7 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     // jump re-anchors playback and must drop the step bookkeeping so it cannot
     // leak into the NEXT press. [resetStepBurst] clears the OSD target.
     if (src != 'step') resetStepBurst();
-    // Virtual Media session: dragging the scrubber produces virtual
+    // Virtual Merge session: dragging the scrubber produces virtual
     // positions; decompose onto the physical segment before seeking (spec
     // §9.3). Cross-segment targets open WITH the intra-segment offset
     // (pendingSeekMs handoff) instead of flashing 0% first — unless the
@@ -2174,8 +2175,12 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     }
   }
 
-  // Virtual Media: expose the unified timeline to the entire UI (spec §4.2).
+  // Virtual Merge: expose the unified timeline to the entire UI (spec §4.2).
   final vmCtrlMk = VirtualMediaController.instance;
+  // Subscribe to the session itself: adoption/exit can happen while the player
+  // is paused, when no position tick would otherwise rebuild this hook. Only a
+  // scopeKey change rebuilds, so ticks stay free.
+  useVmPlaybackStore().select(context, (s) => s.item?.scopeKey);
   final isVmMk = vmCtrlMk.isActive;
   // Stale-session self-heal: a store item that is NOT the active session
   // means playback moved to a normal file without the VM stop/step paths

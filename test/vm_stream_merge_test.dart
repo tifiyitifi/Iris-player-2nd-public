@@ -3,6 +3,7 @@ import 'package:iris/features/media_library/model/enum/basic_enum.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/model/domain/effective_playback_item.dart';
 import 'package:iris/features/scenario_playback/model/domain/playback_occurrence_id.dart';
+import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/resolver/vm_overlay.dart';
@@ -302,5 +303,53 @@ void main() {
       l10n: AppLocalizationsEn(),
     );
     expect(en.inOrder.first.displayName, contains('Root directory'));
+  });
+
+  test('a valid group keeps its file playable when another rule fails', () {
+    // R1 (non-recursive) covers j,k only — all known -> valid.
+    // R2 (recursive) also pulls Sub/l, whose duration is unknown -> fails.
+    // k is therefore in one valid and one failed group. The failed group must
+    // not mark k as failed, or the overlay shows a merged row the planner
+    // refuses to start.
+    final stream = [
+      streamItem('Shorts/j.mp4', durationMs: 60000),
+      streamItem('Shorts/k.mp4', durationMs: 60000),
+      streamItem('Shorts/Sub/l.mp4', durationMs: null),
+    ];
+    final groups = resolveGroupsForStream(stream, [
+      rule(
+        id: 'r1',
+        matchMode: VmMatchMode.specifiedDir,
+        paths: const ['Shorts'],
+        maxItemCount: 100,
+      ),
+      rule(
+        id: 'r2',
+        matchMode: VmMatchMode.specifiedDirRecursive,
+        paths: const ['Shorts'],
+        maxItemCount: 100,
+      ),
+    ]);
+
+    expect(groups.byKey.keys,
+        containsAll(['st1:Shorts/j.mp4', 'st1:Shorts/k.mp4']));
+    expect(groups.failByKey.containsKey('st1:Shorts/j.mp4'), isFalse);
+    expect(groups.failByKey.containsKey('st1:Shorts/k.mp4'), isFalse,
+        reason: 'a valid overlapping group owns this file');
+    expect(groups.failByKey.containsKey('st1:Shorts/Sub/l.mp4'), isTrue);
+  });
+
+  test('no-match report tolerates an empty rule set', () {
+    const seg = VirtualSegment(
+      mediaKey: 'st1:Shorts/1.mp4',
+      storageId: 'st1',
+      path: ['Shorts', '1.mp4'],
+      name: '1.mp4',
+      parentPath: 'Shorts',
+    );
+    expect(
+      () => vmNoMatchReport(rules: const [], streamOrdered: const [seg]),
+      returnsNormally,
+    );
   });
 }

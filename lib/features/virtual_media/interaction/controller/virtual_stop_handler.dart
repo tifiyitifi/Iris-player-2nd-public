@@ -1,6 +1,6 @@
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 
-/// Stop semantics for virtual media (§2).
+/// Stop semantics for virtual merge (§2).
 ///
 /// Single implementation: [VirtualMediaController.stopToFirst] owns clearing
 /// virtual progress + anchor + first-segment pre-write + landing on segment 0

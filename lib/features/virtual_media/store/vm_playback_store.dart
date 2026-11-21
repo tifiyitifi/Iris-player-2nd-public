@@ -4,7 +4,7 @@ import 'package:flutter_zustand/flutter_zustand.dart';
 
 part 'vm_playback_store.freezed.dart';
 
-/// Reactive snapshot of an active Virtual Media playback session.
+/// Reactive snapshot of an active Virtual Merge playback session.
 ///
 /// Pure presentation/coordination state — the resume ANCHOR lives in the
 /// database (`virtual_media_states`), never here.

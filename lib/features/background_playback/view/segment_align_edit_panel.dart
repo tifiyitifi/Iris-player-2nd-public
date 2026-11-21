@@ -75,7 +75,7 @@ const bool kTransportDebugLogs = false;
 ///
 /// VM: the editor edits ONE PHYSICAL foreground file against ONE real 副音 file.
 /// Entering installs the foreground as the single item of a transient workspace
-/// (see `ApbEditContext`), so a Virtual Media merge is not in play; every
+/// (see `ApbEditContext`), so a Virtual Merge merge is not in play; every
 /// position/duration here is the VM-undone physical window
 /// (`ForegroundWindow`), never the merged virtual timeline. A VM segment is a
 /// separate mapping target, not part of one virtual axis.
@@ -1469,15 +1469,27 @@ class _Timeline extends HookWidget {
                                           ? 1.0
                                           : bgDurMs.toDouble(),
                                       // Dragging bg = linked seek: project the
-                                      // bg target back onto the fg axis.
-                                      onChangeStart: (_) => onPauseFg(),
-                                      onChanged: (v) {
-                                        if (span == null) return;
-                                        onSeekFg(
-                                          (v.round() - span.bgOffsetMs)
-                                              .clamp(0, fgDurMs),
-                                        );
-                                      },
+                                      // bg target back onto the fg axis. With
+                                      // no bg axis the row is INERT — a live
+                                      // slider over an empty track dragged the
+                                      // video playhead to 0.
+                                      onChangeStart: bgDurMs <= 0
+                                          ? null
+                                          : (_) => onPauseFg(),
+                                      onChanged: bgDurMs <= 0
+                                          ? null
+                                          : (v) {
+                                              if (span == null) return;
+                                              final int? target =
+                                                  bgRowDragTargetMs(
+                                                value: v,
+                                                bgDurMs: bgDurMs,
+                                                bgOffsetMs: span.bgOffsetMs,
+                                                fgDurMs: fgDurMs,
+                                              );
+                                              if (target == null) return;
+                                              onSeekFg(target);
+                                            },
                                     ),
                                   ),
                                 ),

@@ -56,13 +56,20 @@ class BootstrapGate extends HookWidget {
         }
 
         if (AppPaths.fallbackReason != null && navigator.mounted) {
-          final t = getLocalizations(context);
-          await showMessageDialog(
-            navigator,
-            type: MessageDialogType.error,
-            title: t.portable_fallback_title,
-            message: t.portable_fallback_body,
-          );
+          // Outside the startup try below: a dialog failure must not escape as
+          // an uncaught async error (this runs before the gate's error screen
+          // exists).
+          try {
+            final t = getLocalizations(context);
+            await showMessageDialog(
+              navigator,
+              type: MessageDialogType.error,
+              title: t.portable_fallback_title,
+              message: t.portable_fallback_body,
+            );
+          } catch (e, s) {
+            areaKeyLog.e('Portable fallback dialog failed: $e', e, s);
+          }
         }
 
         // What became of the last in-app portable update, if one was handed

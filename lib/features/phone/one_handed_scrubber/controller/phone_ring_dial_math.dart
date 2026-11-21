@@ -361,7 +361,7 @@ class PhoneRingDialMath {
     return n < kMaxInnerSlots ? n : kMaxInnerSlots;
   }
 
-  /// Chunk hit-test slot count: virtual media splits by FILE COUNT with no
+  /// Chunk hit-test slot count: virtual merge splits by FILE COUNT with no
   /// cap (one equal sector per file, matching the VM chunk painter); single
   /// media keeps the [innerSlotCount] cap, which [maxBlocks] never exceeds so
   /// the real-media result is simply the block count.
@@ -551,7 +551,7 @@ class PhoneRingDialMath {
     if (hit.inGap) return null;
     final double blockMs = duration.inMilliseconds / count;
     // When an explicit blockCount override is supplied the block start is an
-    // equal division of the timeline (virtual media: one file per block). Without
+    // equal division of the timeline (virtual merge: one file per block). Without
     // it we keep the legacy integer-exact blockStart for real-file callers.
     final double startMs =
         blockCount != null ? (i * blockMs) : blockStart(i, duration).inMilliseconds.toDouble();

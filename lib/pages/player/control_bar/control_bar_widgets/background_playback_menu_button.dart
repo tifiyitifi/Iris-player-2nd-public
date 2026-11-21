@@ -45,7 +45,7 @@ List<PopupMenuEntry<Object>> buildBackgroundPlaybackMenuEntries({
   }
 
   final bool enabled = bg.state.enabled;
-  // 简播: a cut on screen suspends 副音 for that media, so the rows that drive
+  // 虚拟剪播: a cut on screen suspends 副音 for that media, so the rows that drive
   // the live pair (picture / control routing) grey out exactly like a closed
   // gate. Preferences (作用范围/联动/音量比例/…) stay reachable: they are
   // applied by the next activation, which is exactly what "not here" means.
@@ -362,7 +362,7 @@ class BackgroundPlaybackMenuButton extends HookWidget {
     // built at open time by the shared entry builder. Same predicate as the
     // menu rows: an out-of-scope/exhausted/queue-ended run is not on the air.
     final bool livePair = bg.select(context, (s) => s.bgPairInEffect);
-    // 简播 suspends the pair for the current media — the icon must not claim
+    // 虚拟剪播 suspends the pair for the current media — the icon must not claim
     // 副音 is live there.
     final bool fakeCutActive = fakeCutBlocksBackground(
       useForegroundScopeKey(context),

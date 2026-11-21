@@ -518,7 +518,7 @@ enum OpenResumeDecision {
 /// smaller target land, and it makes an explicit seek-to-0 actually clear the
 /// stored position instead of being dropped by the spurious-zero guard.
 ///
-/// [sourceTimeline] marks a 简播 write: [position] was projected from the VIRTUAL
+/// [sourceTimeline] marks a 虚拟剪播 write: [position] was projected from the VIRTUAL
 /// cut timeline onto the SOURCE axis. Such a value may legitimately move
 /// BACKWARD (out-of-order / repeated ranges), so the funnel's live monotonic
 /// lock must not drop it; it is treated like an explicit user decision (verbatim

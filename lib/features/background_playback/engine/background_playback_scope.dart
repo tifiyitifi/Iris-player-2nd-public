@@ -34,9 +34,19 @@ final _log = AreaKeyLog(LogKeys.player);
 /// [BackgroundPlaybackState.mappedFile] is set, THAT file replaces the
 /// natural queue entry until the resolver exits the segment.
 class BackgroundPlaybackScope extends HookWidget {
-  const BackgroundPlaybackScope({super.key, required this.child});
+  const BackgroundPlaybackScope({
+    super.key,
+    required this.child,
+    this.debugEngine,
+  });
 
   final Widget child;
+
+  /// Test seam: the scope normally builds (and owns) its own runtime, which
+  /// allocates a native player — impossible under `flutter test`. An injected
+  /// engine is NOT disposed by this widget.
+  @visibleForTesting
+  final BackgroundPlaybackEngine? debugEngine;
 
   @override
   Widget build(BuildContext context) {
@@ -50,10 +60,11 @@ class BackgroundPlaybackScope extends HookWidget {
     // flash when the user later starts 副音. Recreated on a backend switch.
     final wantEngine = enabled || keepWarm;
     final engine = useMemoized<BackgroundPlaybackEngine?>(
-      () => wantEngine
-          ? BackgroundPlaybackEngine(backend: backend, warmOnly: !enabled)
-          : null,
-      [wantEngine, backend],
+      () => debugEngine ??
+          (wantEngine
+              ? BackgroundPlaybackEngine(backend: backend, warmOnly: !enabled)
+              : null),
+      [wantEngine, backend, debugEngine],
     );
     useEffect(() {
       final e = engine;
@@ -66,9 +77,10 @@ class BackgroundPlaybackScope extends HookWidget {
       return () {
         unregisterQuiesce();
         unregister();
-        e.dispose();
+        // An injected engine belongs to its caller.
+        if (debugEngine == null) e.dispose();
       };
-    }, [engine]);
+    }, [engine, debugEngine]);
 
     final queue = bg.select(context, (s) => s.queue);
     final currentIndex = bg.select(context, (s) => s.currentIndex);
@@ -79,6 +91,15 @@ class BackgroundPlaybackScope extends HookWidget {
     final gateStopBehavior = bg.select(context, (s) => s.gateStopBehavior);
     final bgRate = bg.select(context, (s) => s.rate);
     final bgMuted = bg.select(context, (s) => s.bgMuted);
+    // The duck gate is ONE predicate shared with `useBackgroundVolumeContext`:
+    // the engine-side policy must read the same session flags or the background
+    // engine keeps a non-zero volume after the pair was handed back (the same
+    // 「换集后视频只剩 30% 音量、副音却静音」 family of reports).
+    final bgExhausted = bg.select(context, (s) => s.bgExhausted);
+    final bgQueueEnded = bg.select(context, (s) => s.bgQueueEnded);
+    final bgOutOfScope = bg.select(context, (s) => s.bgOutOfScope);
+    final bgSuspendedByFakeCut =
+        bg.select(context, (s) => s.bgSuspendedByFakeCut);
   // Mapping session (E 节).
   final mappedFile = bg.select(context, (s) => s.mappedFile);
   final mappedSeekSeq = bg.select(context, (s) => s.mappedSeekSeq);
@@ -186,21 +207,52 @@ class BackgroundPlaybackScope extends HookWidget {
     // Autoplay sync (separate from open so play/pause never re-opens).
     // Silence segments hold bg paused via bgAutoPlay=false; when bgAutoPlay
     // flips back the same file resumes in place.
-    useEffect(() {
-      final e = engine;
-      if (e == null || openTarget == null || !enabled) return null;
-      if (e.isInitializing) return null;
+    //
+    // Split out of the effect so the settle listener below can re-issue it.
+    void applyAutoplaySync(BackgroundPlaybackEngine e) {
+      if (!enabled || openTarget == null) return;
+      if (e.isInitializing) return;
       // Shutdown fence: the quiesce pause flips isPlaying, which would re-enter
       // this sync and call play()/pause() on an engine being disposed.
-      if (AppShutdown.isActive) return null;
+      if (AppShutdown.isActive) return;
       // A closed gate is the single "may play" permission: never play while it
       // is shut, even if a stale flag says otherwise.
       if (bgAutoPlay && gateOpen) {
-        if (!e.isPlaying) e.play();
+        if (!e.isPlaying) unawaited(e.play());
       } else {
-        if (e.isPlaying) e.pause();
+        if (e.isPlaying) unawaited(e.pause());
       }
+    }
+
+    useEffect(() {
+      final e = engine;
+      if (e == null) return null;
+      applyAutoplaySync(e);
       return null;
+    }, [engine, bgAutoPlay, openTargetKey, enabled, gateOpen]);
+
+    // A transport command issued WHILE the file is opening must survive the
+    // open. The sync above bails on `isInitializing` (the flag is not
+    // meaningful yet) and nothing re-runs it when the open settles: this scope
+    // does not listen to the engine, and `open()` captured `autoplay` when it
+    // dialled. So a 停止 during a slow (WebDAV/FTP) open still started the
+    // track, and a 播放 left 副音 silent. Re-apply on the initializing →
+    // settled EDGE only — a per-tick apply would fight the completion
+    // continuation's own seek/play.
+    final wasInitializing = useRef<bool>(false);
+    useEffect(() {
+      final e = engine;
+      if (e == null) return null;
+      void onEngineChanged() {
+        final bool initializing = e.isInitializing;
+        final bool settled = wasInitializing.value && !initializing;
+        wasInitializing.value = initializing;
+        if (settled) applyAutoplaySync(e);
+      }
+
+      wasInitializing.value = e.isInitializing;
+      e.addListener(onEngineChanged);
+      return () => e.removeListener(onEngineChanged);
     }, [engine, bgAutoPlay, openTargetKey, enabled, gateOpen]);
 
     // Gate stop reach: how much media state the close releases. `pause` is
@@ -333,9 +385,13 @@ class BackgroundPlaybackScope extends HookWidget {
         bgActive: BackgroundVolumePolicy.active(
           enabled: enabled,
           gateOpen: gateOpen,
-          // A stopRestoreFg terminal run is silent like a closed gate; keep the
-          // bg engine policy consistent with the foreground volume context.
-          exhausted: s.bgExhausted,
+          // A stopRestoreFg terminal run is silent like a closed gate; a run
+          // that ran off its queue, moved out of 作用范围, or stands down for a
+          // 虚拟剪播 cut is equally inactive. Keep this identical to the foreground
+          // volume context, or the two engines disagree about who is ducking.
+          exhausted: bgExhausted,
+          queueEnded: bgQueueEnded,
+          outOfScope: bgOutOfScope || bgSuspendedByFakeCut,
         ),
         bgPercent: bgVolumePercent,
         bgMuted: bgMuted,
@@ -366,6 +422,10 @@ class BackgroundPlaybackScope extends HookWidget {
       bgRateLock,
       appRate,
       mappedFile,
+      bgExhausted,
+      bgQueueEnded,
+      bgOutOfScope,
+      bgSuspendedByFakeCut,
     ]);
 
     if (engine == null) return child;

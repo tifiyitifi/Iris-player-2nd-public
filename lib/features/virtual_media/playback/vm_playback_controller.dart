@@ -1,5 +1,5 @@
 // DESIGN DECISION — NO EDL / VIRTUAL TIMELINE (2026-08-25, approved).
-// Virtual Media plays its segments via sequential single-file opens.
+// Virtual Merge plays its segments via sequential single-file opens.
 // Heterogeneous playback stability is the ONLY hard requirement: segments
 // may differ in codec/resolution/fps, have missing audio tracks, differing
 // track counts, or be corrupt/unreadable.
@@ -19,6 +19,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'package:iris/features/media_library/scan/probe/media_probe.dart';
+import 'package:iris/features/media_library/store/use_playback_progress_store.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
 import 'package:iris/features/media_library/model/db/repositories/sub/progress_write_guard.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
@@ -45,10 +46,10 @@ import 'package:iris/utils/seek_tail_guard.dart';
 
 final _log = AreaKeyLog(LogKeys.mediaProbe);
 
-/// Sequential playback driver for Virtual Media sessions (spec §9).
+/// Sequential playback driver for Virtual Merge sessions (spec §9).
 ///
 /// Owns the four playback touch points WITHOUT the player core ever knowing
-/// Virtual Media exists — the player just sees ordinary single-file feeds:
+/// Virtual Merge exists — the player just sees ordinary single-file feeds:
 ///
 /// 1. FEED     — [startSession]/advances push the current segment's physical
 ///                file through the synthetic single-item play queue (the same
@@ -223,18 +224,24 @@ bool vmRevalidateDeferredJump({
   return (scenarioId: activeScenarioId, tagId: tag == null ? '' : '$tag');
 }
 
-/// Drops a second terminal event (error/completed) for the SAME segment while
-/// the first one is still driving a transition/feed. Without it an
+/// Drops any terminal event (error/completed) that arrives while a previous
+/// terminal event is still driving a transition/feed. Without it an
 /// error→advance followed by the same file's completed→advance skips a
 /// healthy segment. Pure: fully unit-testable.
+///
+/// The event identity must NOT be compared here: [VirtualMediaController.advance]
+/// moves `segmentIndex` BEFORE the new feed lands, so a duplicate for the old
+/// physical file is re-keyed to the new segment and would look different. The
+/// guard therefore treats "a terminal event is already in flight" as the
+/// identity. A legitimate completion of the newly fed segment cannot happen
+/// inside that window (the window ends when the feed lands).
 @visibleForTesting
 bool shouldDropVmTerminalEvent({
   required String? handledKey,
-  required String incomingKey,
   required bool transitioning,
   required bool feedInFlight,
 }) {
-  if (handledKey == null || handledKey != incomingKey) return false;
+  if (handledKey == null) return false;
   return transitioning || feedInFlight;
 }
 
@@ -254,6 +261,12 @@ class VirtualMediaController {
   int _localMs = 0;
   Timer? _anchorTimer;
   int _consecutiveErrors = 0;
+
+  /// Test seam: the intra-segment position the session currently holds. The
+  /// adopt path seeds it from the progress store when the caller omits it, and
+  /// that seed is otherwise unobservable until the 5s anchor timer fires.
+  @visibleForTesting
+  int get debugLocalPositionMs => _localMs;
   MediaProbeService? _probeService;
 
   /// Test seam: overrides the media-node lookup in [_feedCurrent] so a feed
@@ -268,6 +281,11 @@ class VirtualMediaController {
   /// must not churn the database).
   int _lastFlushedMs = -1;
   String? _lastFlushedSegKey;
+
+  /// Scope of the last anchor flush. Two rules can share one physical segment
+  /// (overlapping coverage), so `(localMs, mediaKey)` alone would suppress the
+  /// second scope's anchor row.
+  String? _lastFlushedScopeKey;
 
   /// Backfill generation: each [startSession] bumps it so an older
   /// [_backfillUnknownDurations] loop exits instead of racing the new
@@ -475,6 +493,7 @@ class VirtualMediaController {
     _terminalGuardKey = null;
     _lastFlushedMs = -1;
     _lastFlushedSegKey = null;
+    _lastFlushedScopeKey = null;
   }
 
   /// Key identifying the segment a terminal event is attributed to.
@@ -583,6 +602,7 @@ class VirtualMediaController {
     _localMs = pending ?? 0;
     _lastFlushedMs = -1;
     _lastFlushedSegKey = null;
+    _lastFlushedScopeKey = null;
     _backfillGen++;
     // Cold-start anchor restore pre-writes the intra-segment position so
     // the shared resume path lands there; a plain open pre-writes nothing
@@ -601,6 +621,80 @@ class VirtualMediaController {
   /// Convenience for single-item playback.
   Future<void> startItem(VirtualMediaItem item, {int segmentIndex = 0}) =>
       startSession(queue: [item], queueIndex: 0, segmentIndex: segmentIndex);
+
+  /// Binds the ALREADY-PLAYING physical file to [item] WITHOUT reopening it.
+  ///
+  /// Used when a rule change makes the live single mergeable (the More-menu
+  /// folder toggle): the player keeps its open file, position and audio, and
+  /// only the VM timeline (dual time, segment marks, cross-segment advance)
+  /// attaches. Re-feeding through [startSession] would call `player.open` again
+  /// and restart the same file, which is exactly what the contract forbids
+  /// ("继续当前进度，只改显示层").
+  ///
+  /// Refused (returns false) when there is nothing safe to adopt:
+  /// - a session already owns the timeline, or a feed/transition is in flight;
+  /// - the play queue is not on [segmentIndex]'s physical file (playback moved
+  ///   on while the caller resolved its groups), so adopting would attach the
+  ///   wrong timeline;
+  /// - the item is infeasible (no segments / zero total).
+  ///
+  /// Intentionally does NOT touch the play queue, autoplay or media progress:
+  /// the queue is already on the file and the player owns the position.
+  Future<bool> adoptLiveSession({
+    required List<VirtualMediaItem> queue,
+    required int queueIndex,
+    required int segmentIndex,
+    int? localMs,
+  }) async {
+    if (state.item != null) return false;
+    if (_feedInFlight || state.transitioning) return false;
+    if (queueIndex < 0 || queueIndex >= queue.length) return false;
+    final candidate = queue[queueIndex];
+    if (candidate.segments.isEmpty || candidate.totalDurationMs <= 0) {
+      return false;
+    }
+    final segIdx = segmentIndex.clamp(0, candidate.segments.length - 1);
+    final seg = candidate.segments[segIdx];
+    // Mirror [isActive]'s own queue lookup, so the adopted state is "live" by
+    // the exact same definition the hooks use.
+    final q = usePlayQueueStore().state;
+    if (q.playQueue.isEmpty) return false;
+    final liveIdx = q.currentIndex.clamp(0, q.playQueue.length - 1);
+    final liveFile = q.playQueue[liveIdx].file;
+    final liveKey = canonicalProgressKey(liveFile.storageId, liveFile.path,
+        uri: liveFile.uri);
+    final segKey = canonicalProgressKey(seg.storageId, seg.path, uri: seg.uri);
+    if (liveKey != segKey) {
+      _log.i('vm adopt refused: queue is on $liveKey, group wants $segKey');
+      return false;
+    }
+    final seeded =
+        localMs ?? usePlaybackProgressStore().state[liveKey]?.$1 ?? 0;
+    store.replace(const VmPlaybackState().copyWith(
+      item: candidate,
+      segmentIndex: segIdx,
+      queue: queue,
+      queueIndex: queueIndex,
+    ));
+    _consecutiveErrors = 0;
+    _localMs = clampVmLocalMs(seg.durationMs, seeded);
+    _clearSessionKeys();
+    // The queue already plays this segment: it is live immediately.
+    _expectedSegmentKey = liveKey;
+    _backfillGen++;
+    _feedPreWriteMs = null;
+    _pendingFeedFinishAtEnd = false;
+    _finishOnFeedSeq = 0;
+    _dragStashVirtualMs = null;
+    _lastCrossJumpAt = null;
+    // No immediate flush: the seed may be up to one tick old, and the 5s timer
+    // writes the (ticked) position anyway. Anchors are diagnostics only.
+    _startAnchorTimer();
+    unawaited(_backfillUnknownDurations());
+    _log.i('vm adopted live feed (${candidate.displayName}) '
+        'seg=${seg.mediaKey} local=$_localMs');
+    return true;
+  }
 
   /// PotPlayer-style stop: unload feed + flush anchor + deactivate.
   ///
@@ -650,13 +744,18 @@ class VirtualMediaController {
   /// pointlessly toggle autoplay off and back on. The in-flight feed is still
   /// invalidated so a stale lookup cannot push the old file after the step.
   /// Anchors flush first so returning (prev) resumes the last position.
-  Future<void> deactivateForNavigation() async {
+  ///
+  /// [flushAnchor] is false when the caller has ALREADY dropped this scope's
+  /// anchor rows as part of a rule change (the folder use/exclude toggle): a
+  /// flush here would resurrect the row the transaction just deleted,
+  /// contradicting the "a polarity flip clears its anchors" contract.
+  Future<void> deactivateForNavigation({bool flushAnchor = true}) async {
     final item = state.item;
     if (item == null) return;
     ++_feedSeq; // invalidate any feed still in flight
     _feedInFlight = false;
     _feedFuture = null;
-    await _flushAnchor();
+    if (flushAnchor) await _flushAnchor();
     _stopAnchorTimer();
     store.replace(const VmPlaybackState());
     _clearSessionKeys();
@@ -729,7 +828,6 @@ class VirtualMediaController {
     final key = _terminalKeyForCurrent();
     if (shouldDropVmTerminalEvent(
       handledKey: _terminalGuardKey,
-      incomingKey: key,
       transitioning: state.transitioning,
       feedInFlight: _feedInFlight,
     )) {
@@ -757,15 +855,29 @@ class VirtualMediaController {
   /// Returns true when the error belongs to an active session and the broken
   /// segment was skipped. Three consecutive failures abort the session with
   /// a visible error instead of spinning through a dead library (spec §9.5).
-  Future<bool> handleSegmentError() async {
-    if (!isActive) return false;
+  /// [fromFeed] marks a failure raised by [_doFeedCurrent] itself (lookup,
+  /// file resolve or queue push), not by a player terminal event. Such a
+  /// failure is never a duplicate of the previous event, so it must bypass
+  /// both the [isActive] gate (the FIRST feed has no expected key yet) and the
+  /// terminal dedupe (the guard still belongs to the previous segment).
+  Future<bool> handleSegmentError({bool fromFeed = false}) async {
+    if (fromFeed) {
+      if (state.item == null) return false;
+    } else {
+      // The FIRST feed of a session has no [_expectedSegmentKey] yet, so
+      // [isActive] is false until its queue update lands. A lookup/open
+      // failure during that window must still be recoverable, or the session
+      // freezes in `transitioning` with VM owning the timeline.
+      final ownsLiveFeed = state.item != null && state.transitioning;
+      if (!isActive && !ownsLiveFeed) return false;
+    }
     final key = _terminalKeyForCurrent();
-    if (shouldDropVmTerminalEvent(
-      handledKey: _terminalGuardKey,
-      incomingKey: key,
-      transitioning: state.transitioning,
-      feedInFlight: _feedInFlight,
-    )) {
+    if (!fromFeed &&
+        shouldDropVmTerminalEvent(
+          handledKey: _terminalGuardKey,
+          transitioning: state.transitioning,
+          feedInFlight: _feedInFlight,
+        )) {
       return true;
     }
     _terminalGuardKey = key;
@@ -959,6 +1071,7 @@ class VirtualMediaController {
             t == StorageType.webdav ||
             t == StorageType.network;
       }
+
       // Monotonic cursor: segments keep their order across patches, so each
       // scan resumes after the last resolved index instead of from 0
       // (O(n) total, not O(k·n)).
@@ -975,8 +1088,7 @@ class VirtualMediaController {
         try {
           results = await _probeService!.probeFiles([
             for (final i in batchIdx)
-              nodePlayableUri(item.segments[i].path,
-                  uri: item.segments[i].uri),
+              nodePlayableUri(item.segments[i].path, uri: item.segments[i].uri),
           ]);
         } catch (_) {
           results = [for (final _ in batchIdx) ProbeResult.empty];
@@ -1023,8 +1135,7 @@ class VirtualMediaController {
         }
         // One coalesced patch per batch: a single prefix-sum rebuild and a
         // single listener fan-out instead of one per segment.
-        store.replace(
-            state.copyWith(item: rebuildVmItem(cur, patched)));
+        store.replace(state.copyWith(item: rebuildVmItem(cur, patched)));
         cursor = batchIdx.last + 1;
       }
     } catch (e) {
@@ -1278,11 +1389,13 @@ class VirtualMediaController {
           : DbModule.mediaNodeRepo
               .getNodeByPath(storageId: seg.storageId, path: seg.path));
     } catch (e) {
-      // A failed lookup is exactly an open failure: keep the session keys so
-      // handleSegmentError's `isActive` gate still sees the session and can
-      // skip the broken segment (clearing them here disabled the recovery).
+      // A failed lookup is exactly an open failure. A superseded feed must not
+      // act; the current one reports through the feed path so the terminal
+      // guard of a previous event cannot swallow its recovery.
       _log.w('vm feed lookup failed (${seg.mediaKey}): $e');
-      unawaited(handleSegmentError());
+      if (seq == _feedSeq) {
+        unawaited(handleSegmentError(fromFeed: true));
+      }
       return;
     }
     // Superseded by a newer jump/advance/session while the lookup was in
@@ -1292,7 +1405,7 @@ class VirtualMediaController {
     if (node == null) {
       // Library row vanished between resolve and play — treat as broken
       // segment (same policy as an open failure).
-      unawaited(handleSegmentError());
+      unawaited(handleSegmentError(fromFeed: true));
       return;
     }
 
@@ -1301,7 +1414,7 @@ class VirtualMediaController {
       file = _fileOf(node);
     } catch (e) {
       _log.w('vm feed file resolve failed (${seg.mediaKey}): $e');
-      unawaited(handleSegmentError());
+      unawaited(handleSegmentError(fromFeed: true));
       return;
     }
     // Write-before-play: land the pre-write BEFORE the queue update so the
@@ -1346,7 +1459,9 @@ class VirtualMediaController {
       );
     } catch (e) {
       _log.w('vm feed queue update failed (${seg.mediaKey}): $e');
-      unawaited(handleSegmentError());
+      if (seq == _feedSeq) {
+        unawaited(handleSegmentError(fromFeed: true));
+      }
       return;
     }
     if (seq != _feedSeq) return;
@@ -1398,7 +1513,9 @@ class VirtualMediaController {
     if (item == null || item.segments.isEmpty) return;
     final idx = state.segmentIndex.clamp(0, item.segments.length - 1);
     final seg = item.segments[idx];
-    if (_lastFlushedMs == _localMs && _lastFlushedSegKey == seg.mediaKey) {
+    if (_lastFlushedMs == _localMs &&
+        _lastFlushedSegKey == seg.mediaKey &&
+        _lastFlushedScopeKey == item.scopeKey) {
       return;
     }
     await _saveAnchor(item.scopeKey, seg, _localMs);
@@ -1423,6 +1540,7 @@ class VirtualMediaController {
       );
       _lastFlushedMs = localMs;
       _lastFlushedSegKey = seg.mediaKey;
+      _lastFlushedScopeKey = scopeKey;
     } catch (e) {
       _log.w('anchor save failed: $e');
     }

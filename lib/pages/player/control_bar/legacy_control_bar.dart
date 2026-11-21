@@ -190,6 +190,13 @@ class LegacyControlBar extends HookWidget {
           ),
           onPressed: () {
             showControl();
+            if (bgIsControl) {
+              // The scoped MediaPlayer is the 副音 engine here, but the app
+              // autoplay flag belongs to the FOREGROUND: writing it from a bg
+              // transport command left the video paused when control returned.
+              bg.setPlaying(isPlaying != true);
+              return;
+            }
             if (isPlaying == true) {
               useAppStore().updateAutoPlay(false);
               context.read<MediaPlayer>().pause();
@@ -213,6 +220,12 @@ class LegacyControlBar extends HookWidget {
       ),
       onPressed: () {
         showControl();
+        if (bgIsControl) {
+          // Stop the 副音 runtime only; the foreground keeps its autoplay and
+          // transport (the registry already routes stop to the bg engine).
+          PlaybackProviderRegistry.stop();
+          return;
+        }
         useAppStore().updateAutoPlay(false);
         context.read<MediaPlayer>().pause();
         PlaybackProviderRegistry.stop();
@@ -238,11 +251,9 @@ class LegacyControlBar extends HookWidget {
             onPressed: () {
               if (SegmentEditGuard.transportFrozen) return;
               showControl();
-              if (bgIsControl) {
-                bg.step(forward: false, userInitiated: true);
-              } else {
-                PlaybackProviderRegistry.step(forward: false);
-              }
+              // One entry for a user step: the router retargets to 副音 with the
+              // foreground double-play guard and the manual-switch mark.
+              PlaybackProviderRegistry.step(forward: false);
             },
             style: ButtonStyle(overlayColor: overlayColor),
           )
@@ -260,11 +271,7 @@ class LegacyControlBar extends HookWidget {
             onPressed: () {
               if (SegmentEditGuard.transportFrozen) return;
               showControl();
-              if (bgIsControl) {
-                bg.step(forward: true, userInitiated: true);
-              } else {
-                PlaybackProviderRegistry.step(forward: true);
-              }
+              PlaybackProviderRegistry.step(forward: true);
             },
             style: ButtonStyle(overlayColor: overlayColor),
           )

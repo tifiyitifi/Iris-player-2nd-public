@@ -67,12 +67,15 @@ class _ProbeEngine extends BackgroundPlaybackEngine {
   Future<void> play() async {
     plays++;
     isPlaying = true;
+    // Mimic the real engine: an actual resume ends the completion hold.
+    completionPending = false;
   }
 
   @override
   Future<void> replay() async {
     replays++;
     isPlaying = true;
+    completionPending = false;
     position = Duration.zero;
   }
 
@@ -85,6 +88,13 @@ class _ProbeEngine extends BackgroundPlaybackEngine {
   @override
   Future<void> pause() async {
     isPlaying = false;
+    // Mimic the real engine: an explicit pause is a definite transport state,
+    // so it ends the completion hold (otherwise the mirror stays stood down).
+    // Deliberately NOT notifying here: the real engine learns this from the
+    // backend stream (asynchronously), while a synchronous notify from inside
+    // an effect body would trip "setState during build". The tests poke the
+    // engine themselves.
+    completionPending = false;
   }
 }
 
@@ -122,6 +132,32 @@ MediaPlayer _fgPlayer() => MediaPlayer(
       seek: (_) async {},
     );
 
+/// A foreground [MediaPlayer] that records whether the mirror moved its
+/// transport. A completion release must leave these counters untouched.
+class _RecordingFg {
+  int pauses = 0;
+  int plays = 0;
+
+  late final MediaPlayer player = MediaPlayer(
+    isInitializing: false,
+    isPlaying: true,
+    externalSubtitles: const [],
+    position: const Duration(minutes: 5),
+    duration: const Duration(minutes: 10),
+    buffer: Duration.zero,
+    width: 0,
+    height: 0,
+    saveProgress: () async {},
+    play: () async => plays++,
+    pause: () async => pauses++,
+    backward: (_) async {},
+    forward: (_) async {},
+    stepBackward: () async {},
+    stepForward: () async {},
+    seek: (_) async {},
+  );
+}
+
 /// Mounts the observer over a 副音 [queue] with [openFile] already loaded, whose
 /// engine reports [bgDuration] (zero models a duration the probe never
 /// resolved). [bgPosition] defaults to the file's end (a completed file).
@@ -134,6 +170,10 @@ Future<void> _mountBg(
   Duration? bgPosition,
   Repeat bgRepeat = Repeat.all,
   int? alignOffsetMs,
+  BgSeekLink seekLink = BgSeekLink.independent,
+  BgLockLevel lockLevel = BgLockLevel.high,
+  ControlTarget controlTarget = ControlTarget.foreground,
+  MediaPlayer? fgPlayer,
 }) async {
   await usePlayQueueStore().update(
     playQueue: [PlayQueueItem(file: _f('B.mp4'), index: 0)],
@@ -144,14 +184,16 @@ Future<void> _mountBg(
   bg.set(bg.state.copyWith(
     enabled: true,
     gateOpen: true,
-    controlTarget: ControlTarget.foreground,
-    displayTarget: ControlTarget.foreground,
+    controlTarget: controlTarget,
+    displayTarget: controlTarget,
     applyScope: BgApplyScope.all,
     scopeAnchorKey: '',
     bgAutoPlay: true,
     bgExhausted: false,
-    // Fully unlinked: the transport mirror must not mask the continuation.
-    seekLink: BgSeekLink.independent,
+    // Fully unlinked by default: the transport mirror must not mask the
+    // continuation. Completion-ownership tests opt into the linked pair.
+    seekLink: seekLink,
+    lockLevel: lockLevel,
     bgRepeat: bgRepeat,
     alignOffsetMs: alignOffsetMs,
     queue: queue,
@@ -166,7 +208,7 @@ Future<void> _mountBg(
     ChangeNotifierProvider<BackgroundPlaybackEngine>.value(
       value: engine,
       child: Provider<MediaPlayer>.value(
-        value: _fgPlayer(),
+        value: fgPlayer ?? _fgPlayer(),
         child: const BackgroundRuntimeScope(child: SizedBox.shrink()),
       ),
     ),
@@ -503,5 +545,148 @@ void main() {
     expect(bg.state.alignVirtualOffsetMs, -600000,
         reason: 'B starts a whole file (A) into the axis: 0 − 600000');
     expect(bg.state.alignOffsetAnchorIndex, 1);
+  });
+
+  testWidgets('a probe write-back re-keys the playback timeline',
+      (tester) async {
+    // Same shape as the two pin tests above, but A starts UNRESOLVED and the
+    // probe resolves it mid-session. The queue-duration read is memoized on the
+    // queue's identity, which a write-back does not change — so without an
+    // explicit resolve signal the timeline keeps its understated read for the
+    // rest of the session (`fullyKnown`/prefix math stay false): cross-file
+    // rolls are skipped and every 续播 restarts at the file head while the video
+    // keeps its position.
+    await DbModule.mediaNodesDao.deleteByStorage('s1');
+    await DbModule.mediaNodesDao.insertNode(MediaNode.file(
+      id: 's1:b.mp4',
+      storageId: 's1',
+      path: <String>['b.mp4'],
+      name: 'b.mp4',
+      mediaType: MediaType.video,
+      durationMs: 600000,
+    ));
+    final FileItem a = _fs('s1', 'a.mp4');
+    final FileItem b = _fs('s1', 'b.mp4');
+
+    await _mountBg(
+      tester,
+      engine,
+      queue: <FileItem>[a, b],
+      openFile: b,
+      bgDuration: const Duration(minutes: 10),
+      alignOffsetMs: 0,
+    );
+
+    final bg = useBackgroundPlaybackStore();
+    expect(bg.state.alignVirtualOffsetMs, isNull,
+        reason: 'A is still unresolved, so the prefix is not usable yet');
+
+    // The probe resolves A and writes it into `media_nodes`, then publishes the
+    // pass outcome (in flight, then done) exactly like the observer does.
+    await DbModule.mediaNodesDao.insertNode(MediaNode.file(
+      id: 's1:a.mp4',
+      storageId: 's1',
+      path: <String>['a.mp4'],
+      name: 'a.mp4',
+      mediaType: MediaType.video,
+      durationMs: 600000,
+    ));
+    bg.setBgDurationProbeState(
+      failed: const <String>{},
+      unknown: <String>{backgroundMediaKey(a), backgroundMediaKey(b)},
+      probing: true,
+    );
+    bg.setBgDurationProbeState(
+      failed: const <String>{},
+      unknown: const <String>{},
+      probing: false,
+    );
+    engine.poke();
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)));
+    await tester.pumpAndSettle();
+
+    expect(bg.state.alignVirtualOffsetMs, -600000,
+        reason: 'the write-back must reach the timeline without a queue rebuild');
+    expect(bg.state.alignOffsetAnchorIndex, 1);
+  });
+
+  testWidgets('a bg-master completion does not pause the foreground',
+      (tester) async {
+    // Control target on 副音: the bg engine is the transport MASTER. Its natural
+    // end sets `isPlaying=false` while the completion continuation is still
+    // resolving the next landing. Reading that ended pause as a master pause
+    // froze the video on the completed file — and the continuation never
+    // brought it back. Linked + high is the pair's real configuration; the
+    // older continuation tests ran independent on purpose.
+    final fg = _RecordingFg();
+    await _mountBg(
+      tester,
+      engine,
+      queue: <FileItem>[_f('b1')],
+      openFile: _f('b1'),
+      bgDuration: const Duration(minutes: 10),
+      alignOffsetMs: 0,
+      seekLink: BgSeekLink.linked,
+      lockLevel: BgLockLevel.high,
+      controlTarget: ControlTarget.background,
+      fgPlayer: fg.player,
+    );
+    // Settle the pair into "both playing", then reset the counters so only the
+    // completion frame is measured.
+    engine.isPlaying = true;
+    engine.poke();
+    await tester.pump();
+    await useAppStore().updateAutoPlay(true);
+    fg.pauses = 0;
+    fg.plays = 0;
+
+    engine.debugFireCompleted();
+    await tester.pump();
+
+    expect(fg.pauses, 0,
+        reason: 'an ended bg master must not pause the foreground');
+    expect(useAppStore().state.autoPlay, isTrue,
+        reason: 'the mirror must not clear the foreground autoplay flag');
+  });
+
+  testWidgets('a pause during the completion hold releases the mirror',
+      (tester) async {
+    // The hold is a PARKED END, not a permanent silence: a real pause during it
+    // (space, the 仅当前 boundary, a scrub policy pause) is a definite transport
+    // state and must end the hold — otherwise the transport mirror stands down
+    // for good and the pair never follows the 副音 master again.
+    final fg = _RecordingFg();
+    await _mountBg(
+      tester,
+      engine,
+      queue: <FileItem>[_f('b1'), _f('b2')],
+      openFile: _f('b1'),
+      bgDuration: const Duration(minutes: 10),
+      alignOffsetMs: 0,
+      seekLink: BgSeekLink.linked,
+      lockLevel: BgLockLevel.high,
+      controlTarget: ControlTarget.background,
+      fgPlayer: fg.player,
+    );
+    engine.isPlaying = true;
+    engine.poke();
+    await tester.pump();
+    await useAppStore().updateAutoPlay(true);
+    fg.pauses = 0;
+    fg.plays = 0;
+
+    engine.debugFireCompleted();
+    await tester.pump();
+    expect(fg.pauses, 0, reason: 'the continuation owns the pair during the hold');
+
+    await engine.pause();
+    engine.poke();
+    await tester.pump();
+
+    expect(engine.completionPending, isFalse,
+        reason: 'an explicit pause ends the completion hold');
+    expect(fg.pauses, 1,
+        reason: 'once the hold is released the bg master pause mirrors again');
   });
 }

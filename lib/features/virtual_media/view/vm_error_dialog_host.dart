@@ -5,7 +5,7 @@ import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/utils/get_localizations.dart';
 
-/// Renders nothing; watches the Virtual Media playback store's
+/// Renders nothing; watches the Virtual Merge playback store's
 /// [VmPlaybackState.lastError] and surfaces a fatal session error as a Dialog
 /// (never a SnackBar, per the project feedback policy).
 ///

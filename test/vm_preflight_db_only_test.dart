@@ -127,7 +127,7 @@ void main() {
       },
     );
     await tester.pumpAndSettle();
-    expect(find.text('虚拟合并预检'), findsOneWidget);
+    expect(find.text('虚拟合播预检'), findsOneWidget);
     // Cancel must exist (aborts the whole playback, not fallback).
     expect(find.text('取消播放'), findsOneWidget);
     await tester.tap(find.text('取消播放'));

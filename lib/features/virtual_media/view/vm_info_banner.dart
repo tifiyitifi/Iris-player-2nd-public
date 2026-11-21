@@ -3,7 +3,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 import 'package:iris/utils/get_localizations.dart';
 
-/// Dismissible explanation banner for the Virtual Media UI.
+/// Dismissible explanation banner for the Virtual Merge UI.
 ///
 /// The hidden state persists across sessions via `virtualmedia.banner.<id>`
 /// AUX rows ("可隐藏，长久保存显隐设置"). Hidden banners render nothing.

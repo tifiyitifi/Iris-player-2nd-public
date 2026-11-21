@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+# Local privacy gate first: a blocked commit must not burn a versionCode.
+# Sourcing keeps the hook working even when `sh` is not on the caller's PATH.
+IRIS_GATE_MODE=staged . scripts/local-gate.sh
+
 file="android/version.properties"
 base=2025
 
@@ -11,9 +15,20 @@ else
   cur=${cur:-$base}
 fi
 
-next=$((cur + 1))
-echo "versionCode=$next" > "$file"
-echo "[pre-commit] auto-increment versionCode: $cur -> $next"
+# HEAD is the floor: a commit rejected by a later hook (commit-msg) leaves the
+# bumped file behind, so the next attempt must reuse that value instead of
+# burning another number. Before the first commit there is no HEAD; the file
+# itself is then the floor.
+head=$(git show "HEAD:$file" 2>/dev/null | sed -n 's/^versionCode=\([0-9][0-9]*\).*/\1/p')
+head=${head:-$cur}
+
+if [ "$cur" -gt "$head" ]; then
+  echo "[pre-commit] versionCode already ahead of HEAD ($head); keeping $cur"
+else
+  next=$((head + 1))
+  echo "versionCode=$next" > "$file"
+  echo "[pre-commit] auto-increment versionCode: $head -> $next"
+fi
 git add "$file"
 
 # Keep pubspec.yaml's build number (`version: X.Y.Z+N`) in lockstep with the

@@ -78,7 +78,7 @@ class FakeCutSubtitleRemap {
 /// WHY this exists: mpv shifts the streams of the MAIN demuxer when an EDL is
 /// open (embedded subtitles are correct automatically), but an external subtitle
 /// loaded with `sub-add` is an INDEPENDENT demuxer and is never shifted. Without
-/// this remap every external subtitle in 简播 would be offset by the removed
+/// this remap every external subtitle in 虚拟剪播 would be offset by the removed
 /// material.
 ///
 /// PRODUCT TRADEOFF: the input is assumed to be timed against the SOURCE file.

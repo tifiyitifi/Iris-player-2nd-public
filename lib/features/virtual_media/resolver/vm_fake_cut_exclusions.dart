@@ -7,7 +7,7 @@ import 'package:iris/utils/path_conv.dart';
 /// Virtual-merge exclusion: a video that has a sibling LosslessCut `.llc`
 /// project never joins a merged group.
 ///
-/// WHY exclude the FILE and not the merge: 简播 turns that one video into a fake
+/// WHY exclude the FILE and not the merge: 虚拟剪播 turns that one video into a fake
 /// cut. Merging it with its neighbours would either hide the cut (the merged
 /// row is not the cut) or produce a merged timeline whose segments disagree with
 /// what the user asked to watch. Skipping just that member keeps every other
@@ -17,10 +17,10 @@ import 'package:iris/utils/path_conv.dart';
 ///
 /// The criterion is the FILESYSTEM (a project exists for this video), not "the
 /// user activated a plan": grouping must not depend on per-window runtime state,
-/// and a video the user never opens in 简播 still has an authored cut that the
+/// and a video the user never opens in 虚拟剪播 still has an authored cut that the
 /// merged playback would ignore. Freshness is explicit — a `.llc` created after
 /// a group was built only counts after `FakeCutProjectIndex.invalidate()`
-/// (the 简播 tab's refresh button).
+/// (the 虚拟剪播 tab's refresh button).
 ///
 /// The grouping functions stay PURE: these helpers resolve the filesystem answer
 /// once per pass and the callers inject it into `resolveRuleGroups` /

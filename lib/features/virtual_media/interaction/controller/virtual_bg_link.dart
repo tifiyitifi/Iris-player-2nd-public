@@ -21,9 +21,10 @@ import 'package:iris/features/virtual_media/interaction/ui/vm_tiled_manual_dialo
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/utils/path_conv.dart';
 
-/// What a Virtual Media transition does to 副音.
+/// What a Virtual Merge transition does to 副音.
 enum VmBgSwitchAction {
   /// Nothing — 副音 keeps playing the same file.
   none,
@@ -331,6 +332,9 @@ class VmSubAudioLinkScope extends HookWidget {
     // ── Block/video switch → new 副音 file (or tiled entrance) ──
     final prevSegment = useRef<int?>(null);
     final prevItem = useRef<String?>(null);
+    // Previous VM queue index, for the switch DIRECTION when the play queue left
+    // no move stamp (a row tap). 「上一集」 used to advance 副音.
+    final prevQueueIndex = useRef<int?>(null);
 
     useEffect(() {
       final it = item;
@@ -348,11 +352,13 @@ class VmSubAudioLinkScope extends HookWidget {
       final itemKey = '${it.scopeKey}#${it.displayIndex}';
       final prevS = prevSegment.value;
       final prevI = prevItem.value;
+      final int? prevQ = prevQueueIndex.value;
       final segmentChanged = prevS != null && prevS != segmentIndex;
       final itemChanged = prevI != null && prevI != itemKey;
 
       prevSegment.value = segmentIndex;
       prevItem.value = itemKey;
+      prevQueueIndex.value = queueIndex;
 
       // First observation of a session — nothing to compare against.
       if (prevS == null && prevI == null) return null;
@@ -382,8 +388,22 @@ class VmSubAudioLinkScope extends HookWidget {
         lockOwnsSeek: lockOwns,
       );
       if (action == VmBgSwitchAction.newBg) {
+        // Step the pair the SAME way the foreground went: 「上一集」 must walk
+        // 副音 backward (the unconditional forward step was the bug the
+        // foreground queue already cured).
+        final PlayQueueMove? move = usePlayQueueStore().lastMove;
+        final int playIndex = usePlayQueueStore().state.currentIndex;
         unawaited(
-          bg.step(forward: true, excludedKey: excludedForegroundKey()),
+          bg.step(
+            forward: vmBgStepForward(
+              moveWasForward: (move != null && move.index == playIndex)
+                  ? move.forward
+                  : null,
+              previousQueueIndex: prevQ,
+              queueIndex: queueIndex,
+            ),
+            excludedKey: excludedForegroundKey(),
+          ),
         );
         return null;
       }
@@ -553,9 +573,10 @@ class VmSubAudioLinkScope extends HookWidget {
             );
             return;
           }
-          if (pick.overshot) {
+          if (pick.overshot && pick.choice == BgAlignChoice.percent) {
             // >100: move to the NEXT bg file at 00:00 (dialog-owned jump,
-            // single wrap without repeat/exclusion subtleties).
+            // single wrap without repeat/exclusion subtleties). A "from head"
+            // choice must win even if a stale overshoot flag survived.
             final next = bgQueue.isEmpty
                 ? landedIndex
                 : (landedIndex + 1) % bgQueue.length;

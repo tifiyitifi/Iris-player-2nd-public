@@ -32,8 +32,8 @@ abstract final class BackgroundPlaybackActions {
   ///
   /// The same-file guard therefore does NOT belong here. It is a rule about
   /// WHICH file may play RIGHT NOW, and it lives in the selection paths
-  /// ([BackgroundQueueLogic.pickStartIndex], `step`, `advanceOnCompleted`,
-  /// `jumpTo`) — never in the listing.
+  /// ([BackgroundQueueLogic.pickStartIndex], `step`, `jumpTo`) — never in the
+  /// listing.
   ///
   /// The raw pool comes from the ACTIVE background scenario (definition, sort,
   /// shuffle, dedup and excludes all scenario-owned); the per-entry pairing
@@ -154,7 +154,7 @@ abstract final class BackgroundPlaybackActions {
     // scope observer would disagree on every VM block switch.
     final anchor =
         scope == BgApplyScope.all ? null : currentScopeKey();
-    // 简播: the media on screen owns a fake timeline, so 副音 cannot sound
+    // 虚拟剪播: the media on screen owns a fake timeline, so 副音 cannot sound
     // against it right now — whatever the scope. Refusing here (rather than
     // silently starting a track that the scope observer would pause on the next
     // rebuild) keeps the press honest; every other media is unaffected.
@@ -262,7 +262,7 @@ abstract final class BackgroundPlaybackActions {
       );
       return;
     }
-    // 简播: the cut owns the timeline, so there is nothing to open 副音 onto for
+    // 虚拟剪播: the cut owns the timeline, so there is nothing to open 副音 onto for
     // THIS media. The run stays exactly as it is (paused by the scope observer)
     // and resumes on its own once the foreground leaves the cut.
     if (fakeCutBlocksBackgroundNow(fgKey)) {
@@ -380,7 +380,7 @@ abstract final class BackgroundPlaybackActions {
   /// force-resuming the pair.
   static Future<void> startForSavedMapping({bool autoplay = true}) async {
     if (!BackgroundPlaybackGate.enabled) return;
-    // 简播: a cut media has no 副音 pairing to honor (the observer already
+    // 虚拟剪播: a cut media has no 副音 pairing to honor (the observer already
     // pauses instead of reaching `startBg`, this is the belt-and-braces path).
     if (fakeCutBlocksBackgroundNow(currentScopeKey())) return;
     final store = useBackgroundPlaybackStore();
@@ -444,7 +444,7 @@ abstract final class BackgroundPlaybackActions {
     }
     final store = useBackgroundPlaybackStore();
     if (store.state.enabled) return; // already running — panel is visible
-    // 简播: no 副音 for a cut. The panel is still reachable (the menu entry is
+    // 虚拟剪播: no 副音 for a cut. The panel is still reachable (the menu entry is
     // greyed, but a keyboard/menu path may land here) — say why.
     if (fakeCutBlocksBackgroundNow(currentScopeKey())) {
       final t = getLocalizations(context);
@@ -501,7 +501,7 @@ abstract final class BackgroundPlaybackActions {
   }) async {
     // Localize BEFORE any await (dialog survives async gaps).
     final t = getLocalizations(navigator.context);
-    // 简播: refreshing the candidate list must not restart 副音 against a cut.
+    // 虚拟剪播: refreshing the candidate list must not restart 副音 against a cut.
     if (fakeCutBlocksBackgroundNow(currentScopeKey())) {
       await showMessageDialog(
         navigator,
@@ -511,7 +511,26 @@ abstract final class BackgroundPlaybackActions {
       );
       return;
     }
-    final window = await resolveCandidates();
+    // A refresh REPLACES a live queue: resolve the new page around the file
+    // that is PLAYING (index + key), never around the scenario's remembered
+    // occurrence. A page that drops the current track makes `replaceQueue`
+    // read `currentLeftPool`, which pauses the pair and jumps to the remembered
+    // entry — 「立即更新」 silently stopped 副音 on a large pool.
+    int? around;
+    String? aroundKey;
+    if (replace) {
+      final store = useBackgroundPlaybackStore();
+      final int at = store.state.currentIndex;
+      if (at >= 0 && at < store.state.queue.length) {
+        around = store.state.queueWindowStart + at;
+      }
+      final FileItem? current = store.currentFile;
+      aroundKey = current == null ? null : backgroundMediaKey(current);
+    }
+    final window = await resolveCandidates(
+      around: around,
+      aroundKey: aroundKey,
+    );
     if (window == null) {
       await showMessageDialog(
         navigator,

@@ -6,7 +6,7 @@ import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 
-/// 简播 ↔ Virtual Media coexistence: a video with a sibling `.llc` keeps its
+/// 虚拟剪播 ↔ Virtual Merge coexistence: a video with a sibling `.llc` keeps its
 /// ordinary single row and never joins a merged group; every other member keeps
 /// merging exactly as before.
 ///
@@ -110,7 +110,7 @@ void main() {
 
   group('vmFakeCutExclusionKeys', () {
     test('non-local rows never resolve a project (no filesystem hit)', () async {
-      // SAF/remote rows are excluded from 简播 entirely; the helper must skip
+      // SAF/remote rows are excluded from 虚拟剪播 entirely; the helper must skip
       // them rather than hand a content:// uri to the directory index.
       final Set<String> keys = await vmFakeCutExclusionKeys(<VirtualSegment>[
         VirtualSegment(

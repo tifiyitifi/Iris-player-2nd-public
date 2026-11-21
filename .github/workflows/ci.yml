@@ -230,9 +230,12 @@ jobs:
         # Ships a SHA256SUMS.txt next to the packages so the in-app updater can
         # verify a download it did not fetch over a channel it controls. Written
         # in `sha256sum` format (digest, two spaces, file name).
+        # The store msix is built and uploaded as a CI artifact but is NOT
+        # attached to the release (GitHub is the only channel), so listing it
+        # here would leave `sha256sum -c` failing on a file nobody can download.
         run: |
           cd artifacts
-          sha256sum IRIS-* > SHA256SUMS.txt
+          sha256sum IRIS-* | grep -v '\.msix$' > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Release
         if: steps.check-tag.outputs.exists == 'false'

@@ -38,7 +38,7 @@ class LlcBinding {
 
   /// Projects that name no video in this directory (renamed/moved source).
   ///
-  /// Never applied to any video: they are surfaced in the 简播 tab's collapsed
+  /// Never applied to any video: they are surfaced in the 虚拟剪播 tab's collapsed
   /// 「无匹配计划」 section instead.
   final List<LlcSibling> unmatched;
 
@@ -49,7 +49,7 @@ class LlcBinding {
 /// Binds every `.llc` to the ONE video it was made for, the way a subtitle binds
 /// to its sibling video (`get_subtitle_map.dart` uses the same tokens).
 ///
-/// WHY per-video: 简播 used to list EVERY project of the directory for whichever
+/// WHY per-video: 虚拟剪播 used to list EVERY project of the directory for whichever
 /// video was playing, so in a shared cut folder two projects both played the one
 /// video on screen (the EDL is built over the PLAYING file). Pairing rules, in
 /// order of authority — first hit wins:

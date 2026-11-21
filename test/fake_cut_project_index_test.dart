@@ -180,7 +180,7 @@ void main() {
     expect(await index.hasProjectFor(query(video)), isFalse);
     expect(calls, 1);
     // ...but leaves no cached verdict, so the NEXT resolve retries — one
-    // transient IO error used to disable 简播 for that folder all session.
+    // transient IO error used to disable 虚拟剪播 for that folder all session.
     expect(await index.hasProjectFor(query(video)), isTrue);
     expect(calls, 2);
   });

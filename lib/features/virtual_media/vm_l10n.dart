@@ -4,7 +4,7 @@ import 'package:iris/l10n/app_localizations_en.dart';
 import 'package:iris/l10n/app_localizations_zh.dart';
 import 'package:iris/store/use_app_store.dart';
 
-/// Context-free localization for Virtual Media code that runs OUTSIDE a widget
+/// Context-free localization for Virtual Merge code that runs OUTSIDE a widget
 /// build: the merge resolvers (display titles) and the playback controller's
 /// fatal-error path. Prefers the app's selected language, then the platform
 /// locale, then English. Only `en`/`zh` are shipped (matching

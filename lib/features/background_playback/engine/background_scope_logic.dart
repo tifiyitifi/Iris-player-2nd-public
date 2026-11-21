@@ -48,7 +48,7 @@ BgScopeAction resolveBgScopeOnFgChange({
   final key = newFgKey;
   if (key == null) return BgScopeAction.none;
   if (offMediaKeys.contains(key)) return BgScopeAction.pauseBg;
-  // 简播 (fake cut): the cut owns the picture and a virtual timeline the 副音
+  // 虚拟剪播 (virtual cut): the cut owns the picture and a virtual timeline the 副音
   // pairing cannot describe, so 副音 pauses for THIS media under every scope —
   // the same shape as a user opt-out, but temporary and resolved by the caller
   // (`BackgroundPlaybackStore.resumeAfterFakeCut`) when the foreground leaves.
@@ -82,10 +82,28 @@ BgScopeAction resolveBgScopeOnFgChange({
   }
 }
 
+/// Direction of a Virtual Merge ITEM switch, for stepping 副音 the same way.
+///
+/// The VM link used to step the pair FORWARD on every item switch, so 「上一集」
+/// pushed 副音 onto the next track. The play queue's own move stamp
+/// ([PlayQueueMove]) wins whenever it describes the current move — it is the
+/// only signal that can separate 「上一集」 at the head from a tap on the last
+/// row (see [isForwardQueueMove]). Without one the VM queue index decides, and
+/// an unresolvable switch keeps the historical forward default.
+bool vmBgStepForward({
+  bool? moveWasForward,
+  int? previousQueueIndex,
+  required int queueIndex,
+}) {
+  if (moveWasForward != null) return moveWasForward;
+  final previous = previousQueueIndex;
+  if (previous == null || queueIndex == previous) return true;
+  return queueIndex > previous;
+}
+
 /// Whether a foreground media switch may advance 副音's OWN queue
 /// ([BgCrossAction.newBg]).
-///
-/// 简播 suspends the pair for the whole cut, so a step taken while the cut is
+/// 虚拟剪播 suspends the pair for the whole cut, so a step taken while the cut is
 /// active only moves the queue behind a silent engine: the resume then restores
 /// the transport onto a DIFFERENT track (the "队列位置丢了" report), and the step
 /// races the suspend in the same commit. Both DIRECTIONS of the transition are
@@ -159,7 +177,7 @@ bool shouldStopStaleEngine({
 /// Whether 副音 is currently applied to the playing foreground media — the
 /// quick-bar "对当前 / 不对当前" switch state.
 ///
-/// [fakeCutActive] is the 简播 exclusion: while a cut is on screen the pair is
+/// [fakeCutActive] is the 虚拟剪播 exclusion: while a cut is on screen the pair is
 /// not a pair (no alignment, no transport mirror, gate greyed), and this runs
 /// before the scope rules so it holds under 「全部」as well as 「仅当前」.
 bool resolveApplyToCurrent({

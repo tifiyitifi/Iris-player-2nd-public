@@ -28,7 +28,7 @@ import 'package:iris/utils/path_conv.dart';
 
 /// The queue's ONE index space: the ELEMENT's DISPLAY position.
 ///
-/// An ordinary file is one element; a Virtual Media group is ONE element (its
+/// An ordinary file is one element; a Virtual Merge group is ONE element (its
 /// members never take part on their own), and `virtualIndex` is that element's
 /// 0-based position in the list the user reads — the leading column renders
 /// `virtualIndex + 1`, `rowInCurrentPage` matches on it, and the paging window

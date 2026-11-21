@@ -125,8 +125,12 @@ class _TiledManualFormState extends State<_TiledManualForm> {
               children: [
                 _TiledChoiceRow(
                   selected: selected == BgAlignChoice.fromHead,
-                  onTap: () =>
-                      _selected.value = BgAlignChoice.fromHead,
+                  onTap: () {
+                    // A previous >100 entry must not survive a switch back to
+                    // "from head", or confirm would jump to the NEXT bg file.
+                    _overshot = false;
+                    _selected.value = BgAlignChoice.fromHead;
+                  },
                   child: Text(t.bg_align_head_option),
                 ),
                 const SizedBox(height: 6),

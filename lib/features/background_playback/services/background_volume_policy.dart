@@ -21,7 +21,7 @@ abstract final class BackgroundVolumePolicy {
   /// both engines. [enabled] is the subsystem flag, [gateOpen] the user gate
   /// (quick-bar play/stop), [exhausted] the stopRestoreFg terminal state,
   /// [queueEnded] the "walked off the end of the queue" state and [outOfScope]
-  /// the current media being outside the run's 作用范围 (or a 简播 cut).
+  /// the current media being outside the run's 作用范围 (or a 虚拟剪播 cut).
   ///
   /// A closed gate or an inactive pair must read exactly like "no 副音 at all":
   /// the foreground then plays like any normal single-track player. Omitting

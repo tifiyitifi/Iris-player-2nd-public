@@ -7,9 +7,9 @@ import 'package:provider/provider.dart';
 ///
 /// The align editor persists a mapping against ONE physical file, so it must
 /// see that file's own duration and local position — never the merged virtual
-/// timeline the player exposes during a Virtual Media session.
+/// timeline the player exposes during a Virtual Merge session.
 ///
-/// Lives on the Virtual Media side on purpose: undoing the VM virtualization is
+/// Lives on the Virtual Merge side on purpose: undoing the VM virtualization is
 /// a VM-interaction concern, and the bg feature's architecture guard forbids it
 /// from reaching into the VM controller directly.
 class ForegroundWindow {
@@ -40,7 +40,7 @@ class ForegroundWindow {
 /// Projects the (possibly virtualized) foreground `MediaPlayer` onto the single
 /// physical file playing right now.
 ///
-/// During a Virtual Media session the exposed `MediaPlayer.duration` is the
+/// During a Virtual Merge session the exposed `MediaPlayer.duration` is the
 /// whole merged total and `position` is translated onto the virtual axis (see
 /// the player hooks' VM virtualization). Undoing that here is what fixes the
 /// "超长的合并视频" axis: duration becomes the current segment's own duration,
@@ -73,7 +73,7 @@ ForegroundWindow resolveForegroundWindow({
 }
 
 /// Imperative variant for call sites that are NOT in a build phase (e.g. an
-/// editor's open handler). Reads the Virtual Media controller directly so the
+/// editor's open handler). Reads the Virtual Merge controller directly so the
 /// bg feature never has to import it.
 ForegroundWindow foregroundWindowNow({
   required int playerDurationMs,
@@ -94,7 +94,7 @@ ForegroundWindow foregroundWindowNow({
 }
 
 /// Build-phase view of [resolveForegroundWindow] backed by the live player and
-/// the Virtual Media controller. Re-runs whenever the player snapshot changes
+/// the Virtual Merge controller. Re-runs whenever the player snapshot changes
 /// (position ticks), so a VM segment switch is picked up immediately.
 ForegroundWindow useForegroundWindow(BuildContext context) {
   final player = context.select<MediaPlayer, ({int posMs, int durMs})>(

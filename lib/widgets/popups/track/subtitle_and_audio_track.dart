@@ -29,7 +29,7 @@ class SubtitleAndAudioTrack extends HookWidget {
     List<ITab> tabs = [
       ITab(title: t.subtitle, child: SubtitleList()),
       ITab(title: t.audio_track, child: AudioTrackList()),
-      // 简播 is mpv-EDL only: the tab is absent on fvp rather than offering a
+      // 虚拟剪播 is mpv-EDL only: the tab is absent on fvp rather than offering a
       // half-working feature (see fake_cut_preflight.dart).
       if (player is MediaKitPlayer)
         ITab(title: t.fake_cut, child: const FakeCutTab()),

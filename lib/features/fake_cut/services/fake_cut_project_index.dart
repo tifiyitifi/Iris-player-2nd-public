@@ -53,16 +53,16 @@ class FakeCutDirProjects {
 
 /// Per-directory index of "which `.llc` belongs to which video".
 ///
-/// WHY an index instead of a per-resolve listing: Virtual Media grouping runs
+/// WHY an index instead of a per-resolve listing: Virtual Merge grouping runs
 /// over the whole view (hundreds of files) on every list materialization, the
-/// 简播 tab rescans on open, and the answer is a property of the FILESYSTEM, not
+/// 虚拟剪播 tab rescans on open, and the answer is a property of the FILESYSTEM, not
 /// of the media row. Listing a directory once and remembering its projects —
 /// with the `mediaFileName` each one recorded — makes every later question
 /// (does THIS video have a project? which ones?) pure in-memory work.
 ///
 /// Freshness is EXPLICIT by design: a `.llc` created after a group was built
-/// only counts after [invalidate] (the 简播 tab's refresh button calls it) — the
-/// user accepted "新建简播后需刷新" as the contract, and a silent TTL would make
+/// only counts after [invalidate] (the 虚拟剪播 tab's refresh button calls it) — the
+/// user accepted "新建虚拟剪播后需刷新" as the contract, and a silent TTL would make
 /// the group set change under the user's feet.
 class FakeCutProjectIndex {
   FakeCutProjectIndex();
@@ -87,8 +87,10 @@ class FakeCutProjectIndex {
 
   /// Drops the cached listings — all of them, or one directory.
   ///
-  /// Call after anything that can add/remove a `.llc`: the 简播 tab's refresh,
-  /// a media rescan, or an explicit "重新分组" from the VM side.
+  /// Call after anything that can add/remove a `.llc`. Today that is the
+  /// 虚拟剪播 tab's refresh; an explicit VM re-resolve does NOT call this yet, so
+  /// a media rescan that adds a `.llc` keeps the old merge until the tab is
+  /// refreshed. See `docs/features/virtual_media/tasks.md`.
   void invalidate([String? directoryPath]) {
     if (directoryPath == null) {
       _dirs.clear();
@@ -97,7 +99,7 @@ class FakeCutProjectIndex {
     _dirs.remove(_dirKey(directoryPath));
   }
 
-  /// The projects that belong to the video at [videoPath] — its own 简播 plans.
+  /// The projects that belong to the video at [videoPath] — its own 虚拟剪播 plans.
   ///
   /// Empty when the file is not a plain local path (SAF/remote siblings are not
   /// readable through this path) or lives in no directory.
@@ -125,7 +127,7 @@ class FakeCutProjectIndex {
   /// Media keys (same canonical form VM uses) whose video owns a project.
   ///
   /// Non-local entries (SAF / WebDAV / FTP) never match: their siblings are not
-  /// readable through this path, and 简播 itself is unavailable there.
+  /// readable through this path, and 虚拟剪播 itself is unavailable there.
   Future<Set<String>> mediaKeysWithProject(
     Iterable<FakeCutProjectQuery> files,
   ) async {
@@ -173,7 +175,7 @@ class FakeCutProjectIndex {
   static String _queryName(FakeCutProjectQuery query) =>
       query.name.isNotEmpty ? query.name : p.basename(query.uri);
 
-  /// Whether ONE video owns a project (the 简播 tab / player side).
+  /// Whether ONE video owns a project (the 虚拟剪播 tab / player side).
   Future<bool> hasProjectFor(FakeCutProjectQuery file) async =>
       (await mediaKeysWithProject(<FakeCutProjectQuery>[file]))
           .contains(file.mediaKey);
@@ -196,7 +198,7 @@ class FakeCutProjectIndex {
       completer.complete,
       onError: (Object e, StackTrace st) {
         // A FAILED listing is not an answer: caching it as "this folder has no
-        // projects" disabled 简播 for the folder until an explicit invalidate
+        // projects" disabled 虚拟剪播 for the folder until an explicit invalidate
         // (one transient IO error — an unready drive, a permission blip — was
         // enough). Drop the entry so the next resolve retries; the caller still
         // gets a usable empty answer for THIS pass.

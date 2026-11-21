@@ -1,15 +1,15 @@
 import 'package:iris/models/file.dart';
 import 'package:iris/utils/path_conv.dart' show isSafPath;
 
-/// Why 简播 cannot run for the current media. `none` = available.
+/// Why 虚拟剪播 cannot run for the current media. `none` = available.
 ///
 /// Each value maps to one localized explanation in the tab, so a blocked user
 /// learns WHY instead of seeing a missing/disabled control with no reason.
 ///
-/// Deliberately absent: Virtual Media and 副音 (background playback). Both used
+/// Deliberately absent: Virtual Merge and 副音 (background playback). Both used
 /// to block the whole feature, which was wrong on two counts:
 ///  * 副音's `enabled` flag is ALSO true for a merely ARMED run (cold-launch
-///    `startArmed`, gate closed, nothing loaded), so 简播 reported "cannot be
+///    `startArmed`, gate closed, nothing loaded), so 虚拟剪播 reported "cannot be
 ///    combined with background audio" while nothing was playing;
 ///  * the two features coexist by EXCLUSION instead: a file with a cut project
 ///    is skipped by the virtual-merge rules (`vm_fake_cut_exclusions.dart`) and
@@ -29,7 +29,7 @@ enum FakeCutBlockReason {
   notVideo,
 }
 
-/// Availability rules for 简播.
+/// Availability rules for 虚拟剪播.
 ///
 /// Pure on purpose: every input is passed in, so the UI (and tests) can evaluate
 /// the same rules the player hook enforces. The blocking conditions are PRODUCT

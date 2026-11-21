@@ -82,7 +82,7 @@ class FakeCutTab extends HookWidget {
       (FakeCutStoreState s) =>
           fileKey == null ? false : s.discovering[fileKey] ?? false,
     );
-    // 简播 owns the picture only once the media's OPEN adopted the EDL. A plan
+    // 虚拟剪播 owns the picture only once the media's OPEN adopted the EDL. A plan
     // that is merely remembered (or whose preparation failed) is not playing,
     // so 副音 must not be reported as suspended for it. Same signal the
     // background suspension reads, so the two can never disagree.
@@ -119,7 +119,7 @@ class FakeCutTab extends HookWidget {
 
     final FakeCutPlan? activePlan =
         fileKey == null ? null : store.activePlanFor(fileKey);
-    // 简播 does not block anything any more — it just needs the user to know
+    // 虚拟剪播 does not block anything any more — it just needs the user to know
     // WHEN it applies: 副音 pauses here (and resumes on leaving), and a merged
     // session ignores the cut until the file plays on its own. [cutPlaying] is
     // the PLAYING truth (the EDL really opened), not "a plan is remembered".
@@ -256,7 +256,7 @@ class FakeCutTab extends HookWidget {
   /// Re-scans the folder AND lets the rest of the app act on what changed.
   ///
   /// A new `.llc` is not just a new plan list entry: the video must also stop
-  /// joining a Virtual Media merge (the group pipeline excludes it), and the
+  /// joining a Virtual Merge merge (the group pipeline excludes it), and the
   /// answer of "does this folder have projects" is cached. The refresh is the
   /// documented way to apply a project created while the app was running —
   /// [FakeCutProjectIndex.invalidate] drops the filesystem cache and
@@ -408,7 +408,7 @@ class FakeCutTab extends HookWidget {
   }
 }
 
-/// One informational line above the plan list (简播 + 副音 / virtual merge).
+/// One informational line above the plan list (虚拟剪播 + 副音 / virtual merge).
 /// Explains how the two features interact HERE instead of blocking anything.
 class _NoticeLine extends StatelessWidget {
   const _NoticeLine({required this.icon, required this.text});

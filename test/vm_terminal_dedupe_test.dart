@@ -1,16 +1,19 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 
-/// A second terminal event (error/completed) for the SAME segment arriving
-/// while the first one is still driving a transition/feed must be dropped —
-/// otherwise one broken file advances two segments.
+/// A terminal event (error/completed) arriving while a previous terminal event
+/// is still driving a transition/feed must be dropped — otherwise one broken
+/// file advances two segments.
+///
+/// The guard deliberately ignores event identity: `advance()` moves
+/// `segmentIndex` BEFORE the new feed lands, so a duplicate for the old file
+/// would be re-keyed to the new segment and look different.
 void main() {
   group('shouldDropVmTerminalEvent', () {
-    test('drops duplicate for same segment while transitioning', () {
+    test('drops any terminal event while transitioning', () {
       expect(
         shouldDropVmTerminalEvent(
           handledKey: 'scope:1:key-b',
-          incomingKey: 'scope:1:key-b',
           transitioning: true,
           feedInFlight: false,
         ),
@@ -18,11 +21,10 @@ void main() {
       );
     });
 
-    test('drops duplicate for same segment while feed in flight', () {
+    test('drops any terminal event while a feed is in flight', () {
       expect(
         shouldDropVmTerminalEvent(
           handledKey: 'scope:1:key-b',
-          incomingKey: 'scope:1:key-b',
           transitioning: false,
           feedInFlight: true,
         ),
@@ -30,23 +32,23 @@ void main() {
       );
     });
 
-    test('handles event for a new segment', () {
+    test('drops a re-keyed duplicate after the index advanced', () {
+      // The previous event moved segmentIndex 1 -> 2; the incoming event is
+      // still the same physical file but now reads as a different key.
       expect(
         shouldDropVmTerminalEvent(
           handledKey: 'scope:1:key-b',
-          incomingKey: 'scope:2:key-c',
           transitioning: true,
           feedInFlight: true,
         ),
-        isFalse,
+        isTrue,
       );
     });
 
-    test('handles event when idle (no terminal in flight)', () {
+    test('handles a terminal event when no event is in flight', () {
       expect(
         shouldDropVmTerminalEvent(
           handledKey: null,
-          incomingKey: 'scope:0:key-a',
           transitioning: false,
           feedInFlight: false,
         ),
@@ -54,11 +56,10 @@ void main() {
       );
     });
 
-    test('same segment when idle is handled (settled state)', () {
+    test('a settled guard with no transition does not drop', () {
       expect(
         shouldDropVmTerminalEvent(
           handledKey: 'scope:1:key-b',
-          incomingKey: 'scope:1:key-b',
           transitioning: false,
           feedInFlight: false,
         ),

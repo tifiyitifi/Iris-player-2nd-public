@@ -262,7 +262,19 @@ class MediaNodeRepository {
     int concurrency = 16,
   }) async {
     if (keys.isEmpty) return const {};
-    final nodes = await nodesByMediaKeys(keys, concurrency: concurrency);
+    // A SAF single pick is keyed by its document uri (`storageId:content://…`)
+    // and stores an EMPTY path, so the path-keyed lookup alone can never see
+    // it. Resolve the uri form as well, then rebuild both through the one
+    // canonical helper.
+    final uris = <String>{
+      for (final key in keys)
+        if (key.contains('://')) key.substring(key.indexOf(':') + 1),
+    };
+    final nodes = await nodesByMediaKeysOrUris(
+      keys,
+      alsoByUris: uris,
+      concurrency: concurrency,
+    );
     final out = <String,
         ({
       int? positionMs,
@@ -272,7 +284,7 @@ class MediaNodeRepository {
     for (final node in nodes) {
       final file = node.maybeMap(file: (f) => f, orElse: () => null);
       if (file == null) continue;
-      out[canonicalKey(file.storageId, file.path.join('/'))] = (
+      out[canonicalMediaKey(file.storageId, file.path, uri: file.uri)] = (
         positionMs: file.playbackPositionMs,
         completed: file.playbackCompleted,
         lastPlayedAt: file.lastPlayedAt,

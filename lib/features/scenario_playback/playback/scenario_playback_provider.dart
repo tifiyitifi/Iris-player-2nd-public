@@ -309,7 +309,7 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
     PlaybackPositionSignal.instance.claimNewContext();
     await _emitPosition(null,
         token: PlaybackPositionSignal.instance.generation);
-    // Virtual Media merge layer (scenario-first): a tapped entry covered by
+    // Virtual Merge merge layer (scenario-first): a tapped entry covered by
     // an enabled rule starts a VM session (multiple media as ONE video)
     // instead of the single-file feed. The session queue derives from the
     // scenario's OWN effective stream — the same derivation the list display
@@ -329,13 +329,13 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
     await advanceEntry(entry, autoplay: autoplay);
   }
 
-  /// Starts a Virtual Media session when [entry] is covered by an enabled
+  /// Starts a Virtual Merge session when [entry] is covered by an enabled
   /// rule and belongs to a feasible merged group.
   ///
   /// Shared by [play] (list tap / first open) and [advanceEntry] (next/prev,
   /// Repeat.all wrap, natural completion, resume) so ANY feed outlet that
   /// lands on a virtual body re-enters the merged session instead of
-  /// degrading to the single representative file ("把虚拟媒体当单一媒体播放").
+  /// degrading to the single representative file ("把虚拟合播当单一媒体播放").
   ///
   /// Returns true when a session was started — the caller must NOT feed the
   /// single file afterwards. False keeps ordinary single-file playback.
@@ -430,6 +430,39 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
     // (highlight/next-prev depend on it). The REAL segment is captured to the
     // no-tag bookmark only when a tag view takes over the context — see
     // [captureCurrentVirtualSegment] via the tag controller's outgoing capture.
+    return true;
+  }
+
+  /// Binds the file that is ALREADY playing to its merged group (a rule change
+  /// just made it mergeable) without reopening it.
+  ///
+  /// Only the file the caller acted on may be adopted ([expectedMediaKey]).
+  /// Groups are re-resolved through the same signature-keyed path the feed
+  /// uses; `notifyRulesChanged` already bumped the version, so a stale cache
+  /// can never be served here.
+  Future<bool> adoptCurrentFeedAsVirtual({
+    required String expectedMediaKey,
+  }) async {
+    final scenarioId = _store.state.activeScenarioId;
+    if (scenarioId == null) return false;
+    // The persisted occurrence, not `getCurrentItem`: resolving the full item
+    // would walk the (just invalidated) index. Identity is all we need.
+    final occurrence = (await _store.activeState())?.currentPlaybackOccurrence;
+    if (occurrence == null) return false;
+    final key = canonicalKey(occurrence.storageId, occurrence.path);
+    if (key != expectedMediaKey) return false;
+    final groups =
+        await _vmGroupsForKey(scenarioId, occurrence.storageId, occurrence.path);
+    final adopted = await adoptLiveVirtualSession(
+      groups: groups,
+      mediaKey: key,
+      storageId: occurrence.storageId,
+      path: occurrence.path,
+    );
+    if (!adopted) return false;
+    // The merged list has a NEW row index for this occurrence: republish it so
+    // the bar title's [cur/total] matches the row the user now sees.
+    await establishCurrentPosition();
     return true;
   }
 

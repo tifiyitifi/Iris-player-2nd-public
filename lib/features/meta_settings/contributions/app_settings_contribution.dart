@@ -16,7 +16,7 @@ import 'package:iris/features/meta_settings/model/setting_def.dart';
 ///
 /// LAYOUT (requirement #5): rows are grouped into semantic blocks with
 /// distinct sortOrders; each block leader carries the groupHeaderKey. Order:
-/// 播放与窗口 → 手势与触控 → 虚拟媒体 → 副音 → 桌面工具 (Play);
+/// 播放与窗口 → 手势与触控 → 虚拟合播 → 副音 → 桌面工具 (Play);
 /// 外观语言 → 数据 → 标题与浏览 → 警告 → OSD → 扫描 → Advanced(legacy) (General).
 abstract final class AppSettingsContribution {
   static const List<SettingDef> defs = <SettingDef>[

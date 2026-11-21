@@ -205,7 +205,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
   // Explicit segment (current query state only).
   List<SearchResultItem> _explicitList = const [];
 
-  // Virtual Media segment (current query state only): merged groups derived
+  // Virtual Merge segment (current query state only): merged groups derived
   // from the scenario's effective stream. Empty for non-scenario searches.
   List<SearchResultItem> _vmList = const [];
 
@@ -590,7 +590,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     return results;
   }
 
-  /// Virtual Media segment: merged groups of the searched scenario's OWN
+  /// Virtual Merge segment: merged groups of the searched scenario's OWN
   /// effective stream (the same derivation the queue overlay uses), matched
   /// against the `[vm]`-prefixed composed name.
   ///
@@ -915,7 +915,7 @@ class MediaSearchDataSource extends PaginatedBrowserDataSource<SearchResultItem>
     _showPlayOptionsDialog(context, item);
   }
 
-  /// Plays a Virtual Media merged group. Context A resolves and plays it
+  /// Plays a Virtual Merge merged group. Context A resolves and plays it
   /// directly; context B first installs the searched scenario as the workspace
   /// (same confirmations as "Play scenario"), then resolves the group.
   Future<void> _playVirtualGroup(

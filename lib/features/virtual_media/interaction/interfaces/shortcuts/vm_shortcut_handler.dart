@@ -1,7 +1,7 @@
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
 
-/// Keyboard / desktop shortcut intents for virtual media.
+/// Keyboard / desktop shortcut intents for virtual merge.
 abstract final class VmShortcutHandler {
   static Future<void> handleNext() => _cross(true);
   static Future<void> handlePrev() => _cross(false);

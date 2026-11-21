@@ -10,7 +10,7 @@ final _log = AreaKeyLog(LogKeys.legacyDb);
 /// Replaces the O(N)-per-page re-walk of the effective stream with a
 /// lazily-built, persisted row order:
 ///
-///   • `vm_groups` / `vm_group_members` — materialized Virtual Media groups
+///   • `vm_groups` / `vm_group_members` — materialized Virtual Merge groups
 ///     (the rule's own sort → boundary → caps result). A group is a function
 ///     of its RULE alone, so one row set is shared by every scenario/tag.
 ///   • `scenario_queue_entries` — the scenario's visible list rows

@@ -3,7 +3,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_zustand/flutter_zustand.dart';
 import 'package:iris/features/background_playback/services/segment_edit_guard.dart';
 import 'package:iris/features/background_playback/view/player_control_target_scope.dart'
-    show resolveActivePlayer;
+    show resolveActivePlayer, setActiveTransportFlag;
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/osd/engine/osd_texts.dart';
 import 'package:iris/features/osd/engine/show_player_osd.dart';
@@ -209,11 +209,13 @@ KeyboardEvent useKeyboard({
         case LogicalKeyboardKey.space:
         case LogicalKeyboardKey.mediaPlayPause:
           showControl();
+          // One flag owner: while 副音 owns the controls this player IS the
+          // 副音 engine, so the pause belongs to `bgAutoPlay` (the foreground
+          // preference must stay untouched).
+          setActiveTransportFlag(context, playing: !player.isPlaying);
           if (player.isPlaying) {
-            useAppStore().updateAutoPlay(false);
             player.pause();
           } else {
-            useAppStore().updateAutoPlay(true);
             player.play();
           }
           break;

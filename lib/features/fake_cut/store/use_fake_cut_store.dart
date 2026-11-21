@@ -26,7 +26,7 @@ String fakeCutFileKey(FileItem file) =>
 /// nullable field (the usual `?? this.field` would silently keep the old value).
 const Object _unset = Object();
 
-/// 简播 store state.
+/// 虚拟剪播 store state.
 ///
 /// Two lifetimes live here on purpose:
 ///  * [activePaths] is PERSISTED (per-window session KV) — "this window plays
@@ -110,7 +110,7 @@ class FakeCutStoreState {
       );
 }
 
-/// Per-window 简播 state (plan list + which plan the current media plays with).
+/// Per-window 虚拟剪播 state (plan list + which plan the current media plays with).
 ///
 /// The plan itself is never stored: the `.llc` file is the source of truth, and
 /// the progress columns keep the SOURCE position. Only "which project belongs to

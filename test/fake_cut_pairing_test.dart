@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/fake_cut/services/fake_cut_pairing.dart';
 
-/// 简播 binds a `.llc` to the ONE video it was made for, exactly the way a
+/// 虚拟剪播 binds a `.llc` to the ONE video it was made for, exactly the way a
 /// subtitle binds to its sibling video (`get_subtitle_map.dart`): the LONGEST
 /// name prefix wins, a tie reaches every tied video, and a project that names no
 /// video in the folder is an ORPHAN — listed in the tab's collapsed section and

@@ -116,7 +116,7 @@ class ScenarioResolvePage {
   bool get isEmpty => items.isEmpty;
 }
 
-/// One index-backed Virtual Media search hit: a group row of a scenario's
+/// One index-backed Virtual Merge search hit: a group row of a scenario's
 /// current generation, with its display title rebuilt from the owning rule and
 /// the identity of its representative (first visible) member, so a search
 /// result can be opened exactly like the queue's merged row.
@@ -694,7 +694,7 @@ class ScenarioResolver {
     }
 
     final vmRules = await _vmRulesFor(scenarioId);
-    // 简播: files with a sibling `.llc` never join a merged group. Resolved
+    // 虚拟剪播: files with a sibling `.llc` never join a merged group. Resolved
     // ONCE per build (directory-cached) and injected into the pure builder.
     final Set<String> fakeCutExclusions = vmRules.isEmpty
         ? const <String>{}
@@ -1288,7 +1288,7 @@ class ScenarioResolver {
 
     final startIndex = page * pageSize;
 
-    // Virtual Media merge layer (orthogonal, scenario-first). The scenario's
+    // Virtual Merge merge layer (orthogonal, scenario-first). The scenario's
     // OWN effective stream is materialized once and the enabled rules' merge
     // groups are derived FROM that stream ("根据源实时计算") — no library-wide
     // snapshot exists anywhere. Rules activate/change → notifyRulesChanged →
@@ -2285,7 +2285,7 @@ class ScenarioResolver {
       }
     }
 
-    // 简播: files with a sibling `.llc` never join a merged group. Skipped
+    // 虚拟剪播: files with a sibling `.llc` never join a merged group. Skipped
     // entirely when no rule can merge anything — a non-VM view must never pay
     // for a filesystem pass.
     final Set<String> fakeCutExclusions = vmRules.isEmpty
@@ -2330,7 +2330,7 @@ class ScenarioResolver {
     ];
   }
 
-  // ── Virtual Media derivation (shared by search) ──
+  // ── Virtual Merge derivation (shared by search) ──
 
   /// Last fully materialized persisted-config view. Also serves
   /// [resolveVmGroupsFor], so a search pass and a queue page share ONE walk
@@ -2345,7 +2345,7 @@ class ScenarioResolver {
   Map<String, PlaybackOccurrenceId> get vmRepresentativeOccurrence =>
       _vmRepresentativeOccurrence;
 
-  /// Derives (and caches) [scenarioId]'s Virtual Media merge groups from its
+  /// Derives (and caches) [scenarioId]'s Virtual Merge merge groups from its
   /// OWN effective stream, honoring the persisted definition (sort / order /
   /// shuffle / dedup) and exclusions — the SAME derivation the queue overlay
   /// uses, so a search hit and the queue row can never disagree.

@@ -13,6 +13,7 @@ import 'package:iris/features/virtual_media/interaction/controller/virtual_seek_
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/meta_settings/engine/step_tail_finish_mode.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
@@ -1328,7 +1329,7 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     // key-frame landing can only be wrong (see [stepNeedsExactSeek]);
     // everything else needs the exact landing.
     final bool stepSeek = fvpStepUsesKeyframeSeek(src);
-    // Virtual Media: cross-segment targets open WITH the intra-segment
+    // Virtual Merge: cross-segment targets open WITH the intra-segment
     // offset (pendingSeekMs handoff) instead of flashing 0% first — unless
     // the drag strategy says to hold the picture until release (spec §6).
     if (VirtualMediaController.instance.isActive) {
@@ -1799,8 +1800,11 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     };
   }, []);
 
-  // Virtual Media timeline translation (spec §4.2).
+  // Virtual Merge timeline translation (spec §4.2).
   final vmCtrlF = VirtualMediaController.instance;
+  // Subscribe to session changes: adoption/exit can happen while paused, when
+  // no position tick would rebuild this hook (mirrors the media_kit hook).
+  useVmPlaybackStore().select(context, (s) => s.item?.scopeKey);
   final isVmF = vmCtrlF.isActive;
   // Stale-session self-heal (mirrors the media_kit hook): clear a store item
   // that is no longer the active session so progress surfaces drop the

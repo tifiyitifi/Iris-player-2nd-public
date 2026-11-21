@@ -1,0 +1,15 @@
+# Private terms that the local privacy gate must reject.
+#
+# One term per line, matched case-insensitively as a substring of every added
+# line, file name and commit message. Lines starting with # are ignored.
+#
+# scripts/init-local-privacy-gate.ps1 copies this file to
+# .local_privacy/deny-list.txt on first install and adds the machine account
+# and the checkout's machine-specific ancestor folder names.
+#
+# Add the real names that must never be published: account and folder names,
+# library roots, download-site titles, series and batch names, and anything
+# else that identifies this machine or its owner.
+#
+# Never commit the filled-in list. .local_privacy/ is gitignored, and this
+# example file is the only version that belongs in the repository.

@@ -4,7 +4,7 @@ import 'package:iris/utils/logger.dart';
 
 final _log = AreaKeyLog(LogKeys.legacyDb);
 
-/// Schema v36: per-file exclusion rules for virtual media.
+/// Schema v36: per-file exclusion rules for virtual merge.
 ///
 /// Adds three `vm_rules` columns backing the new editor switches:
 /// `use_exclude_overlong` (exclude single videos longer than the threshold),

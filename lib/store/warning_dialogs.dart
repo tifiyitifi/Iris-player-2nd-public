@@ -84,7 +84,7 @@ const String kWarningScenarioBrowsePlayOverride = 'scenarioBrowsePlayOverride';
 /// shown before the Tag sheet opens. Recoverable — the sheet explains again.
 const String kWarningTagCommandGrammar = 'tagCommandGrammar';
 
-/// First-use explainer of Virtual Media: consecutive videos are merged into a
+/// First-use explainer of Virtual Merge: consecutive videos are merged into a
 /// single virtual timeline at playback time; disk files are never modified.
 /// Recoverable — rule CRUD stays available either way.
 const String kWarningVmMergeConcept = 'vmMergeConcept';
