@@ -67,9 +67,17 @@ const int vmResumeEndSafetyMs = 5000;
   final progress = progressByKey[segment.mediaKey]!;
   if (progress.completed) return (bestIdx, 0);
 
-  final positionMs = progress.positionMs ?? 0;
+  var positionMs = progress.positionMs ?? 0;
   final durationMs = segment.durationMs ?? 0;
   if (positionMs <= 0 || durationMs <= 0) return (bestIdx, 0);
+  // A mergeable cut stores SOURCE progress but its local axis is the kept
+  // range. A source point the cut removed (or one past its end = watched
+  // through) resumes from the segment head, exactly like a completed file.
+  if (segment.cutRange != null) {
+    final int? local = segment.cutRange!.toCutMs(positionMs);
+    if (local == null) return (bestIdx, 0);
+    positionMs = local;
+  }
 
   final maxLocal = durationMs - 1;
   // Tail guard only applies to files comfortably longer than the safety

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import 'package:iris/features/playback_tools/services/screenshot_media_scan.dart';
+import 'package:iris/features/video_transform/services/video_transform_math.dart';
+import 'package:iris/features/video_transform/store/video_transform_store.dart';
 import 'package:iris/features/playback_tools/services/screenshot_paths.dart';
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
@@ -138,6 +140,10 @@ typedef DirEnsurer = Future<void> Function(String dir);
 /// Re-encodes arbitrary frame bytes as PNG; null when undecodable.
 typedef PngTranscoder = Future<Uint8List?> Function(Uint8List bytes);
 
+/// Applies the live-surface geometric transform (mirror/rotation) to captured
+/// PNG bytes; null means "keep the original bytes".
+typedef PngPostProcessor = Future<Uint8List?> Function(Uint8List bytes);
+
 /// Tells the OS gallery about a saved file; production scans on Android.
 typedef GalleryNotifier = Future<void> Function(String path);
 
@@ -186,6 +192,7 @@ Future<ScreenshotResult> captureFrameCore({
   required FrameWriter writeBytes,
   DirEnsurer? ensureDir,
   PngTranscoder? transcodeToPng,
+  PngPostProcessor? postProcessPng,
   GalleryNotifier? notifyGalleryVisible,
   bool skipPermission = false,
   bool customDirSkipped = false,
@@ -223,6 +230,20 @@ Future<ScreenshotResult> captureFrameCore({
     pngBytes = transcoded;
   }
 
+  // Carry the session's mirror/rotation into the saved frame. Those transforms
+  // are paint-level on the surface, so the raw backend frame does not include
+  // them (unlike mpv's own vf filters, which would). A decode/transform/encode
+  // failure falls back to the untouched frame rather than losing the shot.
+  Uint8List outputBytes = pngBytes;
+  if (postProcessPng != null) {
+    try {
+      final Uint8List? processed = await postProcessPng(pngBytes);
+      if (processed != null && processed.isNotEmpty) outputBytes = processed;
+    } catch (e) {
+      _log.warning('screenshot transform failed: $e');
+    }
+  }
+
   // Best-effort permission grant before the public-dir write; denial is
   // not fatal — the fallback chain below still produces a file.
   if (!skipPermission) {
@@ -257,7 +278,7 @@ Future<ScreenshotResult> captureFrameCore({
   for (final path in chain) {
     try {
       await ensure(p.dirname(path));
-      await writeBytes(path, pngBytes);
+      await writeBytes(path, outputBytes);
       try {
         await (notifyGalleryVisible ??
             ScreenshotMediaScan.notifyGalleryVisible)(path);
@@ -282,6 +303,11 @@ Future<ScreenshotResult> captureCurrentFrame(MediaPlayer player) async {
   // Capability gate FIRST: an unsupported backend needs no directory probe
   // (and must not hit path_provider just to say "not supported").
   if (player is! MediaKitPlayer) return const ScreenshotUnsupported('fvp');
+  // Snapshot the picture transform NOW, before the first await: the frame
+  // bytes only arrive later, and a rotation/mirror changed in between must not
+  // be baked into a shot of the previous picture.
+  final Future<Uint8List?> Function(Uint8List)? screenshotTransform =
+      buildScreenshotTransform(useVideoTransformStore().state);
   final String docsPath;
   try {
     final docs = await getApplicationDocumentsDirectory();
@@ -309,6 +335,10 @@ Future<ScreenshotResult> captureCurrentFrame(MediaPlayer player) async {
   return captureFrameCore(
     isMediaKit: true,
     frameSource: () => player.player.screenshot(format: 'image/png'),
+    // Mirror/rotation live in the Flutter paint layer, so bake them into the
+    // saved PNG to keep the shot WYSIWYG. Off-isolate: a 1080p
+    // decode+transform+encode must not jank the player.
+    postProcessPng: screenshotTransform,
     resolveLocalVideoPath: _resolveCurrentPlayingLocalPath,
     customDirPath: pick.path,
     defaultDirPath: defaultDir,

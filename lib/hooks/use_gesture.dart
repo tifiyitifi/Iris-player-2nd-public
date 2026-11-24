@@ -6,6 +6,7 @@ import 'package:flutter_volume_controller/flutter_volume_controller.dart';
 import 'package:iris/features/background_playback/view/player_control_target_scope.dart';
 import 'package:iris/features/speed/model/speed_gesture_math.dart';
 import 'package:iris/features/speed/model/speed_gesture_resolver.dart';
+import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/resolve_keyboard_scheme.dart';
 import 'package:iris/globals.dart' show speedStops;
 import 'package:iris/hooks/use_brightness.dart';
@@ -111,7 +112,25 @@ Gesture useGesture({
 
   void onTap() {
     final ui = usePlayerUiStore().state;
-    final bool rc = shouldRequireClickToShowPanel(useAppStore().state);
+    final app = useAppStore().state;
+    // Picture-fullscreen queue overlay: the panel is not a route, so the video
+    // tap IS the "click elsewhere". Spend the click on closing it and leave the
+    // chrome alone — the user asked to dismiss the panel, not to summon the
+    // control bar over it.
+    if (shouldDismissFullscreenDockOnVideoTap(
+      overlayEnabled: isFullscreenDockOverlayEnabled(
+        isDesktop: isDesktop,
+        useMetadataSettings: app.useMetadataSettings,
+        mode: app.playlistPanelMode,
+        isFullScreen: ui.isFullScreen,
+        legacyStorage: app.useLegacyStoragePersistence,
+      ),
+      shown: ui.isFullscreenDockPinned || ui.isFullscreenDockPeeking,
+    )) {
+      usePlayerUiStore().hideFullscreenDock();
+      return;
+    }
+    final bool rc = shouldRequireClickToShowPanel(app);
     if (!ui.isShowControl) {
       if (rc) usePlayerUiStore().updateIsPanelClickArmed(true);
       showControl();

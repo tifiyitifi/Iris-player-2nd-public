@@ -70,6 +70,36 @@ rule + covered files
 - Overlong exclusion removes only files whose duration is known and strictly
   greater than the threshold. Unknown/zero durations are never excluded; they
   join and degrade at preflight.
+- 虚拟剪播 admission follows the ACTIVE plan (ADR 0037): an active usable plan
+  becomes a cut segment whatever its range count (`durationMs` = the plan's
+  total cut length, `cutRange` carries `(planPath, keeps[], planSignature)`);
+  no active plan or an unusable plan merges the source; a backend without EDL
+  merges the source. `vmCutMergeInfoForStream` resolves the ranges once per pass,
+  and the player opens exactly `cutRange.planPath`. Activating/closing a plan
+  re-segments the live session before the cut store's revision bump reopens the
+  media. Source progress maps through the concatenated cut timeline (first hit
+  wins for a repeated/overlapping range).
+- The cut-project index is explicit and dropped by a completed media rescan
+  (`MediaRevisionActions.mediaRescanned` → `FakeCutProjectIndex.invalidate()`)
+  BEFORE the media-content announce, so an added/removed `.llc` re-derives open
+  merges without the 虚拟剪播 tab's refresh (ADR 0033).
+- An EDITED active plan is detected at open time: `VmCutRange.planSignature`
+  holds the plan's content signature, and `vmCutOpenResult` compares it with the
+  opened session's. A mismatch (or a plan that could not be opened) calls
+  `PlaybackProviderRegistry.onCutPlanEdited()`: it re-advertises the change and
+  runs a FORCED `refreshLiveVirtualGroups()` after the in-flight feed settles.
+  The deferral is required (`resegmentLiveFromGroups` refuses mid-feed) and the
+  force bypasses the scenario-keyed group caches, whose signature does not
+  include the `.llc` content (ADR 0034, ADR 0038). Idempotent, so no loop.
+- The ACTIVE plan is matched to the scanned project by path IDENTITY
+  (`samePlanPath` → `package:path` equality), not exact strings: a separator or
+  case difference must not silently drop an activated cut from the merge
+  (ADR 0037).
+- A cut-plan change uses `VirtualMediaService.notifyCutPlanChanged()`: it bumps
+  the VM revision (derived-index signature), clears the membership pin, refreshes
+  an active tag snapshot and sends both re-resolve signals, but preserves the
+  rule cache and the per-session scan bookkeeping (ADR 0035). The full
+  `notifyRulesChanged` fan-out is reserved for rule edits.
 - `skipSingleSegment` drops a chunk that ends with one segment.
 - Chunk numbering counts chunks, not list rows. Under `sameDirOnly` the counter
   is per directory; otherwise it is per rule. The number is part of `scopeKey`,
@@ -134,6 +164,32 @@ virtual timeline fed to one decoder; this is a decision, not a missing branch.
   folder toggle calls it through
   `PlaybackProviderRegistry.adoptCurrentFeedAsVirtual`; the tag path
   re-resolves its snapshot first (the cached groups predate the change).
+- Every rule change announces itself through
+  `VirtualMediaService.notifyRulesChanged`, which emits BOTH revisions: the
+  playback version (player chrome, group/locate caches) and the content
+  revision that open queues re-fetch on. It re-resolves an active tag view
+  through a late-bound hook before that refetch. The queue's follow token folds
+  in the identity of the visible row that owns the playing occurrence, so a
+  re-group scrolls a follow-enabled list to the row's new element while a plain
+  refresh or a manual page change never moves it (ADR 0027).
+- The master switch gates resolution, not the rule store: it is the power source
+  for every rule, so a folder "use" request is REFUSED with a choice when the
+  switch is off (`needsMasterChoice`, nothing written). The three answers are
+  resume-only-this-folder (disable the other enabled rules first), resume
+  everything, or cancel. `toggleVmDirUseMode` turns the switch back on through
+  `setVmMasterEnabled`, which invalidates the rule cache, re-resolves an active
+  tag view and emits both revision signals before the live-feed adoption runs
+  (ADR 0028).
+- The manager is the ONE reader of `VmPrefs.masterEnabled()`: the value drives
+  both the panel's paused banner and a CONTROLLED `VmMasterSwitch` (`enabled`
+  is a prop). A second, mount-time read inside the switch is what let the two
+  disagree after a folder action resumed merging (ADR 0028).
+- Writes are all-or-nothing and reported: "keep only this folder" restores the
+  rules it already disabled when one disable fails (`failed`, nothing written),
+  and a master-preference write that fails leaves the runtime switch on its old
+  value and emits no signal (`masterSaveFailed`, rule saved but still paused).
+  `VmDirToggleResult.notified` lets the manager skip a second notification
+  fan-out after the command already ran it (ADR 0029, ADR 0030).
 - A stale session is reconciled only while `isActive`. `transitioning` must be
   released first; `releaseOrphanedTransition` handles a transition the queue has
   already left, but leaves a genuine in-flight feed alone.

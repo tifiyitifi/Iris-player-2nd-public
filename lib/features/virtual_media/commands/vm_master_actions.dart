@@ -1,5 +1,4 @@
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
-import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/store/vm_prefs.dart';
@@ -13,8 +12,13 @@ import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 /// - both re-resolution signals bump, so open lists rebuild without groups.
 ///
 /// Individual rules are untouched: pausing only suspends resolution.
-Future<void> setVmMasterEnabled({required bool enabled}) async {
-  await VmPrefs.setMasterEnabled(enabled);
+///
+/// Returns false when the preference write failed: nothing was invalidated or
+/// notified, so the runtime state still matches the old value and the caller
+/// must surface the failure instead of reporting a switch change.
+Future<bool> setVmMasterEnabled({required bool enabled}) async {
+  final saved = await VmPrefs.setMasterEnabled(enabled);
+  if (!saved) return false;
 
   final service = VirtualMediaService.instance;
   // Drop the cached rule snapshot BEFORE any re-resolve below: on a disable,
@@ -56,9 +60,11 @@ Future<void> setVmMasterEnabled({required bool enabled}) async {
     }
   }
 
+  // Both re-resolution signals are part of this call: `playbackVersion` (player
+  // chrome) AND `sourceScanRevision` (open queue surfaces — the always-mounted
+  // desktop dock only re-fetches on the latter). The persisted index signature
+  // includes the enabled rule set, so that refetch rebuilds generations without
+  // groups when OFF.
   await service.notifyRulesChanged();
-  // Open queue surfaces listen to this revision (playbackVersion alone does
-  // not re-fetch them). The persisted index signature includes the enabled
-  // rule set, so this refetch rebuilds generations without groups when OFF.
-  await usePlaybackScenarioStore().notifyQueueRefetch();
+  return true;
 }

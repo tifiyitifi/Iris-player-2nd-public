@@ -25,6 +25,7 @@ import 'package:iris/features/media_library/model/db/repositories/sub/progress_w
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/playback/vm_duration_backfill.dart';
 import 'package:iris/features/virtual_media/playback/vm_timeline_ownership.dart';
+import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/virtual_media/vm_l10n.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -411,6 +412,27 @@ class VirtualMediaController {
   /// True while [_feedCurrent] is awaiting its async node lookup / queue push.
   bool get feedInFlight => _feedInFlight;
 
+  /// Actions to run once the CURRENT feed settles (the open completed and
+  /// [_feedInFlight] cleared).
+  ///
+  /// A cut-plan edit uses this to re-segment the live merge without racing the
+  /// open: replacing the live item mid-feed would be overwritten when the feed
+  /// lands, which is why [resegmentLiveFromGroups] refuses while a feed is in
+  /// flight. The action is idempotent by contract (it re-derives from current
+  /// state), so a duplicate run is harmless.
+  final List<Future<void> Function()> _afterFeedSettled =
+      <Future<void> Function()>[];
+
+  /// Runs [action] now when no feed is in flight, or right after the in-flight
+  /// one settles otherwise.
+  Future<void> afterCurrentFeedSettled(Future<void> Function() action) async {
+    if (!_feedInFlight) {
+      await action();
+      return;
+    }
+    _afterFeedSettled.add(action);
+  }
+
   /// True while VM owns — or is about to own — the player timeline.
   ///
   /// [isActive] alone is NOT enough for callers that must not stack on a VM
@@ -668,8 +690,15 @@ class VirtualMediaController {
       _log.i('vm adopt refused: queue is on $liveKey, group wants $segKey');
       return false;
     }
-    final seeded =
-        localMs ?? usePlaybackProgressStore().state[liveKey]?.$1 ?? 0;
+    var seeded = localMs ?? usePlaybackProgressStore().state[liveKey]?.$1 ?? 0;
+    // The live store carries SOURCE milliseconds (the player maps a cut's
+    // position before writing). A mergeable cut segment's local axis is the
+    // kept range, so convert before seeding; a source point outside the range
+    // means "watched through" → head (ADR 0031). An explicit [localMs] is
+    // already a VM local position and must not be mapped twice.
+    if (localMs == null && seg.cutRange != null) {
+      seeded = seg.cutRange!.toCutMs(seeded) ?? 0;
+    }
     store.replace(const VmPlaybackState().copyWith(
       item: candidate,
       segmentIndex: segIdx,
@@ -693,6 +722,76 @@ class VirtualMediaController {
     unawaited(_backfillUnknownDurations());
     _log.i('vm adopted live feed (${candidate.displayName}) '
         'seg=${seg.mediaKey} local=$_localMs');
+    return true;
+  }
+
+  /// Re-shapes the LIVE session from freshly resolved groups after a cut-plan
+  /// change (ADR 0032), WITHOUT reopening the media here: the cut store's
+  /// revision bump performs the reopen after this call, so it reads the new
+  /// segment duration/cut range.
+  ///
+  /// - The current physical file is still in a group → replace the item (the
+  ///   merged timeline — `prefixMs`, totals, caps — is rebuilt from the new
+  ///   segment durations).
+  /// - It is no longer mergeable (no rule covers it any more, or its active plan
+  ///   became unusable) → leave the merge and keep the physical file playing as
+  ///   a single.
+  ///
+  /// A feed in flight is left alone: it will land with the old group, and the
+  /// next feed/resolve uses the fresh one. Returns true when the live item was
+  /// replaced.
+  Future<bool> resegmentLiveFromGroups(VmStreamGroups groups) async {
+    final item = state.item;
+    if (item == null) return false;
+    if (_feedInFlight || state.transitioning) return false;
+    final seg = currentSegmentOrNull;
+    if (seg == null) return false;
+
+    VirtualMediaItem? newGroup;
+    var newSegIdx = 0;
+    for (final group in groups.inOrder) {
+      final idx =
+          group.indexOfSegment(seg.mediaKey, seg.occurrenceIndex) ??
+              group.indexOfSegmentKey(seg.mediaKey);
+      if (idx == null) continue;
+      newGroup = group;
+      newSegIdx = idx;
+      break;
+    }
+    if (newGroup == null) {
+      // The live file left every mergeable group: the cut now plays alone, so
+      // stop owning the timeline but keep the current physical file playing.
+      await deactivateForNavigation(flushAnchor: false);
+      _log.i('vm live segment left the merge after a cut change: ${seg.mediaKey}');
+      return false;
+    }
+    final newQueue = groups.inOrder;
+    final queueIndex =
+        newQueue.indexWhere((g) => g.scopeKey == newGroup!.scopeKey);
+    if (queueIndex < 0) return false;
+    final VirtualSegment newSeg = newGroup.segments[newSegIdx];
+    // Keep the visible position on the same PHYSICAL point across the switch:
+    // every cut plan has its own cut timeline, so a cut→cut switch goes through
+    // the source axis too (ADR 0037).
+    var local = _localMs;
+    if (seg.cutRange != null) {
+      final source = seg.cutRange!.toSourceMs(local);
+      local = newSeg.cutRange == null
+          ? source
+          : (newSeg.cutRange!.toCutMs(source) ?? 0);
+    } else if (newSeg.cutRange != null) {
+      local = newSeg.cutRange!.toCutMs(local) ?? 0;
+    }
+    store.replace(state.copyWith(
+      item: newGroup,
+      queue: newQueue,
+      queueIndex: queueIndex,
+      segmentIndex: newSegIdx,
+    ));
+    _localMs = clampVmLocalMs(newSeg.durationMs, local);
+    _log.i('vm live segment re-segmented after a cut change: '
+        '${seg.mediaKey} -> ${newGroup.scopeKey} '
+        'dur=${newSeg.durationMs}');
     return true;
   }
 
@@ -1372,6 +1471,14 @@ class VirtualMediaController {
       if (seq == _feedSeq) {
         _feedInFlight = false;
         _feedFuture = null;
+        if (_afterFeedSettled.isNotEmpty) {
+          final List<Future<void> Function()> actions =
+              _afterFeedSettled.toList(growable: false);
+          _afterFeedSettled.clear();
+          for (final Future<void> Function() action in actions) {
+            unawaited(action());
+          }
+        }
       }
     }
   }
@@ -1421,8 +1528,14 @@ class VirtualMediaController {
     // player hook's resume read (duration arrival) always sees the decided
     // value — jump target, explicit 0, or nothing (plain open). The hooks
     // hold no VM seek logic: this write IS the whole steering mechanism.
-    final preWrite = _feedPreWriteMs;
+    var preWrite = _feedPreWriteMs;
     _feedPreWriteMs = null;
+    // A mergeable cut segment's local offset is a CUT-timeline position, while
+    // `media_nodes` always stores SOURCE milliseconds. Convert at this one
+    // boundary; the player's cut-aware resume maps it back onto the EDL (ADR 0031).
+    if (preWrite != null && seg.cutRange != null) {
+      preWrite = seg.cutRange!.toSourceMs(preWrite);
+    }
     if (preWrite != null) {
       try {
         // The pre-write fully owns this segment's media_nodes progress for

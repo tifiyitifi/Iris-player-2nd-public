@@ -343,18 +343,32 @@ Future<List<VirtualSegment>> loadPreviewLibrarySegments() async {
 Future<ResolvedRules> resolveEnabledRules() async {
   final all = await DbModule.virtualMediaRepo.loadRules();
   final lib = await loadPreviewLibrarySegments();
-  // 虚拟剪播: a video with a sibling `.llc` never joins a group (same rule the
-  // playback derivation applies — see vm_fake_cut_exclusions.dart).
-  final Set<String> fakeCutExclusions =
-      await vmFakeCutExclusionKeys(lib);
+  // 虚拟剪播: the ACTIVE plan joins the preview group with its whole cut
+  // timeline (ADR 0037) — the same rule the playback derivation applies (see
+  // vm_fake_cut_exclusions.dart).
+  final VmCutMergeInfo fakeCut = await vmCutMergeInfo(
+    lib,
+    preferredPlanPaths: activeCutPlanPaths(),
+  );
+  final previewLibrary = <VirtualSegment>[
+    for (final segment in lib)
+      fakeCut.rangesByKey[segment.mediaKey] == null
+          ? segment
+          : segment.withCutRange(
+              fakeCut.rangesByKey[segment.mediaKey],
+              // The cut replaces the displayed length; keep the source length
+              // so a later `withCutRange(null)` can restore it.
+              sourceDurationMs: segment.durationMs,
+            ),
+  ];
   final enabled = all.where((r) => r.enabled).toList();
   // Cross-rule exclusion must be resolved ONCE over all enabled rules: a
   // `notUse` rule removes its folder from a DIFFERENT `use` rule's candidates,
   // which a per-rule isolated resolve could never see. The preview library is
   // capped at 50k, so a materialized set is fine here (playback uses the
   // byte-mask fast path instead).
-  final ruleExcluded = vmRuleExcludedKeys(enabled, lib);
-  final combined = <String>{...fakeCutExclusions, ...ruleExcluded};
+  final ruleExcluded = vmRuleExcludedKeys(enabled, previewLibrary);
+  final combined = <String>{...ruleExcluded};
   final map = <String, List<VirtualMediaItem>>{};
   for (final r in enabled) {
     if (r.useMode == VmRuleUseMode.notUse) {
@@ -368,7 +382,7 @@ Future<ResolvedRules> resolveEnabledRules() async {
     // that scenario, so the preview always re-derives.
     map[r.id] = resolveVirtualMedia(
       rules: [r],
-      library: lib,
+      library: previewLibrary,
       applyPin: false,
       excludedMediaKeys: combined,
     );

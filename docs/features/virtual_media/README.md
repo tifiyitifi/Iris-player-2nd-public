@@ -23,7 +23,9 @@ In scope:
 - duration acquisition: DB-only preflight, Shell batch scan, pseudo-play harvest;
 - the membership pin and the localized physical delete;
 - the player UI: rule editor, scrubber marks, dual time, merged totals, errors;
-- cross-feature boundaries: Sub Audio, fake cut, scenario queues, phone dials.
+- cross-feature boundaries: Sub Audio, fake cut (a merge follows the ACTIVE
+  cut: no plan → source, any kept ranges → their concatenated cut timeline),
+  scenario queues, phone dials.
 
 Out of scope:
 
@@ -37,9 +39,9 @@ Out of scope:
 
 | Fact | Value |
 | --- | --- |
-| Shipped | incrementally through the v2.0.x line; v2.1.0 adds the player "More" entry and the seamless-merge master switch |
-| Current version | `2.1.0` (`pubspec.yaml`) |
-| Drift schema | 53; the feature owns v16, v18, v19, v21, v33, v36 |
+| Shipped | incrementally through the v2.0.x line; v2.1.0 adds the player "More" entry and the seamless-merge master switch; v2.1.2 lets every kept Virtual Cut range join a merge |
+| Current version | `2.1.2` (`pubspec.yaml`) |
+| Drift schema | 54; the feature owns v16, v18, v19, v21, v33, v36, v54 |
 | Derived index | `vm_groups` / `vm_group_members` existed v39-v44 and were dropped in v45 |
 | Availability gate | metadata settings era only (`VirtualMediaGate.enabled`) |
 | Platforms | Android, Windows (Linux builds pass CI) |

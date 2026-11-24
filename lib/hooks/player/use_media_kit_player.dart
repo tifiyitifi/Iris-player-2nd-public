@@ -18,6 +18,7 @@ import 'package:iris/globals.dart' as globals;
 import 'package:iris/features/virtual_media/interaction/controller/virtual_seek_handler.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/interaction/state/vm_drag_gate.dart';
+import 'package:iris/features/virtual_media/playback/vm_cut_open.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
@@ -31,6 +32,8 @@ import 'package:iris/utils/seek_tail_guard.dart';
 import 'package:iris/features/meta_settings/engine/step_tail_finish_mode.dart';
 import 'package:iris/features/meta_settings/engine/video_cache_preset.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
+import 'package:iris/features/video_transform/services/video_transform_apply.dart';
+import 'package:iris/features/video_transform/store/video_transform_store.dart';
 import 'package:iris/models/file.dart';
 import 'package:iris/models/player.dart';
 import 'package:iris/models/progress.dart';
@@ -190,6 +193,25 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
     ));
     return null;
   }, [videoCachePreset]);
+
+  // Picture-adjustment COLOR (session-scoped). The geometric flip/rotation is
+  // owned by the Flutter surface (`video_view.dart`); mpv only carries the
+  // equalizer. VO properties apply live, so a slider drag stays smooth. The
+  // tuple dep re-runs on any color change AND when the media-change reset
+  // restores the neutral triple.
+  final videoTransformColor = useVideoTransformStore().select(
+    context,
+    (s) => (s.brightness, s.contrast, s.saturation),
+  );
+  useEffect(() {
+    final platform = player.platform;
+    if (platform is! NativePlayer) return null;
+    unawaited(applyVideoColorToMediaKit(
+      platform,
+      useVideoTransformStore().state,
+    ));
+    return null;
+  }, [videoTransformColor]);
 
   final List<PlayQueueItem> playQueue =
       usePlayQueueStore().select(context, (state) => state.playQueue);
@@ -445,25 +467,21 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
   ///
   /// One containing range → seek there; several (overlap / repeat) → ask; a
   /// removed gap → the next kept range; past everything → the head.
-  Future<void> resumeCutAtSource(FakeCutSession cut, int sourceMs) async {
+  Future<void> resumeCutAtSource(
+    FakeCutSession cut,
+    int sourceMs, {
+    bool autoResolve = false,
+  }) async {
     final FakeCutResume resume = resolveFakeCutResume(cut.plan, sourceMs);
-    int? target;
-    switch (resume.kind) {
-      case FakeCutResumeKind.none:
-        target = null;
-      case FakeCutResumeKind.exact:
-      case FakeCutResumeKind.gapNext:
-        target = resume.fakeMs;
-      case FakeCutResumeKind.ambiguous:
-        if (context.mounted) {
-          target = await showFakeCutSyncChoiceDialog(
-            context,
-            savedPosition: formatDurationHms(Duration(milliseconds: sourceMs)),
-            candidates: resume.candidates,
-          );
-        }
-      case FakeCutResumeKind.afterEnd:
-        target = null;
+    final ({int? fakeMs, bool needsChoice}) decision =
+        decideFakeCutResume(resume, autoResolve: autoResolve);
+    int? target = decision.fakeMs;
+    if (decision.needsChoice && context.mounted) {
+      target = await showFakeCutSyncChoiceDialog(
+        context,
+        savedPosition: formatDurationHms(Duration(milliseconds: sourceMs)),
+        candidates: resume.candidates,
+      );
     }
     if (target == null) {
       // No usable sync point: start at the head. Arming at 0 (rather than
@@ -571,23 +589,56 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
       }
 
       // 虚拟剪播: build the EDL BEFORE the open so the media identity is right on
-      // the first try (no source open followed by an EDL reopen). VM owns its
-      // own virtual timeline, so a fake-cut session is never stacked on it.
+      // the first try (no source open followed by an EDL reopen).
+      //
+      // A Virtual-Merge segment normally stands the cut down (VM owns the
+      // timeline). The ONE exception is a segment the merge resolved AS a cut
+      // (ADR 0031): its local offset is already on the cut timeline, so the EDL
+      // is exactly the media that segment must open. A different file under the
+      // same VM session keeps the stand-down, so no stale plan can attach.
       //
       // `resolveFakeCutSessionFor` is total: a project that cannot be read is
       // "play the source", not an exception that would skip `player.open`
       // below.
       FakeCutSession? cut;
-      if (VirtualMediaController.instance.ownsTimeline) {
+      final vmCtrl = VirtualMediaController.instance;
+      final vmSeg = vmCtrl.ownsTimeline ? vmCtrl.currentSegmentOrNull : null;
+      final bool vmCutSegment = vmSeg != null &&
+          vmSeg.cutRange != null &&
+          canonicalProgressKey(vmSeg.storageId, vmSeg.path, uri: vmSeg.uri) ==
+              canonicalProgressKey(file.storageId, file.path, uri: file.uri);
+      if (vmCtrl.ownsTimeline && !vmCutSegment) {
         // Not just `isActive`: a VM switch keeps `isActive` false until its own
         // feed lands, and an EDL resolved inside that window would replace the
         // segment that is already being opened.
         diagLog.d('fake cut skipped: Virtual Media owns the timeline');
       } else {
-        cut = await resolveFakeCutSessionFor(
+        // A merge segment opens EXACTLY the plan its group resolved, so a plan
+        // switch racing the feed cannot make the played EDL disagree with the
+        // displayed duration (ADR 0032).
+        final VmCutRange? vmCut = vmCutSegment ? vmSeg.cutRange : null;
+        final FakeCutSession? opened = await resolveFakeCutSessionFor(
           file: file,
-          resolvePlan: fakeCutStore.ensureActivePlan,
+          resolvePlan: vmCut != null
+              ? (f) => fakeCutStore.ensurePlanAt(f, vmCut.planPath)
+              : fakeCutStore.ensureActivePlan,
         );
+        if (vmCut == null) {
+          cut = opened;
+        } else {
+          // The open always re-reads the `.llc`, so an edited plan plays a NEW
+          // timeline while the group still shows the old kept length: request
+          // one live re-derive so both agree again (ADR 0034). Idempotent — the
+          // next group carries the fresh signature.
+          final VmCutOpen open = vmCutOpenResult(vmCut, opened);
+          cut = open.session;
+          if (open.regroup) {
+            // The group still carries the pre-edit signature, so advertise the
+            // change and re-derive AFTER this open settles (a mid-feed resegment
+            // would be overwritten when the feed lands — ADR 0034).
+            unawaited(PlaybackProviderRegistry.onCutPlanEdited());
+          }
+        }
       }
       fakeCutSession.value = cut;
 
@@ -619,6 +670,16 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
         // keep treating the media as untouched.
         if (cut != null) fakeCutStore.noteCutPlaying(fakeCutFileKey(file));
       }
+
+      // mpv's VO equalizer can be reset by the new file / a VO rebuild, which
+      // left the sliders showing one value while the picture was neutral. Re-
+      // assert the session color after every open (fvp already does this after
+      // `initialize()`). Best-effort: an output driver without the properties
+      // keeps the picture untouched.
+      unawaited(applyVideoColorToMediaKit(
+        player.platform,
+        useVideoTransformStore().state,
+      ));
 
       // CLOSE_DEBUG_LOG: sample pos/dur at 1s for the first ~5s after open.
       // The @+Ns wall-clock marker distinguishes "main thread blocked" (tick
@@ -1037,7 +1098,8 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
             case OpenResumeDecision.seekDb:
               areaKeyLog.i('Resume DB progress: ${file.name} position: $resumeAt');
               if (cut != null) {
-                await resumeCutAtSource(cut, resumeAt);
+                // A VM auto-advance must not stop on a sync dialog (ADR 0037).
+                await resumeCutAtSource(cut, resumeAt, autoResolve: vmTargeted);
                 break;
               }
               // Lock BEFORE issuing the seek: landing checks run on the
@@ -1065,7 +1127,11 @@ MediaKitPlayer useMediaKitPlayer(BuildContext context) {
                 diagLog.d('resume seek history pos=${progress.position.inMilliseconds}ms dur=${progress.duration.inMilliseconds}ms');
                 areaKeyLog.i('Resume progress: ${file.name} position: ${progress.position} duration: ${progress.duration}');
                 if (cut != null) {
-                  await resumeCutAtSource(cut, progress.position.inMilliseconds);
+                  await resumeCutAtSource(
+                    cut,
+                    progress.position.inMilliseconds,
+                    autoResolve: vmTargeted,
+                  );
                 } else {
                   positionLock.value.armTarget(progress.position.inMilliseconds);
                   await player.seek(progress.position);

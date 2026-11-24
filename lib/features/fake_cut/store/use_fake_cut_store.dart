@@ -118,6 +118,12 @@ class FakeCutStoreState {
 class FakeCutStore extends PersistentStore<FakeCutStoreState> {
   FakeCutStore() : super(const FakeCutStoreState());
 
+  /// Late-bound "the active cut plan changed" hook, installed by the playback
+  /// layer. It re-resolves the live Virtual Merge session BEFORE the revision
+  /// bump reopens the media, so the reopen reads the new duration/cut range
+  /// instead of the previous plan's (ADR 0032). Null in unit tests.
+  static Future<void> Function(FileItem file)? cutPlanChangeHandler;
+
   /// A scan request that arrived while another one was in flight.
   ///
   /// The tab runs `discover()` twice in quick succession: on bind, and again
@@ -274,8 +280,9 @@ class FakeCutStore extends PersistentStore<FakeCutStoreState> {
       sourceDurationMs: file.durationMs,
     );
     if (plan.isEmpty) return false;
+    // State first, revision LAST: the reopen must observe the fresh active plan
+    // and the live merge must already have been re-segmented (ADR 0032).
     set(state.copyWith(
-      revision: state.revision + 1,
       activePaths: <String, String>{...state.activePaths, key: source.path},
       activePlans: <String, FakeCutPlan>{...state.activePlans, key: plan},
       activePlanSignatures: <String, String>{
@@ -284,6 +291,8 @@ class FakeCutStore extends PersistentStore<FakeCutStoreState> {
       },
     ));
     await _persistActivePaths();
+    await _notifyCutPlanChanged(file);
+    set(state.copyWith(revision: state.revision + 1));
     _log.i('fake cut activated: ${file.name} <- ${source.displayName} '
         '(${plan.segments.length} segments)');
     return true;
@@ -298,13 +307,22 @@ class FakeCutStore extends PersistentStore<FakeCutStoreState> {
     final Map<String, FakeCutPlan> plans = <String, FakeCutPlan>{
       ...state.activePlans
     }..remove(key);
-    set(state.copyWith(
-      revision: state.revision + 1,
-      activePaths: paths,
-      activePlans: plans,
-    ));
+    set(state.copyWith(activePaths: paths, activePlans: plans));
     await _persistActivePaths();
+    await _notifyCutPlanChanged(file);
+    set(state.copyWith(revision: state.revision + 1));
     _log.i('fake cut deactivated: ${file.name}');
+  }
+
+  Future<void> _notifyCutPlanChanged(FileItem file) async {
+    final handler = cutPlanChangeHandler;
+    if (handler == null) return;
+    try {
+      await handler(file);
+    } catch (e) {
+      // A merge re-resolve failure must never abort the cut switch itself.
+      _log.w('fake cut plan change handler failed: $e');
+    }
   }
 
   /// The plan [file] should open with RIGHT NOW, or null for the plain source.
@@ -363,6 +381,42 @@ class FakeCutStore extends PersistentStore<FakeCutStoreState> {
       await _forgetPlan(key);
       return null;
     }
+    set(state.copyWith(
+      activePlans: <String, FakeCutPlan>{...state.activePlans, key: plan},
+      activePlanSignatures: <String, String>{
+        ...state.activePlanSignatures,
+        key: source!.signature,
+      },
+    ));
+    return plan;
+  }
+
+  /// Materializes the exact plan the merge resolved, so the played EDL always
+  /// matches the duration the group displays even if the active plan changed
+  /// while the feed was landing (ADR 0032).
+  Future<FakeCutPlan?> ensurePlanAt(FileItem file, String planPath) async {
+    final String key = fakeCutFileKey(file);
+    final FakeCutPlan? cached = state.activePlans[key];
+    if (cached != null && cached.planPath == planPath) {
+      final String? current = await FakeCutDiscovery.signatureOf(planPath);
+      if (current != null && current == state.activePlanSignatures[key]) {
+        return cached;
+      }
+    }
+    final FakeCutPlanSource? source;
+    try {
+      source = await FakeCutDiscovery.readOne(
+        File(planPath),
+        sourceFileName: p.basename(file.uri),
+        sourceDurationMs: file.durationMs,
+      );
+    } catch (_) {
+      return null;
+    }
+    final FakeCutPlan? plan = source?.plan;
+    // Any kept range count merges (ADR 0037): the EDL timeline is the whole
+    // plan, so a multi-range project is a valid merge plan.
+    if (plan == null || plan.isEmpty || plan.totalMs <= 0) return null;
     set(state.copyWith(
       activePlans: <String, FakeCutPlan>{...state.activePlans, key: plan},
       activePlanSignatures: <String, String>{

@@ -13,9 +13,9 @@ local files, WebDAV, and FTP. Package `iris`, version `1.6.0+6` (`pubspec.yaml`)
   explicitly asked.
 - NEVER bump the Drift `schemaVersion` without adding a matching migration script under
   `lib/models/db/migration/`.
-- NEVER commit AI work unless the user explicitly asks to commit. When asked, commit to the
-  working branch (NOT the `-ai-tmp` record branch) with a suitable English
-  conventional-commit message — use the user's if provided, otherwise author one.
+- Commit finished AI work to the working branch (NOT the `-ai-tmp` record branch) with a
+  suitable English conventional-commit message — use the user's if provided, otherwise author
+  one.
 - NEVER whole-tree restore across branches (`git restore --source=<ref> .`). Return AI work
   only via the recorded per-file list; prefer `.githooks/ai-checkpoint.ps1`.
 
@@ -24,7 +24,7 @@ local files, WebDAV, and FTP. Package `iris`, version `1.6.0+6` (`pubspec.yaml`)
 | Concern | Library | Notes |
 |---|---|---|
 | State | `flutter_zustand` | Zustand stores. NOT Riverpod. |
-| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v53**. |
+| DB | `drift` (SQLite) | Tables / DAOs / repositories / migrations. Schema **v54**. |
 | Models | `freezed` + `json_serializable` | All domain models and DTOs. |
 | Widgets | `flutter_hooks` | `HookWidget` preferred over `StatefulWidget`. |
 | Playback | `media_kit` + `fvp` | Two swappable backends (`AppState.playerBackend`). |
@@ -57,7 +57,7 @@ Other key paths:
 
 - `lib/models/db/` — global Drift layer: `app_database.dart` (schema), `db_module.dart`
   (DAO→repository wiring), `tables/`, `dao/`, `repositories/`, `adapters/`,
-  `migration/` (`v2`–`v53`).
+  `migration/` (`v2`–`v54`).
 - `lib/store/` — global Zustand stores; `persistent_store.dart` is the `PersistentStore<T>`
   base class (`load`/`save` lifecycle).
 - `lib/pages/` — top-level pages (`home/`, `player/`, `bootstrap_gate.dart`).
@@ -132,6 +132,42 @@ Localization: add the key to `lib/l10n/app_en.arb` in the same change, consume v
   with a `docs/features/virtual_media/rules.md` row and its ADR;
   `scripts/check-vm-rules.ps1` must pass. SHAs are private provenance only.
 - **Comments:** explain the "Why"/design intent, not the "What"; concise English.
+
+### Feature Documentation (SDD / TDD / BDD-style)
+
+Every feature — existing or new — is documented in `docs/features/<feature>/` with the
+same fixed shape. The style is normative, not optional; only the *formality* is light:
+there is no Gherkin parser and no BDD runner, Flutter's `test()` stays the executor, and
+`rules.md` is the register that ties a sentence to a literal test name. A new feature is
+born with the full set (copy `docs/features/virtual_media/` as the reference), not with
+docs added later.
+
+| File | Owns |
+| --- | --- |
+| `README.md` | what the user sees, scope / out of scope, version facts, code map |
+| `spec.md` | SDD: one EARS requirement per sentence |
+| `design.md` | SDD: mechanism, data model, invariants |
+| `rules.md` | BDD-style case register: one observable behaviour per row + coverage tokens |
+| `recurrences.md` | symptoms and couplings that keep coming back |
+| `testing.md` | TDD: the gate table (what to run, on which device) |
+| `tasks.md` | open work and accepted gaps |
+| `decisions/` | append-only ADRs, numbered, plus `README.md` index |
+
+Rules of the register:
+
+- A behaviour change starts with its `rules.md` row and its ADR, then its failing test,
+  then the code (Red → Green → Refactor). Work that only touches docs/refactor still
+  updates the row it invalidates.
+- Coverage tokens: `F:<file>#<literal test name>` (must fail when the rule breaks),
+  `F:<file>` (parameterised/generated tests only), `D:<nnnn>` (governing decision),
+  `M` (device step in `testing.md`), `-:<reason>` (deliberately untested).
+- Rows are **append-only**: a rule that stops being true is superseded, never deleted;
+  ADRs keep their text and gain `Superseded by: NNNN`.
+- One sentence lives in one document; do not copy prose between `spec.md`, `design.md`
+  and `rules.md`. `docs/README.md` is the norm for what each file owns.
+- Each feature with a register owns a `scripts/check-<feature>-rules.ps1` (ASCII-only,
+  self-testing, resolves every `F:`/`D:`/decision link) and it must be green before a
+  commit. A register row may not claim coverage it does not have.
 
 ## Local Privacy Gate
 
@@ -259,8 +295,8 @@ this file is mirrored to the public repository.
 ## AI Session Conventions
 
 - Reply in the user's language (Chinese or mixed).
-- **Explicit commit request:** commit to `X` (NOT `-ai-tmp`) the working-tree changes, with an
-  English conventional-commit message — the user's if given, otherwise AI-authored.
+- **Commits:** commit to `X` (NOT `-ai-tmp`, the checkpoint branch) the working-tree changes,
+  with an English conventional-commit message — the user's if given, otherwise AI-authored.
 - `-ai-tmp` record branches are only for automatic checkpoints (audit trail).
 - **Checkpoint:** `.githooks/ai-checkpoint.ps1 -Message "<conventional message>"`. Guardrails:
   (R1) create `<X>-ai-tmp-commit-YYYYMMDD[-N]` fresh from the current tip of `X`; (R2) reset

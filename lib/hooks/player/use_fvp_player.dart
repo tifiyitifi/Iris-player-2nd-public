@@ -16,6 +16,8 @@ import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/features/meta_settings/engine/step_tail_finish_mode.dart';
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
+import 'package:iris/features/video_transform/services/video_transform_apply.dart';
+import 'package:iris/features/video_transform/store/video_transform_store.dart';
 import 'package:iris/hooks/player/advance_play_queue_on_completed.dart';
 import 'package:iris/hooks/player/live_progress_attribution.dart';
 import 'package:iris/hooks/player/media_info_writeback.dart';
@@ -339,6 +341,18 @@ FvpPlayer useFvpPlayer(BuildContext context) {
     return;
   }, [file?.type, width, height]);
 
+  // Picture-adjustment COLOR (session-scoped). fvp exposes brightness/contrast/
+  // saturation directly (its -1..1 range already matches the store); the
+  // geometric flip/rotation is owned by the Flutter surface.
+  final videoTransformColor = useVideoTransformStore().select(
+    context,
+    (s) => (s.brightness, s.contrast, s.saturation),
+  );
+  useEffect(() {
+    applyVideoColorToFvp(controller.value, useVideoTransformStore().state);
+    return null;
+  }, [videoTransformColor]);
+
   Future<void> init(FileItem? file) async {
     isInitializing.value = true;
     // Until this open completes, the controller still describes the previous
@@ -411,6 +425,9 @@ FvpPlayer useFvpPlayer(BuildContext context) {
         }
       }
       await controller.value.initialize();
+      // Re-apply the session color once the new file is open: fvp resets the
+      // controller's effects on init.
+      applyVideoColorToFvp(controller.value, useVideoTransformStore().state);
       // CLOSE_DEBUG_LOG
       diagLog.d(
           'opened dur=${controller.value.value.duration.inMilliseconds}ms pos=${controller.value.value.position.inMilliseconds}ms playing=${controller.value.value.isPlaying}');

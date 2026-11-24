@@ -813,7 +813,7 @@
   "set_identity_entries_desc": "创建带自定义图标与名称的桌面快捷方式，可选绑定场景 + 标签",
   "set_auto_resize_desc": "窗口随视频比例自动调整大小（仅桌面；全屏/最大化时不调整；便携版默认开启）",
   "set_playlist_panel_mode_desc": "侧边：右侧与视频并列（可拖拽 240–600px）；浮动：居中弹窗。长按列表或点按钮可随时切换",
-  "set_side_fullscreen_behavior_desc": "画面全屏（Enter）时，侧边队列保持停靠（保留面板）或默认隐藏、移到右缘悬停呼出（隐藏面板）。窗口全屏与浮动模式不受影响",
+  "set_side_fullscreen_behavior_desc": "画面全屏（Enter）时，侧边队列保持停靠（进全屏即展开）或默认隐藏、移到右缘悬停呼出（隐藏面板）。两种都只是初始状态：鼠标移开面板、点击画面或按 Esc 都会收起。窗口全屏与浮动模式不受影响",
   "set_fs_edge_reveal_width": "全屏唤出热区宽度",
   "set_fs_edge_reveal_width_desc": "画面全屏下右缘悬停唤出侧边队列的触发条宽度，按屏幕宽度百分比计算（0-50%，0 表示关闭悬停唤出）。鼠标移出面板 5px 后自动收起",
   "set_fs_isolation_side": "侧边面板：隔离区",
@@ -1174,6 +1174,39 @@
   "vm_dir_help_body": "• 该视频没有任何规则覆盖：按默认配置生成一条并启用。\n• 已有规则覆盖：直接切换其“使用/不使用”状态。\n• 若上级递归规则已覆盖此文件夹：只排除它直属的这一层，上级与子目录不受影响。\n• 冲突时非递归规则优先，且同一文件夹同时只允许一条非递归规则启用。",
   "vm_dir_no_current": "当前没有正在播放的视频。",
   "vm_dir_no_folder": "该文件没有直属文件夹（单文档选取）。",
+  "vm_dir_paused_banner": "虚拟合播总开关关闭中，规则改动暂不生效。",
+  "vm_dir_result_paused": "已保存。总开关关闭中，开启后生效。",
+  "vm_dir_result_next_feed": "已保存。当前视频保持单文件播放，下一次播放时生效。",
+  "vm_dir_action_failed": "更新文件夹规则失败，未做任何更改。",
+  "vm_dir_master_save_failed": "文件夹规则已保存，但总开关未能开启。请在管理页手动开启。",
+  "vm_master_off_title": "虚拟合播总开关已关闭",
+  "vm_master_off_intro_others": "开启总开关后，其它 {count} 条已启用的规则也会一并生效，可能让别的文件夹突然合并。",
+  "@vm_master_off_intro_others": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_intro_none": "开启总开关后，本次操作才会生效。",
+  "vm_master_off_keep_only": "只保留当前文件夹规则",
+  "vm_master_off_keep_only_hint": "先关闭其它 {count} 条规则（可在管理页重新开启）",
+  "@vm_master_off_keep_only_hint": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_keep_only_hint_none": "当前没有其它已启用的规则，直接开启即可",
+  "vm_master_off_enable_all": "直接开启总开关",
+  "vm_master_off_enable_all_hint": "其它已启用的规则一并恢复",
+  "vm_master_off_cancel": "取消本次操作",
+  "vm_master_off_cancel_hint": "总开关和所有规则都不改动",
+  "vm_master_off_details_title": "选项说明",
+  "vm_master_off_details_body": "• 总开关是全部规则的电源：关闭时规则仍会保存，只是合并被暂停，所以按钮文案会变、列表和播放不变。\n• “直属文件夹（非递归）”优先级最高，高于任何递归规则；把它设为“使用”会压过覆盖它的递归规则。\n• “只保留当前文件夹规则”会先关闭其它 {count} 条已启用规则，再打开总开关；被关闭的规则可在管理页重新开启。\n• “直接开启总开关”不改动其它规则，它们会一并恢复生效。\n• “取消本次操作”不改动总开关和任何规则。",
+  "@vm_master_off_details_body": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_details_body_none": "• 总开关是全部规则的电源：关闭时规则仍会保存，只是合并被暂停，所以按钮文案会变、列表和播放不变。\n• “直属文件夹（非递归）”优先级最高，高于任何递归规则；把它设为“使用”会压过覆盖它的递归规则。\n• 当前没有其它已启用的规则，因此“只保留当前文件夹规则”不可选。\n• “直接开启总开关”会让本文件夹开始合并。\n• “取消本次操作”不改动总开关和任何规则。",
   "vm_editor_use_mode": "虚拟合播",
   "vm_editor_use_mode_use": "使用（合并此文件夹）",
   "vm_editor_use_mode_not_use": "不使用（排除此文件夹）",
@@ -1868,6 +1901,28 @@
   "menu_side_panel_desc": "侧滑面板、拨环与简易圆弧的统一设置",
   "menu_frame_tools": "逐帧工具",
   "menu_screenshot": "截存当前帧",
+  "menu_video_transform": "画面调整",
+  "video_transform_panel_title": "画面调整",
+  "video_transform_session_hint": "仅本次播放有效，切换视频后自动恢复。",
+  "video_transform_orientation": "方向",
+  "video_transform_rotation": "旋转",
+  "video_transform_flip_horizontal": "水平镜像",
+  "video_transform_flip_vertical": "垂直镜像",
+  "video_transform_color": "画面",
+  "video_transform_brightness": "亮度",
+  "video_transform_contrast": "对比度",
+  "video_transform_saturation": "饱和度",
+  "video_transform_rotate_0": "0°",
+  "video_transform_rotate_90": "90°",
+  "video_transform_rotate_180": "180°",
+  "video_transform_rotate_270": "270°",
+  "video_transform_reset_all": "全部重置",
+  "video_transform_reset_item": "重置{label}",
+  "@video_transform_reset_item": {
+    "placeholders": {
+      "label": {"type": "String"}
+    }
+  },
   "menu_fine_tune": "微调范围：±{sec}秒",
   "@menu_fine_tune": {
     "placeholders": {
@@ -3643,7 +3698,8 @@
   "fake_cut_blocked_storage": "虚拟剪播仅支持本地文件",
   "fake_cut_blocked_not_video": "虚拟剪播仅适用于视频",
   "fake_cut_bg_pause_notice": "启用虚拟剪播会暂停本视频的副音，离开该视频后会自动恢复。",
-  "fake_cut_vm_merged_notice": "当前为虚拟合播，虚拟剪播仅在该视频单独播放时生效。",
+  "fake_cut_vm_merged_notice": "当前为虚拟合播；该视频作为合并段播放时会应用它的虚拟剪播。",
+  "fake_cut_vm_cut_merged_notice": "当前为虚拟合播，该视频的虚拟剪播正在合并中播放。",
   "fake_cut_sync_title": "选择同步点",
   "fake_cut_sync_body": "上次进度（{position}）出现在这个剪辑的多段中。",
   "@fake_cut_sync_body": {

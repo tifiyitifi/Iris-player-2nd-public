@@ -8,7 +8,9 @@ import 'package:iris/features/virtual_media/model/domain/vm_rule.dart';
 import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/rule/vm_dir_use.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
+import 'package:iris/features/virtual_media/store/vm_prefs.dart';
 import 'package:iris/features/virtual_media/view/vm_conflict_dialog.dart';
+import 'package:iris/features/virtual_media/view/vm_master_off_dialog.dart';
 import 'package:iris/features/virtual_media/view/vm_master_switch.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/file.dart';
@@ -47,6 +49,9 @@ class VmManagerPage extends HookWidget {
     final resolved = useState<ResolvedRules?>(null);
     final loading = useState(true);
     final revision = useState(0);
+    // Null until the first read lands: the banner must not flash "paused" on
+    // every open before the preference has actually been read.
+    final masterPaused = useState<bool?>(null);
 
     // Freeze the file playing when the manager OPENED. Playback may advance to
     // the next episode while the popup stays open; the folder toggle must keep
@@ -71,11 +76,17 @@ class VmManagerPage extends HookWidget {
           loading.value = false;
         }
       });
+      VmPrefs.masterEnabled().then((v) {
+        if (!cancelled) masterPaused.value = !v;
+      });
       return () => cancelled = true;
     }, [revision.value]);
 
-    Future<void> afterMutate() async {
-      await VirtualMediaService.instance.notifyRulesChanged();
+    /// [notify] is false when the command already refreshed the open surfaces
+    /// itself (a folder action does), so one action never runs the fan-out
+    /// twice. The local rules list still reloads either way.
+    Future<void> afterMutate({bool notify = true}) async {
+      if (notify) await VirtualMediaService.instance.notifyRulesChanged();
       revision.value++;
     }
 
@@ -94,8 +105,10 @@ class VmManagerPage extends HookWidget {
                 tooltip: t.vm_sheet_new_rule_tip,
                 icon: const Icon(Icons.add_rounded),
                 onPressed: () async {
+                  // The editor is the one notification choke point for editor
+                  // saves; the manager only reloads its local rule list.
                   await openVmRuleEditor(context);
-                  await afterMutate();
+                  await afterMutate(notify: false);
                 },
               ),
               IconButton(
@@ -109,6 +122,10 @@ class VmManagerPage extends HookWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           child: VmMasterSwitch(
+            // The manager is the ONE reader of the preference: the same value
+            // drives this switch and the panel's paused banner, so a folder
+            // action that resumes merging updates both at once.
+            enabled: masterPaused.value == null ? null : !masterPaused.value!,
             onChanged: () async => revision.value++,
           ),
         ),
@@ -116,6 +133,7 @@ class VmManagerPage extends HookWidget {
           file: currentFile,
           rules: resolved.value?.rules ?? const [],
           storages: storages,
+          masterPaused: masterPaused.value ?? false,
           onMutated: afterMutate,
         ),
         Divider(
@@ -128,7 +146,7 @@ class VmManagerPage extends HookWidget {
               : (resolved.value == null || resolved.value!.rules.isEmpty)
                   ? _EmptyState(onCreate: () async {
                       await openVmRuleEditor(context);
-                      await afterMutate();
+                      await afterMutate(notify: false);
                     })
                   : Builder(builder: (context) {
                       // Materialize once per build: entries is a lazy
@@ -162,7 +180,7 @@ class VmManagerPage extends HookWidget {
                 child: FilledButton.icon(
                   onPressed: () async {
                     await openVmRuleEditor(context);
-                    await afterMutate();
+                    await afterMutate(notify: false);
                   },
                   icon: const Icon(Icons.add_rounded),
                   label: Text(t.vm_mgr_new_rule),
@@ -186,13 +204,21 @@ class _DirTogglePanel extends StatelessWidget {
     required this.file,
     required this.rules,
     required this.storages,
+    required this.masterPaused,
     required this.onMutated,
   });
 
   final FileItem? file;
   final List<VirtualMediaRule> rules;
   final List<Storage> storages;
-  final Future<void> Function() onMutated;
+
+  /// The global switch is a deliberate pause: the toggle must say so instead of
+  /// looking broken, and "use" must ask before resuming the whole feature.
+  final bool masterPaused;
+
+  /// Reloads the manager after a change. `notify: false` skips the queue/tag
+  /// fan-out when the command already did it.
+  final Future<void> Function({bool notify}) onMutated;
 
   @override
   Widget build(BuildContext context) {
@@ -230,6 +256,16 @@ class _DirTogglePanel extends StatelessWidget {
           break;
         }
       }
+      Future<VmDirToggleResult> run(VmMasterOffChoice? choice) =>
+          toggleVmDirUseMode(
+            storageId: f.storageId,
+            storageName: storage?.name ?? '',
+            name: f.name,
+            path: f.path,
+            storageBasePaths: basePaths,
+            uri: f.uri,
+            masterOffChoice: choice,
+          );
       body = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -244,15 +280,43 @@ class _DirTogglePanel extends StatelessWidget {
             alignment: Alignment.centerLeft,
             child: FilledButton.tonalIcon(
               onPressed: () async {
-                await toggleVmDirUseMode(
-                  storageId: f.storageId,
-                  storageName: storage?.name ?? '',
-                  name: f.name,
-                  path: f.path,
-                  storageBasePaths: basePaths,
-                  uri: f.uri,
+                var res = await run(null);
+                if (res.needsMasterChoice) {
+                  // A paused master switch may not be resumed silently: the
+                  // command wrote nothing, so a dismissed prompt is a cancel.
+                  if (!context.mounted) return;
+                  final choice = await showVmMasterOffDialog(
+                    context,
+                    otherEnabledCount: res.otherEnabledCount,
+                  );
+                  if (choice == null) return;
+                  res = await run(choice);
+                }
+                // The command already refreshed the open surfaces on success;
+                // a failed/partial action did not, so let the manager do it.
+                await onMutated(notify: !res.notified);
+                if (!context.mounted) return;
+                // Speak up only when the click did NOT do what the label
+                // promised: a rolled-back choice, a switch that refused the
+                // write, a paused switch (exclusion saved for later), or a
+                // group that could not attach to the already-playing feed.
+                final message = res.failed
+                    ? t.vm_dir_action_failed
+                    : res.masterSaveFailed
+                        ? t.vm_dir_master_save_failed
+                        : res.masterPaused
+                            ? t.vm_dir_result_paused
+                            : (res.nowUsing && !res.adopted
+                                ? t.vm_dir_result_next_feed
+                                : null);
+                if (message == null) return;
+                await showDialog<void>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: Text(t.vm_dir_current(f.name)),
+                    content: Text(message),
+                  ),
                 );
-                await onMutated();
               },
               icon: Icon(merged
                   ? Icons.visibility_off_outlined
@@ -260,19 +324,42 @@ class _DirTogglePanel extends StatelessWidget {
               label: Text(merged ? t.vm_dir_not_use : t.vm_dir_use),
             ),
           ),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            childrenPadding: const EdgeInsets.only(bottom: 8),
-            title: Text(t.vm_dir_help_title,
-                style: TextStyle(fontSize: 13, color: scheme.primary)),
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(t.vm_dir_help_body,
-                    style: TextStyle(
-                        fontSize: 12, color: scheme.onSurfaceVariant)),
+          if (masterPaused)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.pause_circle_outline_rounded,
+                      size: 14, color: scheme.error),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      t.vm_dir_paused_banner,
+                      style: TextStyle(fontSize: 12, color: scheme.error),
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
+          // The tile paints its ink on the nearest Material; without one it
+          // would sit behind this panel's colored DecoratedBox and assert.
+          Material(
+            type: MaterialType.transparency,
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(bottom: 8),
+              title: Text(t.vm_dir_help_title,
+                  style: TextStyle(fontSize: 13, color: scheme.primary)),
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(t.vm_dir_help_body,
+                      style: TextStyle(
+                          fontSize: 12, color: scheme.onSurfaceVariant)),
+                ),
+              ],
+            ),
           ),
         ],
       );
@@ -367,7 +454,7 @@ class _ManagerCard extends StatelessWidget {
     required this.libraryCount,
   });
   final MapEntry<VirtualMediaRule, List<VirtualMediaItem>> entry;
-  final Future<void> Function() onMutated;
+  final Future<void> Function({bool notify}) onMutated;
 
   /// Library snapshot size (see [_RuleTile] counterpart in the sheet).
   final int libraryCount;
@@ -528,8 +615,9 @@ class _ManagerCard extends StatelessWidget {
                 onSelected: (v) async {
                   switch (v) {
                     case 'edit':
+                      // The editor already notified on save; reload only.
                       await openVmRuleEditor(context, initial: rule);
-                      await onMutated();
+                      await onMutated(notify: false);
                       break;
                     case 'duplicate':
                       try {

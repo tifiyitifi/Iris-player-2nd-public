@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/virtual_media/rule/vm_naming.dart'
     show
@@ -37,12 +38,22 @@ abstract final class VmPrefs {
     }
   }
 
-  static Future<void> setMasterEnabled(bool value) async {
-    if (!_available) return;
+  /// Test seam: makes the next write report failure without touching the DB.
+  @visibleForTesting
+  static bool debugFailMasterWrite = false;
+
+  /// Persists the switch. Returns false when the row could not be written, so
+  /// the caller can keep the runtime state (and the UI) on the old value.
+  static Future<bool> setMasterEnabled(bool value) async {
+    if (!_available) return true;
+    if (debugFailMasterWrite) return false;
     try {
       await MetaSettingsModule.persistAuxRow(
           _masterEnabledKey, value ? '1' : '0');
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Editor toggle: add specified-directory paths by pasting text (true)

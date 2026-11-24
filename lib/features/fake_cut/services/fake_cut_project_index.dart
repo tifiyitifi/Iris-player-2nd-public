@@ -61,9 +61,10 @@ class FakeCutDirProjects {
 /// (does THIS video have a project? which ones?) pure in-memory work.
 ///
 /// Freshness is EXPLICIT by design: a `.llc` created after a group was built
-/// only counts after [invalidate] (the 虚拟剪播 tab's refresh button calls it) — the
-/// user accepted "新建虚拟剪播后需刷新" as the contract, and a silent TTL would make
-/// the group set change under the user's feet.
+/// only counts after [invalidate]. A completed media rescan calls it (ADR 0033,
+/// `MediaRevisionActions.mediaRescanned`) and so does the 虚拟剪播 tab's refresh
+/// button; a silent TTL is still avoided, because it would make the group set
+/// change under the user's feet.
 class FakeCutProjectIndex {
   FakeCutProjectIndex();
 
@@ -88,9 +89,10 @@ class FakeCutProjectIndex {
   /// Drops the cached listings — all of them, or one directory.
   ///
   /// Call after anything that can add/remove a `.llc`. Today that is the
-  /// 虚拟剪播 tab's refresh; an explicit VM re-resolve does NOT call this yet, so
-  /// a media rescan that adds a `.llc` keeps the old merge until the tab is
-  /// refreshed. See `docs/features/virtual_media/tasks.md`.
+  /// 虚拟剪播 tab's refresh button and a completed recursive scan
+  /// (`MediaRevisionActions.mediaRescanned`, ADR 0033). A per-resolve or
+  /// per-playback call would defeat the cache; `activate`/`deactivate` must not
+  /// call it (the project SET did not change).
   void invalidate([String? directoryPath]) {
     if (directoryPath == null) {
       _dirs.clear();

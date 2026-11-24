@@ -46,14 +46,43 @@ void main() {
     });
   });
 
-  group('isFullscreenDockPinnedOnEntry', () {
-    test('keepPanel pins, hidePanel stays hidden by default', () {
+  group('isFullscreenDockShownOnEntry', () {
+    test('keepPanel starts revealed, hidePanel starts hidden', () {
       expect(
-        isFullscreenDockPinnedOnEntry(SideFullscreenBehavior.keepPanel),
+        isFullscreenDockShownOnEntry(SideFullscreenBehavior.keepPanel),
         isTrue,
       );
       expect(
-        isFullscreenDockPinnedOnEntry(SideFullscreenBehavior.hidePanel),
+        isFullscreenDockShownOnEntry(SideFullscreenBehavior.hidePanel),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldDismissFullscreenDockOnVideoTap', () {
+    test('a shown overlay spends the picture click on closing itself', () {
+      expect(
+        shouldDismissFullscreenDockOnVideoTap(overlayEnabled: true, shown: true),
+        isTrue,
+      );
+    });
+
+    test('a hidden overlay leaves the click to the control bar', () {
+      expect(
+        shouldDismissFullscreenDockOnVideoTap(
+          overlayEnabled: true,
+          shown: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('outside picture fullscreen the dock never steals a click', () {
+      expect(
+        shouldDismissFullscreenDockOnVideoTap(
+          overlayEnabled: false,
+          shown: true,
+        ),
         isFalse,
       );
     });

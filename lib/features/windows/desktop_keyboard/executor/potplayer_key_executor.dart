@@ -53,6 +53,7 @@ import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/virtual_media/vm_gate.dart';
+import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 import 'package:iris/models/db/db_module.dart';
 import 'package:iris/models/db/storage_path_codec.dart';
 import 'package:iris/models/db/storage_scope.dart';
@@ -1207,9 +1208,27 @@ class PotPlayerKeyExecutor {
               !app.useLegacyStoragePersistence &&
               app.playlistPanelMode == PlaylistPanelMode.dockedRight;
           if (isDock) {
-            await useAppStore().togglePlaylistPanelVisible();
-            _showOsd(OsdTexts.dockVisibility(
-                useAppStore().state.playlistPanelVisible, t));
+            // Picture fullscreen uses the transient overlay, not the persisted
+            // windowed flag: the queue key reveals/conceals that panel and must
+            // never leave a sticky "visible" state behind (DOCK-13).
+            if (isFullscreenDockOverlayEnabled(
+              isDesktop: isDesktop,
+              useMetadataSettings: app.useMetadataSettings,
+              mode: app.playlistPanelMode,
+              isFullScreen: usePlayerUiStore().state.isFullScreen,
+              legacyStorage: app.useLegacyStoragePersistence,
+            )) {
+              final ui = usePlayerUiStore();
+              if (ui.isFullscreenDockShown) {
+                ui.hideFullscreenDock();
+              } else {
+                ui.showFullscreenDock();
+              }
+            } else {
+              await useAppStore().togglePlaylistPanelVisible();
+              _showOsd(OsdTexts.dockVisibility(
+                  useAppStore().state.playlistPanelVisible, t));
+            }
           } else {
             await _showPanel(const PlayQueue());
           }
@@ -1287,9 +1306,18 @@ class PotPlayerKeyExecutor {
         }
         break;
       case PotPlayerAction.exitFullscreen:
-        if (isDesktop && usePlayerUiStore().state.isFullScreen) {
-          await usePlayerUiStore().updateFullScreen(false);
-          _showOsd(OsdTexts.fullscreen(false, t));
+        if (isDesktop) {
+          // The transient fullscreen queue panel closes first; only the next
+          // Esc leaves picture fullscreen (mirrors the legacy scheme, DOCK-13).
+          final ui = usePlayerUiStore();
+          if (ui.isFullscreenDockShown) {
+            ui.hideFullscreenDock();
+            break;
+          }
+          if (ui.state.isFullScreen) {
+            await ui.updateFullScreen(false);
+            _showOsd(OsdTexts.fullscreen(false, t));
+          }
         }
         break;
       case PotPlayerAction.exitApp:

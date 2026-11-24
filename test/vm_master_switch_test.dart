@@ -1,6 +1,7 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/playback/playback_provider_registry.dart';
@@ -67,6 +68,7 @@ void main() {
     }
     await DbModule.virtualMediaRepo.clearAllVmProgress();
     await DbModule.virtualMediaRepo.clearAnchors();
+    VmPrefs.debugFailMasterWrite = false;
     await VmPrefs.setMasterEnabled(true);
     VirtualMediaService.instance.invalidate();
   });
@@ -144,6 +146,31 @@ void main() {
     expect(await VmPrefs.masterEnabled(), isTrue);
   });
 
+  test('a failed preference write leaves the switch paused', () async {
+    await DbModule.virtualMediaRepo.saveRule(VirtualMediaRule(
+      id: 'r',
+      name: 'rule',
+      matchMode: VmMatchMode.specifiedDir,
+      paths: const [''],
+    ));
+    await setVmMasterEnabled(enabled: false);
+    expect(await VmPrefs.masterEnabled(), isFalse);
+
+    final beforeVersion = usePlaybackScenarioStore().state.playbackVersion;
+    VmPrefs.debugFailMasterWrite = true;
+    addTearDown(() => VmPrefs.debugFailMasterWrite = false);
+
+    final applied = await setVmMasterEnabled(enabled: true);
+
+    expect(applied, isFalse);
+    expect(await VmPrefs.masterEnabled(), isFalse,
+        reason: 'the write never landed');
+    expect(await VirtualMediaService.instance.enabledRules(), isEmpty,
+        reason: 'the pause is still in force');
+    expect(usePlaybackScenarioStore().state.playbackVersion, beforeVersion,
+        reason: 'a failed write must not emit a re-resolution signal');
+  });
+
   test(
       'disabling mid-session keeps the file playing and books the live segment',
       () async {
@@ -196,22 +223,44 @@ void main() {
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
       home: const Scaffold(
-        body: SizedBox(
-          width: 420,
-          child: VmMasterSwitch(),
-        ),
+        body: SizedBox(width: 420, child: _SwitchHost()),
       ),
     ));
     // Let the REAL async pref load run; the switch is disabled until then.
     await tester.pumpAndSettle();
 
-    final row = find.byKey(const ValueKey('vm_master_switch'));
-    expect(row, findsOneWidget);
+    final switchTile = find.byKey(const ValueKey('vm_master_switch'));
+    expect(switchTile, findsOneWidget);
     expect(find.text('虚拟合播'), findsOneWidget);
+    expect(tester.widget<SwitchListTile>(switchTile).value, isTrue);
 
-    await tester.tap(row);
+    await tester.tap(switchTile);
     await tester.pumpAndSettle();
 
     expect(await VmPrefs.masterEnabled(), isFalse);
+    expect(tester.widget<SwitchListTile>(switchTile).value, isFalse);
   });
+}
+
+/// Mirrors the manager's wiring: ONE owner reads the preference, the switch is
+/// controlled, and a bump re-reads it.
+class _SwitchHost extends HookWidget {
+  const _SwitchHost();
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = useState<bool?>(null);
+    final revision = useState(0);
+    useEffect(() {
+      var cancelled = false;
+      VmPrefs.masterEnabled().then((v) {
+        if (!cancelled) enabled.value = v;
+      });
+      return () => cancelled = true;
+    }, [revision.value]);
+    return VmMasterSwitch(
+      enabled: enabled.value,
+      onChanged: () async => revision.value++,
+    );
+  }
 }

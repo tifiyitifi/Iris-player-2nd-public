@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:iris/features/background_playback/controller/background_playback_router.dart';
 import 'package:iris/features/background_playback/services/background_lock_mapping.dart';
 import 'package:iris/features/background_playback/services/segment_edit_guard.dart';
+import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/features/media_library/model/media_lib/media_node.dart';
 import 'package:iris/features/scenario_playback/playback/playback_position_signal.dart';
 import 'package:iris/features/scenario_playback/playback/playback_progress.dart';
@@ -11,9 +13,12 @@ import 'package:iris/features/scenario_playback/store/use_playback_scenario_stor
 import 'package:iris/features/tag_play/playback/tag_play_controller.dart';
 import 'package:iris/features/tag_play/store/use_tag_play_store.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
+import 'package:iris/features/virtual_media/service/vm_overlay_service.dart';
 import 'package:iris/features/windows/desktop_keyboard/controller/ab_loop_engine.dart';
 import 'package:iris/features/windows/desktop_keyboard/store/key_sequence_buffer_store.dart';
 import 'package:iris/models/db/db_module.dart';
+import 'package:iris/models/file.dart' show FileItem;
 import 'package:iris/models/store/app_state.dart' show Repeat;
 import 'package:iris/store/use_app_store.dart';
 import 'package:iris/store/use_play_queue_store.dart';
@@ -34,7 +39,7 @@ import 'package:iris/utils/path_conv.dart';
 class PlaybackProviderRegistry {
   static late final ScenarioPlaybackProvider _scenario;
   static late final LegacyQueueProvider _legacy;
-  static late final TagPlayController _tagPlay;
+  static late TagPlayController _tagPlay;
   static BackgroundPlaybackRouter? _bgRouter;
 
   /// False until [init] ran. Guards entry points that commands may call before
@@ -48,6 +53,81 @@ class PlaybackProviderRegistry {
       noTagDelegate: ScenarioNoTagDelegate(_scenario),
     );
     _ready = true;
+    // A VM rule change must re-resolve an ACTIVE tag view: its snapshot holds
+    // the merge groups both the feed and the queue list read, and the list
+    // refetch that follows the notification would otherwise serve the stale
+    // shape. Installed as a callback so the VM service stays free of a
+    // playback-layer import.
+    VirtualMediaService.tagViewRuleChangeRefresher =
+        _refreshTagViewForRuleChange;
+    // 虚拟剪播 on/off is an ADMISSION change for Virtual Merge (ADR 0032): the
+    // live segment must be re-segmented BEFORE the cut store's revision bump
+    // reopens the media, or the reopen reads the previous plan's duration.
+    FakeCutStore.cutPlanChangeHandler = onCutPlanChanged;
+  }
+
+  /// Re-resolves the live merge after the active cut plan changed, and is the
+  /// handler the cut store installs. Called BEFORE its revision bump (so the
+  /// reopen sees the new shape) and only on an explicit activate/deactivate.
+  ///
+  /// Uses the LIGHT propagation (ADR 0035): a cut toggle re-groups, it does not
+  /// edit rules, so the per-session scan bookkeeping must survive. Public so a
+  /// test can exercise the installed handler without the playback layer (the
+  /// live re-segment step is a no-op when [init] has not run).
+  static Future<void> onCutPlanChanged(FileItem file) async {
+    await VirtualMediaService.instance.notifyCutPlanChanged();
+    await refreshLiveVirtualGroups();
+  }
+
+  /// A `.llc` was edited ON DISK while its segment is already open (the player
+  /// re-read the plan, so the EDL is fresh but the group still displays the old
+  /// kept length — ADR 0034).
+  ///
+  /// Re-advertise the change, then re-segment the live merge AFTER the open
+  /// settles: doing it during the feed is a no-op because the feed would
+  /// overwrite the replaced item ([VirtualMediaController.resegmentLiveFromGroups]
+  /// refuses while a feed is in flight). [refreshLiveVirtualGroups] is forced
+  /// so the resolver's signature-keyed cache cannot serve the pre-edit groups.
+  static Future<void> onCutPlanEdited() async {
+    await VirtualMediaService.instance.notifyCutPlanChanged();
+    await VirtualMediaController.instance.afterCurrentFeedSettled(
+      () => refreshLiveVirtualGroups(forceRefresh: true),
+    );
+  }
+
+  /// Re-shapes the live VM session from the freshest groups of whichever
+  /// provider owns playback. No-op when no VM session is active.
+  ///
+  /// [forceRefresh] bypasses both caches. It is required after an in-place plan
+  /// edit: the registered signature describes the SCENARIO, not the `.llc`
+  /// content, so an edited plan otherwise re-uses the pre-edit groups.
+  static Future<void> refreshLiveVirtualGroups({bool forceRefresh = false}) async {
+    if (!_ready || !VirtualMediaController.instance.isActive) return;
+    try {
+      // An active tag view holds its own snapshot: rebuild it first so the
+      // forced re-read below does not reuse the pre-edit groups.
+      if (forceRefresh && _useTagViewMode) {
+        await _refreshTagViewForRuleChange();
+      }
+      final VmStreamGroups? groups = _useTagViewMode
+          ? tagPlay.snapshot?.vmGroups
+          : (_useScenarioMode
+              ? await scenario.vmGroupsForLiveSegment(forceRefresh: forceRefresh)
+              : null);
+      if (groups == null) return;
+      await VirtualMediaController.instance.resegmentLiveFromGroups(groups);
+    } catch (_) {
+      // A re-segment failure must never surface as a cut-switch failure.
+    }
+  }
+
+  /// [VirtualMediaService.tagViewRuleChangeRefresher]: re-resolves the active
+  /// tag view after a rule change. No player re-open — [TagPlayController
+  /// .revalidate] only rebuilds the snapshot, relocates the current row and
+  /// republishes the tag position.
+  static Future<void> _refreshTagViewForRuleChange() async {
+    if (!_ready || !_useTagViewMode) return;
+    await _tagPlay.revalidate();
   }
 
   /// Registers the 副音 router (BackgroundPlaybackBootstrap). While its
@@ -64,6 +144,14 @@ class PlaybackProviderRegistry {
   static LegacyQueueProvider get legacy => _legacy;
 
   static TagPlayController get tagPlay => _tagPlay;
+
+  /// Test seam: swaps the tag controller for one whose snapshot source is
+  /// injected. Production never calls this — a tag-mode master-switch hand-off
+  /// test needs a known snapshot without a live scenario resolver.
+  @visibleForTesting
+  static void debugOverrideTagPlay(TagPlayController controller) {
+    _tagPlay = controller;
+  }
 
   /// Scenario-driven mode is active only in drift mode (non-legacy storage)
   /// with the scenario-driven flag enabled.

@@ -151,9 +151,26 @@ bool isFullscreenDockOverlayEnabled({
   return isFullScreen;
 }
 
-/// Initial pinned state when entering picture fullscreen.
-bool isFullscreenDockPinnedOnEntry(SideFullscreenBehavior behavior) =>
+/// Whether the queue overlay starts REVEALED when picture fullscreen begins.
+///
+/// This is only the initial state: the overlay is transient, so the pointer
+/// leaving the panel, a click on the picture, `Esc`, the header X and the queue
+/// key all conceal it again (see [shouldDismissFullscreenDockOnVideoTap]).
+bool isFullscreenDockShownOnEntry(SideFullscreenBehavior behavior) =>
     behavior == SideFullscreenBehavior.keepPanel;
+
+/// Whether a picture-fullscreen video click must be spent dismissing the queue
+/// overlay instead of toggling the control bar.
+///
+/// The overlay is not a route, so it has no barrier that could catch a click
+/// "elsewhere"; the video's own tap is the only "click outside" the user has.
+/// It is consumed (the chrome is left alone) because the user asked to close
+/// the panel, not to summon the control bar over it.
+bool shouldDismissFullscreenDockOnVideoTap({
+  required bool overlayEnabled,
+  required bool shown,
+}) =>
+    overlayEnabled && shown;
 
 /// Clamps the configurable edge-activation percentage to its hard bounds.
 double clampFullscreenDockEdgePct(double raw) {

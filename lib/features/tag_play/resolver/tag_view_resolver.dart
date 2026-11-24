@@ -303,11 +303,16 @@ class TagViewResolver {
     if (withVmOverlay) {
       final vmRules = await VirtualMediaService.instance.enabledRules();
       if (vmRules.isNotEmpty) {
-        // 虚拟剪播: a video with a sibling `.llc` stays a single row / single feed.
+        // 虚拟剪播: the ACTIVE plan (any range count — ADR 0037) merges and
+        // plays its whole cut timeline.
+        final VmCutMergeInfo fakeCut = await vmCutMergeInfoForStream(
+          resolved,
+          preferredPlanPaths: activeCutPlanPaths(),
+        );
         groups = resolveGroupsForStream(
           resolved,
           vmRules,
-          excludedMediaKeys: await vmFakeCutExclusionKeysForStream(resolved),
+          cutRanges: fakeCut.rangesByKey,
         );
         if (groups.isNotEmpty) {
           resolved = applyVmOverlay(resolved, groups.byKey);

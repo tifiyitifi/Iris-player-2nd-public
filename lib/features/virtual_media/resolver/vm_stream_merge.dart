@@ -104,16 +104,18 @@ VmGroupsCacheAction vmGroupsCacheAction({
 /// diagnostic for "no rule matched anything", which the rule pipeline itself
 /// reports only as an empty result.
 ///
-/// [excludedMediaKeys] carries the 虚拟剪播 exclusion (a video with a sibling
-/// LosslessCut `.llc` never merges — see `vm_fake_cut_exclusions.dart`). It is
-/// injected rather than looked up here so this stays a PURE function: the
-/// filesystem answer is async, and every production caller resolves it once per
-/// stream (`vmFakeCutExclusionKeysForStream`) before grouping.
+/// [excludedMediaKeys] carries rule-level exclusions (`notUse` folders);
+/// [cutRanges] carries each active cut's kept ranges, which become the segment's
+/// timeline (ADR 0037). Both are injected rather than looked up here so this
+/// stays a PURE function: the filesystem answer is async, and every production
+/// caller resolves it once per stream (`vmCutMergeInfoForStream`) before
+/// grouping.
 VmStreamGroups resolveGroupsForStream(
   List<EffectivePlaybackItem> stream,
   List<VirtualMediaRule> rules, {
   AppLocalizations? l10n,
   Set<String> excludedMediaKeys = const <String>{},
+  Map<String, VmCutRange> cutRanges = const <String, VmCutRange>{},
 }) {
   if (rules.isEmpty || stream.isEmpty) {
     return const VmStreamGroups(byKey: {}, inOrder: []);
@@ -126,18 +128,24 @@ VmStreamGroups resolveGroupsForStream(
     if (!item.available) continue;
     final f = item.media.maybeMap(file: (f) => f, orElse: () => null);
     if (f == null) continue;
+    final key = canonicalMediaKey(f.storageId, f.path, uri: f.uri);
+    final cut = cutRanges[key];
     segments.add(VirtualSegment(
-      mediaKey: canonicalMediaKey(f.storageId, f.path, uri: f.uri),
+      mediaKey: key,
       storageId: f.storageId,
       path: f.path,
       name: f.name,
       parentPath: canonicalPath(f.parentPath ?? ''),
       uri: f.uri,
-      durationMs: f.durationMs,
+      // A mergeable cut plays its kept range, so the segment's timeline is the
+      // CUT length — chunking, preflight, scrubber marks and totals must all
+      // agree on it (ADR 0037).
+      durationMs: cut?.durationMs ?? f.durationMs,
       width: f.width,
       height: f.height,
       sizeInBytes: f.sizeInBytes,
       occurrenceIndex: item.occurrenceId.occurrenceIndex,
+      cutRange: cut,
     ));
   }
   if (segments.isEmpty) {

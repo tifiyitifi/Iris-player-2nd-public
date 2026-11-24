@@ -183,17 +183,54 @@ class VirtualMediaService {
     VmMembershipPin.instance.clear();
   }
 
-  /// Full rule-change propagation: drop the rule cache AND bump the
-  /// scenario playback version so open lists re-resolve immediately
+  /// Test seam: how many full fan-outs ran since a test reset it. Assert-only,
+  /// so it exists solely in debug/test builds.
+  @visibleForTesting
+  static int debugNotifyCount = 0;
+
+  /// Full rule-change propagation: drop the rule cache AND bump BOTH
+  /// re-resolution signals, so every open surface moves immediately
   /// ("一旦激活改变，立刻更新 scenario play 列表").
+  ///
+  /// Two signals are required because the consumers differ: `playbackVersion`
+  /// re-resolves the player chrome and the locate caches, while OPEN QUEUE
+  /// surfaces (the always-mounted desktop dock, the floating queue popup, the
+  /// storagedb queue page) only re-fetch on `sourceScanRevision` — they
+  /// deliberately ignore `playbackVersion`, whose other call sites fetch
+  /// explicitly. Sending only the first signal left the dock rendering the
+  /// pre-change rows until it was reopened (the reported desktop bug).
   Future<void> notifyRulesChanged() async {
+    // Test seam: one folder action must produce exactly ONE fan-out. Counted
+    // only while asserts are on, so a release build carries no counter.
+    assert(() {
+      debugNotifyCount++;
+      return true;
+    }());
     invalidate();
+    // An ACTIVE tag view holds its own snapshot of the merge groups: re-resolve
+    // it FIRST so the queue refetch below observes the new shape. Late-bound
+    // because the playback layer imports this service through the resolver.
+    try {
+      await tagViewRuleChangeRefresher?.call();
+    } catch (e) {
+      _log.w('vm notifyRulesChanged tag refresh failed: $e');
+    }
     try {
       await usePlaybackScenarioStore().bumpPlaybackVersion();
     } catch (e) {
       _log.w('vm notifyRulesChanged bump failed: $e');
     }
+    try {
+      await usePlaybackScenarioStore().notifyQueueRefetch();
+    } catch (e) {
+      _log.w('vm notifyRulesChanged queue refetch failed: $e');
+    }
   }
+
+  /// Installed by the playback layer (see `PlaybackProviderRegistry.init`):
+  /// re-resolves an active tag view after a rule change. Null until then (unit
+  /// tests, early startup), where it is simply a no-op.
+  static Future<void> Function()? tagViewRuleChangeRefresher;
 
   /// Lighter propagation for a duration heal (scan/harvest wrote durations for
   /// existing files). The RULES did not change, so the rule cache and the
@@ -215,6 +252,38 @@ class VirtualMediaService {
       await store.bumpSourceScanRevision();
     } catch (e) {
       _log.w('vm notifyDurationsChanged bump failed: $e');
+    }
+  }
+
+  /// Lighter propagation for a change in the ACTIVE 虚拟剪播 plan (activate /
+  /// close). The RULES did not change, so this must NOT go through
+  /// [notifyRulesChanged]: that fan-out drops the rule cache, the fail map, the
+  /// Shell-empty marks and the dismissed scan prompts, which made a cut toggle
+  /// re-arm probing for unrelated files (ADR 0035).
+  ///
+  /// What DOES change is admission — the merged rows and their durations — so:
+  /// bump the VM revision (the derived-index signature includes it, forcing an
+  /// in-memory rebuild), drop the delete-time boundary freeze, refresh an active
+  /// tag view FIRST (its snapshot holds the groups the feed and list read), then
+  /// send both re-resolve signals: `playbackVersion` for the player chrome /
+  /// locate caches, `notifyQueueRefetch` for OPEN queue surfaces.
+  Future<void> notifyCutPlanChanged() async {
+    _revision++;
+    VmMembershipPin.instance.clear();
+    try {
+      await tagViewRuleChangeRefresher?.call();
+    } catch (e) {
+      _log.w('vm notifyCutPlanChanged tag refresh failed: $e');
+    }
+    try {
+      await usePlaybackScenarioStore().bumpPlaybackVersion();
+    } catch (e) {
+      _log.w('vm notifyCutPlanChanged bump failed: $e');
+    }
+    try {
+      await usePlaybackScenarioStore().notifyQueueRefetch();
+    } catch (e) {
+      _log.w('vm notifyCutPlanChanged queue refetch failed: $e');
     }
   }
 

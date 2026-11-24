@@ -11,12 +11,13 @@ const double _edgeW = 10;
 
 class _OverlayHarness extends StatefulWidget {
   const _OverlayHarness({
-    required this.pinned,
+    required this.shownInitially,
     required this.onEvent,
     this.child,
   });
 
-  final bool pinned;
+  /// Seeds the caller-owned visibility, like `keepPanel` entering fullscreen.
+  final bool shownInitially;
   final void Function(String event) onEvent;
 
   /// Panel body override; defaults to the plain dark box.
@@ -32,14 +33,11 @@ class _OverlayHarnessState extends State<_OverlayHarness> {
   @override
   void initState() {
     super.initState();
-    shown = widget.pinned;
+    shown = widget.shownInitially;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.pinned) {
-      shown = true;
-    }
     return MaterialApp(
       home: Scaffold(
         body: SizedBox(
@@ -47,7 +45,6 @@ class _OverlayHarnessState extends State<_OverlayHarness> {
           height: _harnessH,
           child: FullscreenPlaylistDockOverlay(
             shown: shown,
-            pinned: widget.pinned,
             width: _panelW,
             edgeWidth: _edgeW,
             onReveal: () {
@@ -79,7 +76,7 @@ void main() {
         (tester) async {
       final events = <String>[];
       await tester.pumpWidget(
-        _OverlayHarness(pinned: false, onEvent: events.add),
+        _OverlayHarness(shownInitially: false, onEvent: events.add),
       );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
@@ -121,10 +118,11 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('pinned panel survives hover-out', (tester) async {
+    testWidgets('a panel seeded open (keepPanel) still conceals on hover-out',
+        (tester) async {
       final events = <String>[];
       await tester.pumpWidget(
-        _OverlayHarness(pinned: true, onEvent: events.add),
+        _OverlayHarness(shownInitially: true, onEvent: events.add),
       );
       await tester.pumpAndSettle();
       expect(_panelRight(tester), _harnessW);
@@ -136,10 +134,41 @@ void main() {
       await tester.pump();
       // Move far left, out of the panel + margin.
       await gesture.moveTo(const Offset(0, 150));
+      await tester.pump();
+      await tester.pump(kFullscreenDockConcealDelay);
       await tester.pumpAndSettle();
 
-      expect(events, isNot(contains('conceal')));
-      expect(_panelRight(tester), _harnessW);
+      expect(events, contains('conceal'));
+      expect(_panelRight(tester), greaterThan(_harnessW));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'a panel revealed while the pointer is away conceals on the next move',
+        (tester) async {
+      // The queue key/button (or `keepPanel` on entry) can reveal the panel with
+      // the pointer far from the right edge, so the activation strip never sees
+      // it. The full-screen "away" watcher must still conceal it — otherwise the
+      // panel could only be dismissed by Esc or a picture click.
+      final events = <String>[];
+      await tester.pumpWidget(
+        _OverlayHarness(shownInitially: true, onEvent: events.add),
+      );
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+      );
+      // Pointer far left, never inside the strip or the panel.
+      await gesture.addPointer(location: const Offset(20, 150));
+      await tester.pump();
+      await gesture.moveTo(const Offset(60, 160));
+      await tester.pump();
+      await tester.pump(kFullscreenDockConcealDelay);
+      await tester.pumpAndSettle();
+
+      expect(events, contains('conceal'));
+      expect(_panelRight(tester), greaterThan(_harnessW));
       expect(tester.takeException(), isNull);
     });
 
@@ -150,7 +179,7 @@ void main() {
       final events = <String>[];
       await tester.pumpWidget(
         _OverlayHarness(
-          pinned: false,
+          shownInitially: false,
           onEvent: events.add,
           child: Focus(
             focusNode: panelNode,
@@ -209,7 +238,6 @@ void main() {
               height: 640,
               child: FullscreenPlaylistDockOverlay(
                 shown: true,
-                pinned: true,
                 width: 240,
                 edgeWidth: 10,
                 onReveal: _noop,

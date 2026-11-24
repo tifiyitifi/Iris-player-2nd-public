@@ -41,6 +41,8 @@ void main() {
         'a three-field chip (enabled/pointA/pointB) that reads all of them',
     'lib/features/virtual_media/view/vm_sheet.dart | useVmPlaybackStore()':
         'the VM sheet renders the whole playback state',
+    'lib/features/video_transform/view/video_transform_panel.dart | store':
+        'the panel renders every field of its own 6-field session store',
   };
 
   test('no widget takes a whole-state AppState subscription', () {

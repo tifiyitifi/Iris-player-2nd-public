@@ -62,6 +62,7 @@ class ScenarioQueueBuilder {
     required int Function(int baseRank, EffectivePlaybackItem item) mediaNodeIdOf,
     AppLocalizations? l10n,
     Set<String> excludedMediaKeys = const <String>{},
+    Map<String, VmCutRange> cutRanges = const <String, VmCutRange>{},
   }) {
     if (stream.isEmpty) {
       return const ScenarioQueuePlan(groups: [], entries: [], totalRanks: 0);
@@ -76,6 +77,7 @@ class ScenarioQueueBuilder {
       final f = item.media.maybeMap(file: (f) => f, orElse: () => null);
       if (f == null) continue;
       final key = canonicalMediaKey(f.storageId, f.path, uri: f.uri);
+      final cut = cutRanges[key];
       // First occurrence wins the rank (dedup already removed repeats).
       rankOf.putIfAbsent(key, () => rank);
       segs.add(VirtualSegment(
@@ -85,11 +87,14 @@ class ScenarioQueueBuilder {
         name: f.name,
         parentPath: canonicalPath(f.parentPath ?? ''),
         uri: f.uri,
-        durationMs: f.durationMs,
+        // The persisted row must show the same cut-length totals the runtime
+        // overlay/preflight use (ADR 0037).
+        durationMs: cut?.durationMs ?? f.durationMs,
         width: f.width,
         height: f.height,
         sizeInBytes: f.sizeInBytes,
         occurrenceIndex: item.occurrenceId.occurrenceIndex,
+        cutRange: cut,
       ));
     }
 

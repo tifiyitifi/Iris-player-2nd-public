@@ -46,7 +46,6 @@ class _StabilityHarnessState extends State<_StabilityHarness> {
           height: _harnessH,
           child: FullscreenPlaylistDockOverlay(
             shown: shown,
-            pinned: false,
             width: _panelW,
             edgeWidth: _edgeW,
             // Record state TRANSITIONS, not raw callback invocations: reveal

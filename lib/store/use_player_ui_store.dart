@@ -262,16 +262,49 @@ class PlayerUiStore extends Store<PlayerUiState> {
     set(state.copyWith(isTransientSpeedActive: bool));
   }
 
-  /// Picture-fullscreen side-dock hover peek (runtime-only).
-  void updateIsFullscreenDockPeeking(bool bool) {
-    if (state.isFullscreenDockPeeking == bool) return;
-    set(state.copyWith(isFullscreenDockPeeking: bool));
+  /// True while the picture-fullscreen queue overlay is on screen.
+  bool get isFullscreenDockShown =>
+      state.isFullscreenDockPinned || state.isFullscreenDockPeeking;
+
+  /// Reveals the picture-fullscreen queue overlay.
+  ///
+  /// The overlay is TRANSIENT: this only makes it visible now. Leaving the
+  /// panel, clicking the picture, `Esc`, the header X and the queue key hide it
+  /// again, so there is no sticky "pinned" mode to get stuck in. One write for
+  /// both flags keeps the caller from publishing a middle state (pinned left on
+  /// while peeking cleared, which would look like "cannot be dismissed").
+  void showFullscreenDock() {
+    if (state.isFullscreenDockPeeking && !state.isFullscreenDockPinned) return;
+    set(state.copyWith(
+      isFullscreenDockPeeking: true,
+      isFullscreenDockPinned: false,
+    ));
   }
 
-  /// Picture-fullscreen side-dock pinned state (runtime-only).
-  void updateIsFullscreenDockPinned(bool bool) {
-    if (state.isFullscreenDockPinned == bool) return;
-    set(state.copyWith(isFullscreenDockPinned: bool));
+  /// Seeds the overlay state when picture fullscreen is entered or left.
+  ///
+  /// [reveal] is the `SideFullscreenBehavior.keepPanel` choice (start open);
+  /// `false` starts hidden but hover-summonable. Only an INITIAL state: the
+  /// overlay still auto-conceals afterwards.
+  void seedFullscreenDockOnEntry(bool reveal) {
+    if (!state.isFullscreenDockPeeking &&
+        state.isFullscreenDockPinned == reveal) {
+      return;
+    }
+    set(state.copyWith(
+      isFullscreenDockPeeking: false,
+      isFullscreenDockPinned: reveal,
+    ));
+  }
+
+  /// Conceals the picture-fullscreen queue overlay (hover-out, picture click,
+  /// `Esc`, the header X).
+  void hideFullscreenDock() {
+    if (!state.isFullscreenDockPeeking && !state.isFullscreenDockPinned) return;
+    set(state.copyWith(
+      isFullscreenDockPeeking: false,
+      isFullscreenDockPinned: false,
+    ));
   }
 }
 

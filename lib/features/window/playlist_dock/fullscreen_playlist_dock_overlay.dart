@@ -12,6 +12,17 @@ import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 /// operate it normally. Once the pointer leaves the panel plus
 /// [kFullscreenDockHideMargin] px it hides again.
 ///
+/// The overlay is TRANSIENT — there is no sticky pin. A panel revealed by the
+/// queue key/button (or by `SideFullscreenBehavior.keepPanel` on entry) may have
+/// left the pointer far from the right edge, so the edge strip alone would never
+/// see an enter/exit pair and the panel used to stay up until a click or `Esc`.
+/// Two watchers therefore own concealment:
+///  * the persistent hover region (below) reports a real leave, and
+///  * the full-screen "away" watcher reports pointer activity outside the panel,
+///    so any pointer movement after a key/button reveal conceals it too.
+/// The picture click is the third dismissal path and lives in the player's tap
+/// handler ([shouldDismissFullscreenDockOnVideoTap]).
+///
 /// The hover zone is a SINGLE persistent region anchored to the right edge,
 /// whose width is [edgeWidth] while hidden and the panel + margin while shown.
 /// It must never be re-mounted under a stationary pointer: with the previous
@@ -36,13 +47,12 @@ import 'package:iris/features/window/playlist_dock/resolve_playlist_dock.dart';
 /// rects overlap by design, so excluding them there would conceal the panel the
 /// instant it appeared.
 ///
-/// Purely presentational: visibility is owned by the caller ([shown]/[pinned])
-/// so this widget can be exercised without the app's stores.
+/// Purely presentational: visibility is owned by the caller ([shown]) so this
+/// widget can be exercised without the app's stores.
 class FullscreenPlaylistDockOverlay extends HookWidget {
   const FullscreenPlaylistDockOverlay({
     super.key,
     required this.shown,
-    required this.pinned,
     required this.width,
     required this.edgeWidth,
     required this.child,
@@ -52,11 +62,9 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
     this.controlBarIsolationHeight = 0,
   });
 
-  /// Panel visible (pinned or transient peek). Off-screen right otherwise.
+  /// Panel visible (revealed by hover, the queue key, or `keepPanel` on entry).
+  /// Off-screen right otherwise.
   final bool shown;
-
-  /// Pinned open: hover-out must not conceal it.
-  final bool pinned;
 
   /// Panel width in logical px.
   final double width;
@@ -70,7 +78,8 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
   /// Pointer entered the edge strip or the panel.
   final VoidCallback onReveal;
 
-  /// Pointer left the panel (+margin); caller decides based on pin.
+  /// Pointer left the panel (+margin): conceal it. The overlay is transient, so
+  /// this is unconditional (see the class doc).
   final VoidCallback onConceal;
 
   /// Live control-bar box (see `controlPanelKeyNotifier`), or null when the
@@ -91,19 +100,29 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
     final double regionWidth = width + kFullscreenDockHideMargin;
 
     final concealTimer = useRef<Timer?>(null);
-    // Read the *latest* pin inside the debounce callback; the timer outlives
-    // the build that scheduled it.
-    final pinnedRef = useRef<bool>(pinned);
-    pinnedRef.value = pinned;
     // Stable key for the hover region's render box: an `onExit` reports a
     // pointer position that may still lie inside the region (spurious exit
     // from a rebuild or a dialog barrier), so the exit must be verified
-    // against the region rect before it is allowed to conceal.
+    // against the region rect before it is allowed to conceal. While the panel
+    // is shown the region IS the panel (+ margin), which is also the rect a
+    // pointer must stay in to keep it open.
     final regionKey = useRef(GlobalKey());
 
     useEffect(() {
       return () => concealTimer.value?.cancel();
     }, const <Object?>[]);
+
+    // A conceal armed while the panel was hidden (or just before a hide, then
+    // re-show) must not fire on the panel the user has just opened. Cancel any
+    // pending conceal on every transition to shown, whichever path revealed it
+    // (hover, the queue key/button, or the keepPanel seed).
+    useEffect(() {
+      if (shown) {
+        concealTimer.value?.cancel();
+        concealTimer.value = null;
+      }
+      return null;
+    }, [shown]);
 
     void reveal() {
       concealTimer.value?.cancel();
@@ -111,13 +130,23 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
       onReveal();
     }
 
+    /// Debounced conceal. No pin exemption: a revealed panel is always
+    /// transient, whichever path revealed it.
     void scheduleConceal() {
-      if (pinnedRef.value) return;
       concealTimer.value?.cancel();
       concealTimer.value = Timer(kFullscreenDockConcealDelay, () {
         concealTimer.value = null;
-        if (!pinnedRef.value) onConceal();
+        onConceal();
       });
+    }
+
+    /// Screen rect of the shown panel (+ hide margin); null while unmeasurable.
+    Rect? panelRect() {
+      final RenderObject? box = regionKey.value.currentContext?.findRenderObject();
+      if (box is RenderBox && box.attached && box.hasSize) {
+        return box.localToGlobal(Offset.zero) & box.size;
+      }
+      return null;
     }
 
     /// Screen rect of the control bar, read LIVE at pointer time (never
@@ -166,9 +195,38 @@ class FullscreenPlaylistDockOverlay extends HookWidget {
       reveal();
     }
 
+    /// The full-screen "away" watcher: pointer activity that is NOT on the shown
+    /// panel is a leave. The right-edge strip alone cannot see that case — a
+    /// panel revealed by the queue key/button (or by `keepPanel` on entry) can
+    /// have the pointer far from the edge, so the strip never gets an
+    /// enter/exit pair and the panel stayed up until `Esc` or a click.
+    ///
+    /// Position-based (not enter/exit based) so it cannot fight the strip's own
+    /// debounce: inside the panel it does nothing, and the strip's hover keeps
+    /// cancelling the timer anyway.
+    void onAwayPointerActivity(Offset globalPosition) {
+      if (!shown) return;
+      final Rect? panel = panelRect();
+      if (panel != null && panel.contains(globalPosition)) return;
+      scheduleConceal();
+    }
+
     return Stack(
       clipBehavior: Clip.hardEdge,
       children: <Widget>[
+        // Away watcher (bottom child): translucent, so it never takes a click
+        // from the panel or the video — it only reports pointer movement that
+        // is not on the shown panel, which is what conceals a key/button- or
+        // entry-revealed panel. Movement only (`onHover`), never `onEnter`: an
+        // entry-revealed panel must not flash away just because the annotation
+        // was retaken under a stationary pointer while entering fullscreen.
+        Positioned.fill(
+          child: MouseRegion(
+            opaque: false,
+            onHover: (event) => onAwayPointerActivity(event.position),
+            child: const SizedBox.expand(),
+          ),
+        ),
         // Panel visuals only: they slide in/out but never own hover. While
         // hidden they are off-screen and ignore pointers, so taps reach the
         // video untouched.

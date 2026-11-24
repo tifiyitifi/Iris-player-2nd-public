@@ -694,16 +694,20 @@ class ScenarioResolver {
     }
 
     final vmRules = await _vmRulesFor(scenarioId);
-    // 虚拟剪播: files with a sibling `.llc` never join a merged group. Resolved
-    // ONCE per build (directory-cached) and injected into the pure builder.
-    final Set<String> fakeCutExclusions = vmRules.isEmpty
-        ? const <String>{}
-        : await vmFakeCutExclusionKeysForStream(stream);
+    // 虚拟剪播: the ACTIVE plan's kept ranges become the member's timeline (any
+    // number of ranges — ADR 0037). Resolved ONCE per build (directory-cached)
+    // and injected into the pure builder.
+    final VmCutMergeInfo fakeCut = vmRules.isEmpty
+        ? VmCutMergeInfo.empty
+        : await vmCutMergeInfoForStream(
+            stream,
+            preferredPlanPaths: activeCutPlanPaths(),
+          );
     final plan = ScenarioQueueBuilder.build(
       stream: stream,
       rules: vmRules,
       mediaNodeIdOf: (rank, item) => _nodeIdOf(item),
-      excludedMediaKeys: fakeCutExclusions,
+      cutRanges: fakeCut.rangesByKey,
     );
 
     // VM rows sort by the totals they DISPLAY. The permutation only exists when
@@ -2285,14 +2289,17 @@ class ScenarioResolver {
       }
     }
 
-    // 虚拟剪播: files with a sibling `.llc` never join a merged group. Skipped
-    // entirely when no rule can merge anything — a non-VM view must never pay
-    // for a filesystem pass.
-    final Set<String> fakeCutExclusions = vmRules.isEmpty
-        ? const <String>{}
-        : await vmFakeCutExclusionKeysForStream(stream);
+    // 虚拟剪播: the ACTIVE plan joins the merge with its whole cut timeline (any
+    // range count — ADR 0037). Skipped entirely when no rule can merge anything
+    // — a non-VM view must never pay for a filesystem pass.
+    final VmCutMergeInfo fakeCut = vmRules.isEmpty
+        ? VmCutMergeInfo.empty
+        : await vmCutMergeInfoForStream(
+            stream,
+            preferredPlanPaths: activeCutPlanPaths(),
+          );
     final groups = resolveGroupsForStream(stream, vmRules,
-        excludedMediaKeys: fakeCutExclusions);
+        cutRanges: fakeCut.rangesByKey);
     final elements =
         groups.isEmpty ? stream : applyVmOverlay(stream, groups.byKey);
     return _VmMaterialization(

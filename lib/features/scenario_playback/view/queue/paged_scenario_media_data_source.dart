@@ -235,6 +235,27 @@ class PagedScenarioMediaDataSource
   /// this mirrors it so the data source only notifies on an actual SWITCH.
   Object? _lastCurrentItemToken;
 
+  /// Bumped when an IN-PLACE refresh changes which ROW holds the playing item.
+  ///
+  /// A merge rule appearing/disappearing re-groups the list: the same physical
+  /// file is now covered by a different element (its own single row vs the
+  /// group's anchor row). The occurrence key never moves in that case, so the
+  /// token below carries this counter instead — an open queue then scrolls to
+  /// the row's new element exactly like it does for a real item switch.
+  ///
+  /// It is intentionally NOT bumped by the first landed fetch (that seed must
+  /// not look like a change) nor when the playing row is off the loaded page
+  /// or keeps the same identity: a duration backfill must never yank a reader
+  /// back from the page they are browsing.
+  int _followRowGeneration = 0;
+
+  /// Row identity (`mediaKey`) of the playing item on the loaded page, or null
+  /// when that row is not on it.
+  String? _followRowKey;
+
+  /// False until the first landed fetch seeded [_followRowKey].
+  bool _followRowSeeded = false;
+
   /// Tag-view position listener (only mounted while a tag view is active), so
   /// jumping/stepping inside the view also updates [currentItemToken].
   VoidCallback? _tagStatusUnsub;
@@ -382,9 +403,62 @@ class PagedScenarioMediaDataSource
     // A non-active scenario has no live "playing item" of its own; the active
     // workspace's occurrence belongs to a different queue and must never drive
     // this view.
-    return _store.state.activeScenarioId == scenarioId
-        ? _store.state.currentOccurrenceKey
-        : null;
+    if (_store.state.activeScenarioId != scenarioId) return null;
+    final occurrence = _store.state.currentOccurrenceKey;
+    if (occurrence == null) return null;
+    // The ROW identity is part of the token: a rule change re-groups the list
+    // and moves the playing file under another element without touching the
+    // occurrence. See [_followRowGeneration].
+    return (occurrence, _followRowGeneration);
+  }
+
+  /// Row that currently represents the playing item on the LOADED page.
+  ///
+  /// Null when the playing row is not on this page (or there is no current
+  /// item). Deliberately scoped to `_items`: the follow logic must only react
+  /// to a re-group the reader can actually see, never to one that happened on
+  /// a page they are not looking at.
+  String? _resolveFollowRowKey() {
+    // The tag view publishes its own position and resolves from a tag-owned
+    // snapshot, so its row identity is not derived from `_items` here.
+    if (_tagActive) return null;
+    final currentKey = _store.state.currentOccurrenceKey;
+    if (currentKey == null) return null;
+    for (final item in _items) {
+      if (_rowOwnsOccurrence(item, currentKey)) return item.mediaKey;
+    }
+    return null;
+  }
+
+  /// Whether [item] is the row that represents the playing occurrence
+  /// [currentKey]. A merged row stands for many physical files: when the
+  /// session books a member that is not the row's anchor (a sibling-group
+  /// advance, or a tag hand-off that captured the live segment), the row still
+  /// owns it.
+  bool _rowOwnsOccurrence(EffectivePlaybackItem item, String currentKey) {
+    final itemKey = canonicalOccurrenceKey(
+      item.occurrenceId.storageId,
+      item.occurrenceId.path,
+      item.occurrenceId.occurrenceIndex,
+    );
+    if (currentKey == itemKey) return true;
+    return item.vmChildren.any(
+      (c) => currentKey == '${c.mediaKey}#${c.occurrenceIndex}',
+    );
+  }
+
+  /// Re-derives [_followRowKey] after an in-place refresh and bumps the
+  /// generation when the playing row's identity actually changed on screen.
+  void _refreshFollowRow() {
+    final next = _resolveFollowRowKey();
+    if (_followRowSeeded &&
+        _followRowKey != null &&
+        next != null &&
+        next != _followRowKey) {
+      _followRowGeneration++;
+    }
+    _followRowSeeded = true;
+    _followRowKey = next;
   }
 
   PlaybackScenarioStore get _store => usePlaybackScenarioStore();
@@ -432,7 +506,14 @@ class PagedScenarioMediaDataSource
   bool get supportsRowContextMenu => !isMobilePlatform;
 
   @override
-  Future<void> fetchPage(int targetPage, int currentSize) async {
+  Future<void> fetchPage(
+    int targetPage,
+    int currentSize, {
+    /// Re-derive the playing row's identity after this fetch (in-place content
+    /// refresh). User navigation must NOT pass it: paging away is not a
+    /// re-group, and reading it as one would drag the reader back.
+    bool refreshFollowRow = false,
+  }) async {
     // Claim this fetch. A newer fetch (a user navigation, or a later re-fetch)
     // invalidates this one; it must then return WITHOUT touching `_currentPage`
     // / `_items` / `_isLoading` — the newer owner finishes them.
@@ -485,6 +566,10 @@ class PagedScenarioMediaDataSource
       _currentPage = targetPage;
       _items = items!;
       _totalItems = totalItems!;
+      // The very first landed fetch only SEEDS the playing row's identity; a
+      // re-group is announced by [_refreshFollowRow] on later refreshes, so the
+      // initial token never looks like a move.
+      if (!_followRowSeeded || refreshFollowRow) _refreshFollowRow();
     }
 
     await _refreshRedundantExplicitKeys();
@@ -511,7 +596,7 @@ class PagedScenarioMediaDataSource
     final target = _currentPage;
     // CLOSE_DEBUG_LOG
     areaKeyLog.d('queue refetch keeping page=$target reason=$reason');
-    await fetchPage(target, pageSize);
+    await fetchPage(target, pageSize, refreshFollowRow: true);
     // A newer navigation (or another re-fetch) claimed the viewport while this
     // one was resolving: never apply the empty-page fallback on top of it.
     if (_currentPage != target) return;
@@ -685,14 +770,11 @@ class PagedScenarioMediaDataSource
       item.occurrenceId.path,
       item.occurrenceId.occurrenceIndex,
     );
-    // A merged row stands for many physical files: when the session books a
-    // member that is not the row's anchor (a sibling-group advance, or a tag
-    // hand-off that captured the live segment), the row still owns it.
-    final isCurrent = currentKey != null &&
-        (currentKey == itemKey ||
-            item.vmChildren.any(
-              (c) => currentKey == '${c.mediaKey}#${c.occurrenceIndex}',
-            ));
+    // A merged row stands for many physical files: [_rowOwnsOccurrence] is the
+    // single matcher the follow logic also uses, so the highlight and the
+    // "which row moved" decision can never disagree.
+    final isCurrent =
+        currentKey != null && _rowOwnsOccurrence(item, currentKey);
     if (currentKey != null &&
         canonicalKey(item.occurrenceId.storageId, item.occurrenceId.path) ==
             currentKey.split('#').first) {

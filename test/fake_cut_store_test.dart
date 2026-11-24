@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:iris/features/fake_cut/model/domain/fake_cut_plan.dart';
 import 'package:iris/features/fake_cut/services/fake_cut_discovery.dart';
 import 'package:iris/features/fake_cut/store/use_fake_cut_store.dart';
 import 'package:iris/models/file.dart';
@@ -34,6 +35,17 @@ void main() {
 }
 ''';
 
+  String projectMulti({String mediaFileName = 'ep01.mp4'}) => '''
+{
+  version: 2,
+  mediaFileName: '$mediaFileName',
+  cutSegments: [
+    { start: 1, end: 5, name: 'a', selected: true },
+    { start: 10, end: 15, name: 'b', selected: true },
+  ],
+}
+''';
+
   setUp(() async {
     setKvStoreForTest(MemoryKvStore());
     root = await Directory.systemTemp.createTemp('iris_fake_cut_store');
@@ -42,6 +54,7 @@ void main() {
   });
 
   tearDown(() async {
+    FakeCutStore.cutPlanChangeHandler = null;
     await store.dispose();
     resetKvStoreForTest();
     if (await root.exists()) await root.delete(recursive: true);
@@ -113,6 +126,104 @@ void main() {
       60000,
       reason: 'the rebuilt scan clamps the range to the real duration',
     );
+  });
+
+  test('the merge plan is the ACTIVE plan only', () async {
+    final String video = p.join(root.path, 'ep01.mp4');
+    await File(video).writeAsBytes(const <int>[0]);
+    await File(p.join(root.path, 'ep01.a.llc')).writeAsString(projectMulti());
+    await File(p.join(root.path, 'ep01.b.llc'))
+        .writeAsString(project(endSeconds: 20));
+    final FileItem file = FileItem(
+      name: 'ep01.mp4',
+      uri: video,
+      path: const <String>['ep01.mp4'],
+      durationMs: 60000,
+    );
+
+    // A bound plan is not enough: the merge follows the tab's on/off state.
+    expect(await store.ensureActivePlan(file), isNull);
+
+    final List<FakeCutPlanSource> sources = await FakeCutDiscovery.scan(
+      videoPath: video,
+      sourceDurationMs: 60000,
+    );
+    final FakeCutPlanSource single = sources.firstWhere(
+      (FakeCutPlanSource s) => s.path.endsWith('ep01.b.llc'),
+    );
+    expect(await store.activate(file, single), isTrue);
+    final FakeCutPlan? plan = await store.ensureActivePlan(file);
+    expect(plan, isNotNull);
+    expect(plan!.segments, hasLength(1));
+    expect(plan.segments.single.endMs, 20000);
+  });
+
+  test('ensurePlanAt opens a multi-range plan (ADR 0037)', () async {
+    final String video = p.join(root.path, 'ep01.mp4');
+    await File(video).writeAsBytes(const <int>[0]);
+    final String planPath = p.join(root.path, 'ep01.multi.llc');
+    await File(planPath).writeAsString(projectMulti());
+    final FileItem file = FileItem(
+      name: 'ep01.mp4',
+      uri: video,
+      path: const <String>['ep01.mp4'],
+      durationMs: 60000,
+    );
+
+    final FakeCutPlan? plan = await store.ensurePlanAt(file, planPath);
+    expect(plan, isNotNull);
+    expect(plan!.segments, hasLength(2),
+        reason: 'the merged segment plays the whole cut timeline');
+    expect(store.state.activePaths, isEmpty,
+        reason: 'opening a snapshot plan must not activate it in the tab');
+  });
+
+  test('ensurePlanAt opens the exact snapshot plan without activating',
+      () async {
+    final String video = p.join(root.path, 'ep01.mp4');
+    await File(video).writeAsBytes(const <int>[0]);
+    final String planPath = p.join(root.path, 'ep01.a.llc');
+    await File(planPath).writeAsString(project(endSeconds: 20));
+    final FileItem file = FileItem(
+      name: 'ep01.mp4',
+      uri: video,
+      path: const <String>['ep01.mp4'],
+      durationMs: 60000,
+    );
+
+    final FakeCutPlan? plan = await store.ensurePlanAt(file, planPath);
+    expect(plan, isNotNull);
+    expect(plan!.segments, hasLength(1));
+    expect(plan.planPath, planPath);
+    expect(store.state.activePaths, isEmpty,
+        reason: 'opening a snapshot plan must not activate it in the tab');
+  });
+
+  test('activate re-segments before bumping the revision', () async {
+    final String video = p.join(root.path, 'ep01.mp4');
+    await File(video).writeAsBytes(const <int>[0]);
+    await File(p.join(root.path, 'ep01.a.llc'))
+        .writeAsString(project(endSeconds: 20));
+    final FileItem file = FileItem(
+      name: 'ep01.mp4',
+      uri: video,
+      path: const <String>['ep01.mp4'],
+      durationMs: 60000,
+    );
+    final List<FakeCutPlanSource> sources = await FakeCutDiscovery.scan(
+      videoPath: video,
+      sourceDurationMs: 60000,
+    );
+    final int before = store.state.revision;
+    int seenRevision = -1;
+    FakeCutStore.cutPlanChangeHandler = (FileItem f) async {
+      seenRevision = store.state.revision;
+    };
+
+    expect(await store.activate(file, sources.single), isTrue);
+    expect(seenRevision, before,
+        reason: 'the live merge must be re-segmented before the reopen');
+    expect(store.state.revision, before + 1);
   });
 
   test('a remembered plan is not a playing cut', () async {

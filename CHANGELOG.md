@@ -1,3 +1,25 @@
+## v2.1.2
+
+### Changelog
+
+1. Virtual Cut now joins Virtual Merge: a plan with one kept range or several — including reordered or repeated ranges — merges with the plan's total kept length as its segment duration, and a repeated source point resumes from its first hit; the active plan is recognised even when its path differs only by separators or letter case, and a backend without EDL support still merges the untouched source
+2. A cut-plan change reaches playback and every list at once: editing a plan re-derives the merge already playing without reopening it, activating or closing a cut re-groups the open queues, a media rescan refreshes the cut project index before announcing the change, and none of these re-arm folder probing or bring back dismissed scan prompts
+3. While the Virtual Merge master switch is paused, choosing to use or not use a folder asks first — resume only this folder, resume everything, or cancel (the folder-only choice is greyed out with a reason when no other rule is enabled) — and writes no rule until you choose; the player switch then shows the resumed state and clears the paused banner in the same update, and a failed switch write leaves the switch where it was and says so
+4. Folder actions are all-or-nothing: if "keep only this folder" cannot close another rule, or the folder-rule or switch write then fails, every rule it already changed is restored and the failure is reported once — one folder action no longer re-resolves the tag view or re-fetches every open queue twice
+5. Creating, editing, enabling, pausing or importing a Virtual Merge rule re-groups every open queue in place, including the always-mounted desktop queue dock, without restarting the playing file; a queue set to follow the playing item moves to the merged row it now lives in
+6. A new Picture adjustment panel in the player's More menu: horizontal and vertical mirror, four clockwise quarter turns, and brightness, contrast and saturation sliders — session-only, reset when the video changes or the app restarts, re-applied after every open on both backends, with a reset button per control that is enabled only while that control is off its default; screenshots now freeze the picture at the moment the shot is requested, so a later rotation or mirror is never baked into the saved file, and a failed post-process still saves the original frame
+7. The fullscreen queue panel is now a transient overlay: it opens over the picture and closes on Esc, its header X, the queue key or a picture click; concealing it releases keyboard focus, a brief pointer crossing no longer makes it flicker, re-opening cancels a pending auto-hide, and it neither fights the control bar nor swallows the bar's own summon strip
+
+### 更新日志
+
+1. 「虚拟剪播」现在可以加入「虚拟合播」：方案保留 1 段或多段（含顺序被打乱或重复的片段）都会合并，片段时长取方案全部保留区间的总长，重复的源时间点从第一次命中处续播；激活的方案与扫描到的工程仅分隔符或大小写不同也能识别；后端不支持 EDL 时按未剪的原片合并
+2. 剪播方案的变化会立即传到播放和所有列表：编辑方案会就地重算正在播放的合并、不重新打开视频；打开或关闭剪播会重排已打开的队列；媒体重扫会先刷新剪播工程索引再广播变更；这些操作都不会重新触发文件夹探测，已关闭的扫描提示也不会再次出现
+3. 虚拟合播总开关处于暂停时，对文件夹选择「使用 / 不使用」会先询问——仅恢复此文件夹、恢复全部、取消（没有其他规则时「仅恢复此文件夹」会置灰并说明原因）——在你选择前不写入任何规则；恢复后播放器的总开关立即显示为开启并同时清除暂停提示条；总开关写入失败时保持原状态并明确提示
+4. 文件夹操作是全有或全无的：「只保留此文件夹」若无法关闭其他规则，或随后文件夹规则、总开关写入失败，已经改动的规则会全部还原，且只提示一次；一次文件夹操作不再重复解析标签视图、重复刷新每个已打开的队列
+5. 新建、编辑、启用、暂停或导入虚拟合播规则后，所有已打开的队列（含常驻的桌面队列停靠栏）会就地重新分组，正在播放的文件不会重启；设为「跟随正在播放」的队列会移动到合并后所在的那一行
+6. 播放器「更多」菜单新增「画面调整」面板：水平 / 垂直镜像、四档顺时针旋转，以及亮度、对比度、饱和度滑块——仅当前会话有效，切换视频或重启应用后复位，两种后端在每次打开后都会重新应用；每个控件有独立复位按钮，只在该控件偏离默认值时可用；截图按「按下截图那一刻」的画面处理，之后再做旋转或镜像不会写进已保存的文件，后处理失败时仍保存原始帧
+7. 全屏队列面板改为临时浮层：显示在画面上方，按 Esc、面板标题栏的 ×、队列快捷键或点击画面即可关闭；隐藏时释放键盘焦点，指针短暂越界不再让它闪烁，重新打开会取消待执行的自动隐藏，也不会与控制栏及其唤出边缘互相抢占
+
 ## v2.1.1
 
 ### Changelog

@@ -12,6 +12,7 @@ import 'package:iris/features/meta_settings/meta_settings_module.dart';
 import 'package:iris/features/playback_tools/view/screenshot_capture_flow.dart';
 import 'package:iris/features/playback_tools/store/playback_tools_store.dart';
 import 'package:iris/features/playback_tools/view/screenshot_feedback.dart';
+import 'package:iris/features/video_transform/view/video_transform_panel.dart';
 import 'package:iris/features/scenario_playback/actions/scenario_playback_common.dart';
 import 'package:iris/features/scenario_playback/model/enum/scenario_sort_field.dart';
 import 'package:iris/features/media_library/model/enum/basic_enum.dart'
@@ -291,6 +292,9 @@ class MoreMenuButton extends HookWidget {
           _rateItem(context, t, rate),
         if (shouldShowSidePanelEntry)
           _unifiedSidePanelItem(context, t, sidePanelTitle),
+        // 画面调整 — session-scoped mirror/rotation/color. Low-frequency viewing
+        // adjustment, so it lives in More (same reasoning as seek-step).
+        _videoTransformItem(context, t, popupDirection),
         // Fine-tune range retired — dial axis strip now mirrors global seek step.
         // (The More-menu entry is gone; the dialog itself is still reachable
         // from Settings → Play.)
@@ -610,6 +614,23 @@ class MoreMenuButton extends HookWidget {
         title: Text(t.show_gesture_overlay),
       ),
       onTap: () => usePlayerUiStore().updateIsShowGestureTips(true),
+    );
+  }
+
+  /// 画面调整 — opens the session-scoped mirror/rotation/color panel.
+  PopupMenuItem _videoTransformItem(
+      BuildContext context, t, PopupDirection dir) {
+    return PopupMenuItem(
+      child: ListTile(
+        mouseCursor: SystemMouseCursors.click,
+        leading: const Icon(Icons.tune_rounded, size: kMenuTileIconSizeTiny),
+        title: Text(t.menu_video_transform),
+      ),
+      onTap: () => showControlForHover(showPopup(
+        context: context,
+        child: const VideoTransformPanel(),
+        direction: dir,
+      )),
     );
   }
 

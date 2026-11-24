@@ -208,16 +208,17 @@ class Home extends HookWidget {
       legacyStorage: useLegacyStoragePersistence,
     );
 
-    // On entering picture fullscreen, seed the pinned state from the setting
-    // (keepPanel = stay open, hidePanel = hidden but hover-summonable). Leaving
+    // On entering picture fullscreen, seed the revealed state from the setting
+    // (keepPanel = start revealed, hidePanel = hidden but hover-summonable).
+    // This is only the INITIAL state: the overlay is transient, so a pointer
+    // leave, a picture click, Esc or the queue key conceals it again. Leaving
     // picture fullscreen always drops both runtime flags so the windowed dock
     // resumes its persisted `playlistPanelVisible`.
     useEffect(() {
       if (!isDesktop) return null;
-      usePlayerUiStore().updateIsFullscreenDockPeeking(false);
-      usePlayerUiStore().updateIsFullscreenDockPinned(
+      usePlayerUiStore().seedFullscreenDockOnEntry(
         isFullScreen &&
-            isFullscreenDockPinnedOnEntry(sideFullscreenBehavior),
+            isFullscreenDockShownOnEntry(sideFullscreenBehavior),
       );
       return null;
     }, [isFullScreen]);
@@ -326,11 +327,11 @@ class Home extends HookWidget {
               clampPlaylistPanelWidth(playlistPanelWidth, maxWidth);
 
           // Picture-fullscreen overlay: occludes the video instead of shrinking
-          // it. Visibility is the caller-owned pin OR the transient hover peek.
+          // it. Visibility is caller-owned and transient — any reveal path can
+          // be undone by leaving the panel or clicking the picture.
           final Widget? dockOverlay = fullscreenOverlayEnabled
               ? FullscreenPlaylistDockOverlay(
                   shown: fsDockPinned || fsDockPeeking,
-                  pinned: fsDockPinned,
                   width: clampedWidth,
                   edgeWidth: resolveFullscreenDockEdgeWidth(
                     pct: fullscreenDockEdgeRevealPct,
@@ -343,15 +344,10 @@ class Home extends HookWidget {
                   // while the bar is hidden, so the pointer can be moved there
                   // to operate the bar.
                   controlBarIsolationHeight: fsDockIsolationHeight,
-                  onReveal: () =>
-                      usePlayerUiStore().updateIsFullscreenDockPeeking(true),
-                  onConceal: () =>
-                      usePlayerUiStore().updateIsFullscreenDockPeeking(false),
+                  onReveal: () => usePlayerUiStore().showFullscreenDock(),
+                  onConceal: () => usePlayerUiStore().hideFullscreenDock(),
                   child: PlaylistDockPanel(
-                    onClose: () {
-                      usePlayerUiStore().updateIsFullscreenDockPinned(false);
-                      usePlayerUiStore().updateIsFullscreenDockPeeking(false);
-                    },
+                    onClose: () => usePlayerUiStore().hideFullscreenDock(),
                   ),
                 )
               : null;

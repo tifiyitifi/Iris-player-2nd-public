@@ -28,7 +28,7 @@ and the cross-feature files it touches.
 
 | Family | Test files |
 | --- | --- |
-| GATE | `test/vm_master_switch_test.dart`, `test/vm_legacy_sheet_gate_test.dart`, `test/vm_settings_rows_test.dart`, `test/more_menu_vm_entry_test.dart` |
+| GATE | `test/vm_master_switch_test.dart`, `test/vm_master_off_tag_test.dart`, `test/vm_manager_master_refresh_test.dart`, `test/vm_legacy_sheet_gate_test.dart`, `test/vm_settings_rows_test.dart`, `test/more_menu_vm_entry_test.dart` |
 | RULE | `test/vm_resolver_test.dart`, `test/vm_exclusion_rules_test.dart`, `test/vm_naming_test.dart`, `test/vm_folder_defaults_test.dart`, `test/vm_title_composer_test.dart` |
 | MERGE | `test/vm_stream_merge_test.dart`, `test/vm_overlay_test.dart`, `test/vm_overlay_children_test.dart`, `test/vm_groups_cache_test.dart`, `test/vm_search_segment_test.dart`, `test/media_search_virtual_page_test.dart` |
 | PIN | `test/vm_membership_pin_test.dart`, `test/vm_pin_failed_groups_test.dart`, `test/vm_delete_cascade_test.dart` |
@@ -36,9 +36,9 @@ and the cross-feature files it touches.
 | SEEK | `test/vm_step_tail_test.dart`, `test/vm_seek_end_clamp_test.dart`, `test/vm_relative_seek_test.dart`, `test/vm_inner_seek_backtrack_test.dart`, `test/vm_cross_seek_test.dart`, `test/vm_drag_strategy_test.dart` |
 | SCAN | `test/vm_preflight_test.dart`, `test/vm_preflight_db_only_test.dart`, `test/vm_duration_scan_test.dart`, `test/vm_duration_backfill_test.dart`, `test/vm_db_durations_saf_test.dart`, `test/vm_scan_facade_test.dart`, `test/vm_pseudo_play_harvest_test.dart`, `test/vm_scan_dialog_test.dart`, `test/vm_scan_dismiss_test.dart` |
 | UI | `test/vm_rule_editor_v2_layout_test.dart`, `test/vm_tiled_manual_dialog_test.dart`, `test/vm_mark_color_dialog_test.dart`, `test/vm_scrubber_marks_test.dart`, `test/vm_tick_color_test.dart`, `test/vm_tick_extent_test.dart`, `test/vm_dual_time_test.dart`, `test/vm_dual_time_default_test.dart`, `test/vm_merged_totals_test.dart`, `test/vm_child_segment_list_test.dart`, `test/vm_group_progress_chip_test.dart`, `test/vm_error_dialog_host_test.dart` |
-| XFEAT | `test/bg_vm_align_rule_test.dart`, `test/bg_vm_visibility_test.dart`, `test/background_playback_no_virtual_merge_test.dart`, `test/background_scope_panel_vm_test.dart`, `test/vm_fake_cut_exclusion_test.dart`, `test/scenario_queue_vm_gate_test.dart`, `test/scenario_vm_tap_matches_display_test.dart`, `test/scenario_vm_group_parity_test.dart`, `test/scenario_vm_total_order_test.dart`, `test/scenario_vm_stream_cache_test.dart`, `test/phone_ring_dial_vm_test.dart`, `test/phone_ring_dial_drag_vm_test.dart`, `test/phone_ring_dial_vm_mapping_test.dart`, `test/phone_ring_dial_vm_lock_test.dart`, `test/ab_loop_virtual_test.dart` |
+| XFEAT | `test/bg_vm_align_rule_test.dart`, `test/bg_vm_visibility_test.dart`, `test/background_playback_no_virtual_merge_test.dart`, `test/background_scope_panel_vm_test.dart`, `test/vm_fake_cut_exclusion_test.dart`, `test/vm_cut_merge_test.dart`, `test/vm_cut_merge_e2e_test.dart`, `test/vm_cut_plan_edit_test.dart`, `test/vm_cut_plan_notify_test.dart`, `test/vm_cut_range_test.dart`, `test/vm_cut_rescan_refresh_test.dart`, `test/scenario_queue_vm_gate_test.dart`, `test/scenario_vm_tap_matches_display_test.dart`, `test/scenario_vm_group_parity_test.dart`, `test/scenario_vm_total_order_test.dart`, `test/scenario_vm_stream_cache_test.dart`, `test/phone_ring_dial_vm_test.dart`, `test/phone_ring_dial_drag_vm_test.dart`, `test/phone_ring_dial_vm_mapping_test.dart`, `test/phone_ring_dial_vm_lock_test.dart`, `test/ab_loop_virtual_test.dart` |
 | MIG | `test/v36_vm_exclusion_columns_test.dart`, `test/v54_vm_rule_use_mode_test.dart`, `test/vm_delete_cascade_test.dart`, `test/vm_transfer_roundtrip_test.dart` |
-| DIR | `test/vm_dir_use_mode_test.dart`, `test/vm_resolver_dir_exclusion_test.dart`, `test/vm_dir_toggle_command_test.dart`, `test/vm_adopt_live_session_test.dart`, `test/vm_dir_toggle_live_adopt_test.dart` |
+| DIR | `test/vm_dir_use_mode_test.dart`, `test/vm_resolver_dir_exclusion_test.dart`, `test/vm_dir_toggle_command_test.dart`, `test/vm_dir_toggle_master_off_test.dart`, `test/vm_master_off_dialog_test.dart`, `test/vm_adopt_live_session_test.dart`, `test/vm_dir_toggle_live_adopt_test.dart`, `test/vm_rule_change_queue_refresh_test.dart` |
 
 Single test:
 
@@ -100,6 +100,10 @@ episode in a prose file. `docs/**` is a prose file. Use stand-ins.
 - The eye: the scrubber ticks agree with the segment boundaries; the dual time
   rows do not flicker apart; the merged total matches the sum of the segments.
   These are `M` rows.
+- 虚拟剪播 interplay: with a merged group playing, activate and close a cut
+  (the current segment and the totals follow), edit the active plan on disk
+  (the next open of that segment corrects the totals), and rescan the folder
+  after adding/removing a `.llc` (the merge row changes without the 虚拟剪播 tab).
 
 `M` steps are named in the register as `M:device checklist#<step>`; the current
 steps are `ring` (the phone dial's drawn handle and hit area agree), `ticks`

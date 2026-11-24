@@ -65,4 +65,59 @@ void main() {
       expect(resolveFakeCutResume(p, 5000).kind, FakeCutResumeKind.none);
     });
   });
+
+  group('decideFakeCutResume', () {
+    test('auto-resolve takes the FIRST hit of an ambiguous resume', () {
+      // A merged segment auto-advance must never block on a dialog (ADR 0037):
+      // the first hit in plan order is the deterministic landing.
+      final p = plan(<List<int>>[
+        <int>[10000, 20000],
+        <int>[60000, 70000],
+        <int>[15000, 25000],
+      ]);
+      final resume = resolveFakeCutResume(p, 16000);
+      final decision = decideFakeCutResume(resume, autoResolve: true);
+      expect(decision.needsChoice, isFalse);
+      expect(decision.fakeMs, 6000);
+    });
+
+    test('without auto-resolve an ambiguous resume still asks', () {
+      final p = plan(<List<int>>[
+        <int>[10000, 20000],
+        <int>[15000, 25000],
+      ]);
+      final resume = resolveFakeCutResume(p, 16000);
+      final decision = decideFakeCutResume(resume);
+      expect(decision.needsChoice, isTrue);
+      expect(decision.fakeMs, isNull);
+    });
+
+    test('exact, gap and head decisions need no dialog either way', () {
+      final p = plan(<List<int>>[
+        <int>[10000, 20000],
+        <int>[50000, 60000],
+      ]);
+      for (final bool auto in <bool>[false, true]) {
+        final exact = decideFakeCutResume(
+            resolveFakeCutResume(p, 12000), autoResolve: auto);
+        expect(exact.fakeMs, 2000);
+        expect(exact.needsChoice, isFalse);
+
+        final gap = decideFakeCutResume(
+            resolveFakeCutResume(p, 30000), autoResolve: auto);
+        expect(gap.fakeMs, 10000);
+        expect(gap.needsChoice, isFalse);
+
+        final head = decideFakeCutResume(
+            resolveFakeCutResume(p, null), autoResolve: auto);
+        expect(head.fakeMs, isNull);
+        expect(head.needsChoice, isFalse);
+
+        final end = decideFakeCutResume(
+            resolveFakeCutResume(p, 70000), autoResolve: auto);
+        expect(end.fakeMs, isNull);
+        expect(end.needsChoice, isFalse);
+      }
+    });
+  });
 }

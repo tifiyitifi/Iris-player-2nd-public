@@ -6,9 +6,11 @@ import 'package:iris/features/virtual_media/model/enum/vm_enums.dart';
 import 'package:iris/features/virtual_media/resolver/vm_fake_cut_exclusions.dart';
 import 'package:iris/features/virtual_media/resolver/vm_resolver.dart';
 
-/// 虚拟剪播 ↔ Virtual Merge coexistence: a video with a sibling `.llc` keeps its
-/// ordinary single row and never joins a merged group; every other member keeps
-/// merging exactly as before.
+/// Rule-level exclusions (`notUse` folders) still remove a member from another
+/// rule's group; every remaining member keeps merging exactly as before.
+///
+/// 虚拟剪播 no longer excludes a file: an ACTIVE plan joins the merge as its cut
+/// timeline (ADR 0037, `vm_cut_merge_test.dart`).
 ///
 /// The exclusion set is injected (pure), so these tests never touch the
 /// filesystem — `fake_cut_project_index_test.dart` covers the pairing itself.
@@ -108,11 +110,12 @@ void main() {
     });
   });
 
-  group('vmFakeCutExclusionKeys', () {
-    test('non-local rows never resolve a project (no filesystem hit)', () async {
-      // SAF/remote rows are excluded from 虚拟剪播 entirely; the helper must skip
-      // them rather than hand a content:// uri to the directory index.
-      final Set<String> keys = await vmFakeCutExclusionKeys(<VirtualSegment>[
+  test('a non-local row never resolves a cut range (no filesystem hit)',
+      () async {
+    // SAF/remote rows cannot pair a sibling `.llc`; the helper must skip them
+    // rather than hand a content:// uri to the directory index.
+    final VmCutMergeInfo info = await vmCutMergeInfo(
+      <VirtualSegment>[
         VirtualSegment(
           mediaKey: 'st1:content://tree/x.mp4',
           storageId: 'st1',
@@ -122,8 +125,11 @@ void main() {
           uri: 'content://tree/x.mp4',
           durationMs: 1000,
         ),
-      ]);
-      expect(keys, isEmpty);
-    });
+      ],
+      preferredPlanPaths: const <String, String>{
+        'st1:content://tree/x.mp4': 'content://tree/x.llc',
+      },
+    );
+    expect(info.rangesByKey, isEmpty);
   });
 }

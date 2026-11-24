@@ -1,3 +1,4 @@
+import 'package:iris/features/fake_cut/services/fake_cut_project_index.dart';
 import 'package:iris/features/scenario_playback/store/use_playback_scenario_store.dart';
 import 'package:iris/features/virtual_media/service/vm_membership_pin.dart';
 
@@ -38,5 +39,20 @@ abstract final class MediaRevisionActions {
     final store = usePlaybackScenarioStore();
     await store.bumpPlaybackVersion();
     await store.bumpSourceScanRevision(storages: ids);
+  }
+
+  /// Announces that a recursive scan re-listed [storageIds]' DIRECTORIES.
+  ///
+  /// A scan is the one automatic moment a `.llc` sibling can appear or vanish
+  /// without an in-app action, so the 虚拟剪播 project index is dropped BEFORE
+  /// the announce: otherwise a new/deleted cut keeps merging with the previous
+  /// shape until the 虚拟剪播 tab's refresh button is pressed (ADR 0033).
+  ///
+  /// Only the index is dropped — the rules and the per-session scan bookkeeping
+  /// (Shell-empty marks, dismissed scan prompts) are untouched, because a rescan
+  /// re-lists the same files rather than re-identifying them.
+  static Future<void> mediaRescanned(Iterable<String> storageIds) async {
+    FakeCutProjectIndex.instance.invalidate();
+    await mediaNodesChanged(storageIds);
   }
 }

@@ -11,9 +11,9 @@ import 'package:iris/utils/path_conv.dart' show isSafPath;
 ///  * 副音's `enabled` flag is ALSO true for a merely ARMED run (cold-launch
 ///    `startArmed`, gate closed, nothing loaded), so 虚拟剪播 reported "cannot be
 ///    combined with background audio" while nothing was playing;
-///  * the two features coexist by EXCLUSION instead: a file with a cut project
-///    is skipped by the virtual-merge rules (`vm_fake_cut_exclusions.dart`) and
-///    副音 suspends itself for the duration of the cut
+///  * the two features coexist instead: an active cut joins a merge and plays
+///    its whole cut timeline (`vm_fake_cut_exclusions.dart`, ADR 0037); 副音
+///    suspends itself for the duration of the cut
 ///    (`fake_cut_background_scope.dart`). Neither needs a global block.
 enum FakeCutBlockReason {
   none,

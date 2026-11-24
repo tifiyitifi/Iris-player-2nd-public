@@ -88,7 +88,6 @@ class _ControlBarHarnessState extends State<_ControlBarHarness> {
               ),
               FullscreenPlaylistDockOverlay(
                 shown: shown,
-                pinned: false,
                 width: _panelW,
                 edgeWidth: _edgeW,
                 controlPanelKey: barKeyNotifier,
@@ -200,7 +199,6 @@ void main() {
               height: _h,
               child: FullscreenPlaylistDockOverlay(
                 shown: false,
-                pinned: false,
                 width: _panelW,
                 edgeWidth: _edgeW,
                 onReveal: () => events.add('reveal'),

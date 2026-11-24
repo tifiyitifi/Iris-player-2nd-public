@@ -47,9 +47,15 @@ Future<void> openPlayQueueFromControlBar(
       isFullScreen: isFullScreen,
       legacyStorage: app.useLegacyStoragePersistence,
     )) {
-      final bool pinned = usePlayerUiStore().state.isFullscreenDockPinned;
-      usePlayerUiStore().updateIsFullscreenDockPeeking(false);
-      usePlayerUiStore().updateIsFullscreenDockPinned(!pinned);
+      // Transient toggle: reveal now, conceal now. The panel auto-conceals on
+      // a pointer leave or a picture click as well (see
+      // `FullscreenPlaylistDockOverlay`), so there is no sticky pin to escape.
+      final ui = usePlayerUiStore();
+      if (ui.isFullscreenDockShown) {
+        ui.hideFullscreenDock();
+      } else {
+        ui.showFullscreenDock();
+      }
       return;
     }
     useAppStore().togglePlaylistPanelVisible();

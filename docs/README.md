@@ -23,6 +23,17 @@ docs/
       decisions/                          append-only ADRs
         README.md
         0001-...md ... 0016-...md
+    fake_cut/                             Virtual Cut (虚拟剪播)
+      README.md                           what the reader sees; scope; code map
+      spec.md                             SDD: requirements (EARS)
+      design.md                           SDD: mechanism, data model, invariants
+      rules.md                            BDD+TDD: normative case register
+      recurrences.md                      the complaints and couplings that return
+      testing.md                          TDD: gates, fixtures, device checks
+      tasks.md                            open work and accepted gaps
+      decisions/                          append-only ADRs
+        README.md
+        0001-...md ... 0008-...md
     virtual_media/                        Virtual Media (virtual merge)
       README.md                           what the reader sees; scope; code map
       spec.md                             SDD: requirements (EARS)
@@ -33,7 +44,29 @@ docs/
       tasks.md                            open work and accepted gaps
       decisions/                          append-only ADRs
         README.md
-        0001-...md ... 0025-...md
+        0001-...md ... 0037-...md
+    video_transform/                      Picture adjustment (mirror/rotate/color)
+      README.md                           what the reader sees; scope; code map
+      spec.md                             SDD: requirements (EARS)
+      design.md                           SDD: mechanism, data model, invariants
+      rules.md                            BDD+TDD: normative case register
+      recurrences.md                      the complaints and couplings that return
+      testing.md                          TDD: gates, fixtures, device checks
+      tasks.md                            open work and accepted gaps
+      decisions/                          append-only ADRs
+        README.md
+        0001-...md ... 0008-...md
+    window/                               Desktop playlist dock (画面全屏 side queue)
+      README.md                           what the reader sees; scope; code map
+      spec.md                             SDD: requirements (EARS)
+      design.md                           SDD: mechanism, data model, invariants
+      rules.md                            BDD+TDD: normative case register
+      recurrences.md                      the complaints and couplings that return
+      testing.md                          TDD: gates, fixtures, device checks
+      tasks.md                            open work and accepted gaps
+      decisions/                          append-only ADRs
+        README.md
+        0001-...md ... 0003-...md
 ```
 
 ## What each document owns
@@ -69,9 +102,10 @@ Every row in `rules.md` names how it is held:
 | `M` | needs a human on a device; the step is in `testing.md` |
 | `-:<reason>` | deliberately not held by an executable test; the reason is the whole point |
 
-`scripts/check-bg-rules.ps1` and `scripts/check-vm-rules.ps1` resolve every `F:`
-token, every `D:` token and every `decisions/` link for their feature. They do
-not read git history.
+`scripts/check-bg-rules.ps1`, `scripts/check-fake-cut-rules.ps1`,
+`scripts/check-vm-rules.ps1`, `scripts/check-video_transform-rules.ps1` and
+`scripts/check-window-rules.ps1` resolve every `F:` token, every `D:` token and
+every `decisions/` link for their feature. They do not read git history.
 
 ## Provenance and the public mirror
 
@@ -102,4 +136,7 @@ shows apparent churn that never happened. Read the development branch only.
 | Feature | Status | Entry |
 | --- | --- | --- |
 | Background playback (Sub Audio, 副音) | shipped (v2.1.0) | `features/background-playback/README.md` |
-| Virtual Media (virtual merge) | shipped (v2.1.0) | `features/virtual_media/README.md` |
+| Virtual Cut (虚拟剪播) | shipped (v2.1.0; joins a merge in v2.1.2) | `features/fake_cut/README.md` |
+| Virtual Media (virtual merge) | shipped (v2.1.0; cut plans join in v2.1.2) | `features/virtual_media/README.md` |
+| Picture adjustment (video transform) | shipped (v2.1.2) | `features/video_transform/README.md` |
+| Desktop playlist dock (window) | shipped (v2.1.1) | `features/window/README.md` |

@@ -69,3 +69,31 @@ FakeCutResume resolveFakeCutResume(FakeCutPlan plan, int? sourceMs) {
   }
   return const FakeCutResume(kind: FakeCutResumeKind.afterEnd);
 }
+
+/// Chooses the landing target of [resume], optionally without a prompt.
+///
+/// [autoResolve] is for a merged cut segment's auto-advance: it must never block
+/// on a dialog, so an ambiguous (repeated / overlapping) source point takes the
+/// FIRST hit in plan order — exactly what the merge timeline does (ADR 0037).
+/// With [autoResolve] false an ambiguous resume still
+/// reports [needsChoice] so the caller can show the sync dialog.
+///
+/// A `fakeMs == null` with `needsChoice == false` means "start at the head".
+({int? fakeMs, bool needsChoice}) decideFakeCutResume(
+  FakeCutResume resume, {
+  bool autoResolve = false,
+}) {
+  switch (resume.kind) {
+    case FakeCutResumeKind.none:
+    case FakeCutResumeKind.afterEnd:
+      return (fakeMs: null, needsChoice: false);
+    case FakeCutResumeKind.exact:
+    case FakeCutResumeKind.gapNext:
+      return (fakeMs: resume.fakeMs, needsChoice: false);
+    case FakeCutResumeKind.ambiguous:
+      if (autoResolve) {
+        return (fakeMs: resume.candidates.first.fakeMs, needsChoice: false);
+      }
+      return (fakeMs: null, needsChoice: true);
+  }
+}

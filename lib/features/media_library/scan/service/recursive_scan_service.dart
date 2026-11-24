@@ -481,6 +481,15 @@ class RecursiveScanService {
       // newer run can claim the store while it is running.
       if (!_runIsLive) return;
       await scanStore.completeScan();
+      // A completed rescan re-listed the directories: drop the 虚拟剪播 project
+      // index and let open merges re-derive, so a `.llc` added/removed on disk
+      // takes effect without the 虚拟剪播 tab's refresh button (ADR 0033).
+      try {
+        await MediaRevisionActions.mediaRescanned(<String>[storageId]);
+      } catch (e) {
+        // The announce is a UI/index concern and must never fail the scan.
+        areaKeyLog.w('Scan cut-project announce skipped: $e');
+      }
 
       if (probeService != null && background) {
         // Post-settle: play is already running; this only fills metadata.

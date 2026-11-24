@@ -20,6 +20,7 @@ import 'package:iris/store/use_play_queue_store.dart';
 import 'package:iris/utils/format_duration_hms.dart';
 import 'package:iris/utils/get_localizations.dart';
 import 'package:iris/utils/logger.dart';
+import 'package:iris/utils/path_conv.dart' show canonicalProgressKey;
 import 'package:iris/widgets/dialogs/show_copyable_error_dialog.dart';
 import 'package:provider/provider.dart';
 
@@ -126,6 +127,13 @@ class FakeCutTab extends HookWidget {
     final bool backgroundWouldPause =
         backgroundEnabled && backgroundSounding && !cutPlaying;
     final bool inVirtualMerge = VirtualMediaController.instance.isActive;
+    // Whether THIS file is the merge segment currently playing its cut (ADR
+    // 0031). The tab must not claim the cut is ignored in that case.
+    final seg = VirtualMediaController.instance.currentSegmentOrNull;
+    final bool cutInMerge = inVirtualMerge &&
+        seg?.cutRange != null &&
+        fakeCutFileKey(file) ==
+            canonicalProgressKey(seg!.storageId, seg.path, uri: seg.uri);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -157,10 +165,18 @@ class FakeCutTab extends HookWidget {
                 ),
           ),
         ),
-        if (inVirtualMerge)
+        // A closed cut merges as its source, so there is nothing to explain
+        // then. The notice tells the user an ACTIVE plan applies when THIS file
+        // plays as a merged segment (ADR 0037).
+        if (inVirtualMerge && !cutInMerge && activePlan != null)
           _NoticeLine(
             icon: Icons.merge_type_rounded,
             text: t.fake_cut_vm_merged_notice,
+          ),
+        if (cutInMerge)
+          _NoticeLine(
+            icon: Icons.merge_type_rounded,
+            text: t.fake_cut_vm_cut_merged_notice,
           ),
         if (backgroundWouldPause)
           _NoticeLine(
@@ -258,10 +274,10 @@ class FakeCutTab extends HookWidget {
   /// A new `.llc` is not just a new plan list entry: the video must also stop
   /// joining a Virtual Merge merge (the group pipeline excludes it), and the
   /// answer of "does this folder have projects" is cached. The refresh is the
-  /// documented way to apply a project created while the app was running —
+  /// in-tab way to apply a project created while the app was running — a
+  /// completed media rescan does the same automatically (ADR 0033).
   /// [FakeCutProjectIndex.invalidate] drops the filesystem cache and
-  /// [VirtualMediaService.notifyRulesChanged] re-derives the open lists, which
-  /// is exactly the "刷新后才实用" contract.
+  /// [VirtualMediaService.notifyRulesChanged] re-derives the open lists.
   static Future<void> _refresh(
     BuildContext context,
     FakeCutStore store,

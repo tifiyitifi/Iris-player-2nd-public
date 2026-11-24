@@ -91,6 +91,46 @@ SHALL publish the failure reasons by group identity.
 
 Rules: `MERGE-5`, `MERGE-6`, `SCAN-2`.
 
+### FR-8a - A merge follows the active cut
+
+WHEN a member has a USABLE ACTIVE 虚拟剪播 project and the backend supports the
+EDL, THE SYSTEM SHALL merge it whatever its range count, use the plan's total cut
+length as the segment duration, SHALL play that EDL and SHALL map cut↔source over
+the plan's concatenated kept ranges (a repeated or overlapping source point
+resumes from its FIRST hit); WHEN no plan is active or the active plan is
+unusable the file SHALL merge as its source; a backend without EDL SHALL merge
+the source. Activating or closing a plan while a merge plays SHALL re-resolve the
+live segment before the media reopens.
+
+Rules: `XFEAT-5`, `XFEAT-10`, `XFEAT-11`, `XFEAT-12`, `XFEAT-13`, `XFEAT-15`,
+`XFEAT-16`, `XFEAT-21`.
+
+### FR-8b - A rescan refreshes the cut-project index
+
+WHEN a recursive media scan completes, THE SYSTEM SHALL drop the 虚拟剪播 project
+index before announcing the media change, so a `.llc` added or removed on disk
+takes effect in open merges without the 虚拟剪播 tab's refresh, and SHALL keep the
+per-session scan bookkeeping.
+
+Rules: `XFEAT-17`.
+
+### FR-8c - An edited plan re-derives the live merge
+
+WHEN a merged cut segment opens a plan whose content signature differs from the
+range the group displayed, THE SYSTEM SHALL open the fresh plan and request one
+live re-derive; WHEN the plan cannot be opened it SHALL play the source and
+request the same.
+
+Rules: `XFEAT-18`.
+
+### FR-8d - A cut-plan change keeps the scan bookkeeping
+
+WHEN the active cut plan changes, THE SYSTEM SHALL re-group every open surface
+while preserving the rule cache, the Shell-empty marks and the dismissed scan
+prompts.
+
+Rules: `XFEAT-19`.
+
 ### FR-9 - Session start and resume
 
 WHEN a virtual item starts, THE SYSTEM SHALL build the queue from the displayed
@@ -154,9 +194,11 @@ Rules: `XFEAT-1`, `XFEAT-2`, `XFEAT-3`, `XFEAT-4`, `XFEAT-5`, `XFEAT-6`, `MERGE-
 
 WHEN the metadata-settings gate is off, THE SYSTEM SHALL make the feature
 absent; the master switch SHALL pause merging without mutating rules, and the
-legacy More sheet SHALL never execute.
+legacy More sheet SHALL never execute. Pausing SHALL keep the current physical
+file playing and, when a merged group is mid-play, SHALL book the segment that
+is actually playing rather than the row's anchor.
 
-Rules: `GATE-1`, `GATE-2`, `GATE-3`, `GATE-4`, `GATE-5`.
+Rules: `GATE-1`, `GATE-2`, `GATE-3`, `GATE-4`, `GATE-5`, `GATE-10`.
 
 ### FR-17 - UI contract
 
@@ -196,11 +238,29 @@ longer merged SHALL fall back to single playback — including a folder carved
 out of another rule's recursive merge. Switching it to `use` while that very
 video is playing SHALL bind the live feed to its merged group WITHOUT reopening
 it (position, queue and autoplay untouched); when the queue has moved on, the
-adoption SHALL be refused and the next feed merges. WHEN no enabled `notUse`
-rule exists, THE SYSTEM SHALL NOT pay for the exclusion mask (the 500k-media
-pipeline stays unchanged).
+adoption SHALL be refused and the next feed merges. Every rule change SHALL
+reach the surfaces that are already open: an open queue re-fetches in place (an
+active tag view SHALL re-resolve its snapshot first), and a queue that follows
+the playing item SHALL scroll to the row's new element when the re-group moved
+it. WHEN no enabled `notUse` rule exists, THE SYSTEM SHALL NOT pay for the
+exclusion mask (the 500k-media pipeline stays unchanged).
 
-Rules: `DIR-1` ... `DIR-12`, `RULE-15`.
+WHEN the global master switch is off, a `use` request SHALL NOT be written as a
+rule that cannot apply: THE SYSTEM SHALL ask whether to resume only this folder
+(disabling the other enabled rules first), resume every rule, or cancel, and a
+cancelled request SHALL leave the switch and every rule untouched. The three
+choices SHALL always be presented; when no other rule is enabled the
+folder-only choice SHALL be shown unavailable and explained instead of being
+removed. A `notUse` request SHALL still be saved and SHALL report that it
+applies once merging resumes. The folder panel SHALL show that merging is
+paused, the prompt's explanation SHALL start collapsed, and when the request
+resumes the switch the master switch SHALL show the new state in the same
+update. A failed "keep only this folder" SHALL restore every rule it already
+disabled and SHALL report that nothing changed; a failed master-switch write
+SHALL leave the switch on its old value, SHALL emit no re-resolution signal and
+SHALL be reported. A folder action SHALL refresh the open surfaces at most once.
+
+Rules: `DIR-1` ... `DIR-18`, `GATE-6` ... `GATE-9`, `RULE-15`.
 
 ## Non-goals
 

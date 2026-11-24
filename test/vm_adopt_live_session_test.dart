@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:iris/features/media_library/store/use_playback_progress_store.dart';
 import 'package:iris/features/virtual_media/model/domain/vm_item.dart';
 import 'package:iris/features/virtual_media/playback/vm_playback_controller.dart';
+import 'package:iris/features/virtual_media/resolver/vm_stream_merge.dart';
 import 'package:iris/features/virtual_media/store/vm_playback_store.dart';
 import 'package:iris/models/db/app_database.dart';
 import 'package:iris/models/db/db_module.dart';
@@ -179,5 +180,88 @@ void main() {
     );
 
     expect(ok, isFalse);
+  });
+
+  test('re-segments the live item when a cut plan changes', () async {
+    await playSingle('b.mp4');
+    await VirtualMediaController.instance.adoptLiveSession(
+      queue: [_item()],
+      queueIndex: 0,
+      segmentIndex: 1,
+      localMs: 12000,
+    );
+
+    final VirtualMediaItem cutItem = VirtualMediaItem(
+      ruleId: 'r1',
+      scopeKey: 'r1|d|#1',
+      rootPath: 'd',
+      displayIndex: 1,
+      displayName: 'd',
+      segments: const <VirtualSegment>[
+        VirtualSegment(
+          mediaKey: 'st1:d/a.mp4',
+          storageId: 'st1',
+          path: <String>['d', 'a.mp4'],
+          name: 'a.mp4',
+          parentPath: 'd',
+          durationMs: 60000,
+        ),
+        VirtualSegment(
+          mediaKey: 'st1:d/b.mp4',
+          storageId: 'st1',
+          path: <String>['d', 'b.mp4'],
+          name: 'b.mp4',
+          parentPath: 'd',
+          durationMs: 30000,
+          cutRange: VmCutRange(
+            planPath: 'b.llc',
+            keeps: <VmCutKeep>[
+              VmCutKeep(sourceStartMs: 0, durationMs: 30000),
+            ],
+          ),
+        ),
+        VirtualSegment(
+          mediaKey: 'st1:d/c.mp4',
+          storageId: 'st1',
+          path: <String>['d', 'c.mp4'],
+          name: 'c.mp4',
+          parentPath: 'd',
+          durationMs: 60000,
+        ),
+      ],
+    );
+    final VmStreamGroups groups = VmStreamGroups(
+      byKey: <String, VirtualMediaItem>{'st1:d/b.mp4': cutItem},
+      inOrder: <VirtualMediaItem>[cutItem],
+    );
+
+    final bool ok =
+        await VirtualMediaController.instance.resegmentLiveFromGroups(groups);
+    final ctrl = VirtualMediaController.instance;
+    expect(ok, isTrue);
+    expect(ctrl.state.item?.totalDurationMs, 150000);
+    expect(ctrl.state.segmentIndex, 1);
+    expect(ctrl.currentSegmentOrNull?.cutRange?.planPath, 'b.llc');
+    expect(
+      ctrl.translatePosition(const Duration(seconds: 3)),
+      const Duration(seconds: 63),
+    );
+  });
+
+  test('leaves the merge when the live file is no longer mergeable', () async {
+    await playSingle('b.mp4');
+    await VirtualMediaController.instance.adoptLiveSession(
+      queue: [_item()],
+      queueIndex: 0,
+      segmentIndex: 1,
+      localMs: 12000,
+    );
+
+    final bool ok = await VirtualMediaController.instance
+        .resegmentLiveFromGroups(const VmStreamGroups(byKey: {}, inOrder: []));
+
+    expect(ok, isFalse);
+    expect(VirtualMediaController.instance.isActive, isFalse);
+    expect(VirtualMediaController.instance.state.item, isNull);
   });
 }

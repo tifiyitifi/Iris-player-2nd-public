@@ -1,9 +1,9 @@
 # 0015 - A fake cut excludes by sibling project file
 
 - Date: 2026-11-21
-- Status: accepted
+- Status: superseded
 - Private history: `1b0b2f50`
-- Superseded by: none
+- Superseded by: 0031
 
 ## Context
 

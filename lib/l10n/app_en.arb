@@ -910,7 +910,7 @@
   "set_identity_entries_desc": "Create home-screen shortcuts with a custom icon and name, optionally bound to a scenario + tag",
   "set_auto_resize_desc": "Auto-resize window to video aspect (desktop only; not in fullscreen/maximized; portable build defaults on)",
   "set_playlist_panel_mode_desc": "Side: docked right next to video (draggable 240-600px); Floating: centered popup. Long-press list or button to switch anytime",
-  "set_side_fullscreen_behavior_desc": "In picture fullscreen (Enter), keep the side queue docked (Keep panel) or leave it hidden and summon it by hovering the right edge (Hide panel). Window fullscreen and floating mode are unaffected",
+  "set_side_fullscreen_behavior_desc": "In picture fullscreen (Enter), start with the side queue revealed (Keep panel) or hidden and summonable from the right edge (Hide panel). Either way that is only the initial state: moving the pointer off the panel, clicking the picture or pressing Esc hides it again. Window fullscreen and floating mode are unaffected",
   "set_fs_edge_reveal_width": "Fullscreen hover zone width",
   "set_fs_edge_reveal_width_desc": "Width of the right-edge hover strip that reveals the side queue in picture fullscreen, as a percentage of the screen (0-50%; 0 disables hover summoning). Moving the pointer off the panel +5px hides it again",
   "set_fs_isolation_side": "Side panel: isolation zone",
@@ -1271,6 +1271,39 @@
   "vm_dir_help_body": "• No rule covers this video: a rule is created from the default config and enabled.\n• A rule already covers it: its use / not-use state is toggled.\n• If a recursive rule above covers this folder, only this direct folder is excluded; the parent and subfolders are unchanged.\n• Non-recursive rules win on conflict, and only one non-recursive rule per folder can be enabled.",
   "vm_dir_no_current": "No video is playing right now.",
   "vm_dir_no_folder": "This file has no folder (single document pick).",
+  "vm_dir_paused_banner": "Virtual Merge is paused; rule changes do not take effect yet.",
+  "vm_dir_result_paused": "Saved. Virtual Merge is still paused, so this applies once the switch is on.",
+  "vm_dir_result_next_feed": "Saved. The current video keeps playing as a single file; this takes effect on the next play.",
+  "vm_dir_action_failed": "Could not update the folder rules. Nothing was changed.",
+  "vm_dir_master_save_failed": "The folder rule was saved, but the master switch could not be turned on. Turn it on in the manager.",
+  "vm_master_off_title": "Virtual Merge is paused",
+  "vm_master_off_intro_others": "Turning the switch on also resumes the other {count} enabled rules, which may merge other folders right away.",
+  "@vm_master_off_intro_others": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_intro_none": "Turning the switch on is required for this folder to take effect.",
+  "vm_master_off_keep_only": "Keep only this folder's rule",
+  "vm_master_off_keep_only_hint": "Disables the other {count} rules first; re-enable them in the manager",
+  "@vm_master_off_keep_only_hint": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_keep_only_hint_none": "No other rule is enabled; just turn the switch on",
+  "vm_master_off_enable_all": "Turn the switch on",
+  "vm_master_off_enable_all_hint": "The other enabled rules resume as well",
+  "vm_master_off_cancel": "Cancel this change",
+  "vm_master_off_cancel_hint": "Neither the switch nor any rule is changed",
+  "vm_master_off_details_title": "What each option does",
+  "vm_master_off_details_body": "• The master switch powers every rule: while it is off, rules are still saved but merging is paused, so the button label changes while lists and playback do not.\n• A non-recursive folder rule outranks every recursive rule, so setting this folder to use overrides a recursive rule above it.\n• \"Keep only this folder's rule\" disables the other {count} enabled rules, then turns the switch on; re-enable them in the manager.\n• \"Turn the switch on\" leaves the other rules alone, so they resume too.\n• \"Cancel this change\" leaves the switch and every rule untouched.",
+  "@vm_master_off_details_body": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "vm_master_off_details_body_none": "• The master switch powers every rule: while it is off, rules are still saved but merging is paused, so the button label changes while lists and playback do not.\n• A non-recursive folder rule outranks every recursive rule, so setting this folder to use overrides a recursive rule above it.\n• No other rule is enabled, so \"keep only this folder's rule\" is not selectable.\n• \"Turn the switch on\" resumes merging for this folder.\n• \"Cancel this change\" leaves the switch and every rule untouched.",
   "vm_editor_use_mode": "Virtual Merge",
   "vm_editor_use_mode_use": "Use (merge this folder)",
   "vm_editor_use_mode_not_use": "Do not use (exclude this folder)",
@@ -1983,6 +2016,28 @@
   "menu_side_panel_desc": "One place for the sideway panel, dial ring and circle arc",
   "menu_frame_tools": "Frame tools",
   "menu_screenshot": "Capture current frame",
+  "menu_video_transform": "Picture adjustment",
+  "video_transform_panel_title": "Picture adjustment",
+  "video_transform_session_hint": "Session only — resets when the video changes.",
+  "video_transform_orientation": "Orientation",
+  "video_transform_rotation": "Rotation",
+  "video_transform_flip_horizontal": "Mirror horizontally",
+  "video_transform_flip_vertical": "Mirror vertically",
+  "video_transform_color": "Picture",
+  "video_transform_brightness": "Brightness",
+  "video_transform_contrast": "Contrast",
+  "video_transform_saturation": "Saturation",
+  "video_transform_rotate_0": "0°",
+  "video_transform_rotate_90": "90°",
+  "video_transform_rotate_180": "180°",
+  "video_transform_rotate_270": "270°",
+  "video_transform_reset_all": "Reset all",
+  "video_transform_reset_item": "Reset {label}",
+  "@video_transform_reset_item": {
+    "placeholders": {
+      "label": {"type": "String"}
+    }
+  },
   "menu_fine_tune": "Fine tune range: ±{sec}s",
   "@menu_fine_tune": {
     "placeholders": {
@@ -3869,7 +3924,8 @@
   "fake_cut_blocked_storage": "Virtual cut only supports local files",
   "fake_cut_blocked_not_video": "Virtual cut only applies to video",
   "fake_cut_bg_pause_notice": "Enabling virtual cut pauses Sub Audio for this video; it resumes when you leave.",
-  "fake_cut_vm_merged_notice": "This video is playing as a virtual merge; the virtual cut applies when it plays on its own.",
+  "fake_cut_vm_merged_notice": "This video is playing as a virtual merge; its virtual cut applies when this file plays as a merged segment.",
+  "fake_cut_vm_cut_merged_notice": "This video is playing as a virtual merge and its virtual cut is active in it.",
   "fake_cut_sync_title": "Choose the sync point",
   "fake_cut_sync_body": "The saved position ({position}) appears in several ranges of this cut.",
   "@fake_cut_sync_body": {

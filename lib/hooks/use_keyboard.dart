@@ -257,12 +257,14 @@ KeyboardEvent useKeyboard({
                 isFullScreen: playerUiState.isFullScreen,
                 legacyStorage: app.useLegacyStoragePersistence,
               )) {
-                // Pin toggles on the pin state alone: hovering (peek) + P
-                // pins it open instead of dismissing it.
-                final bool pinned =
-                    usePlayerUiStore().state.isFullscreenDockPinned;
-                usePlayerUiStore().updateIsFullscreenDockPeeking(false);
-                usePlayerUiStore().updateIsFullscreenDockPinned(!pinned);
+                // Transient toggle (see `openPlayQueueFromControlBar`): the
+                // panel conceals on a pointer leave, a picture click or Esc.
+                final ui = usePlayerUiStore();
+                if (ui.isFullscreenDockShown) {
+                  ui.hideFullscreenDock();
+                } else {
+                  ui.showFullscreenDock();
+                }
               } else {
                 await useAppStore().togglePlaylistPanelVisible();
               }
@@ -295,12 +297,11 @@ KeyboardEvent useKeyboard({
         case LogicalKeyboardKey.escape:
           if (isDesktop) {
             final app = useAppStore().state;
-            // Picture-fullscreen overlay first: close the (pinned or peeked)
-            // panel before leaving fullscreen.
-            final ui = usePlayerUiStore().state;
-            if (ui.isFullscreenDockPinned || ui.isFullscreenDockPeeking) {
-              usePlayerUiStore().updateIsFullscreenDockPinned(false);
-              usePlayerUiStore().updateIsFullscreenDockPeeking(false);
+            // Picture-fullscreen overlay first: close the (revealed) panel
+            // before leaving fullscreen.
+            final ui = usePlayerUiStore();
+            if (ui.isFullscreenDockShown) {
+              ui.hideFullscreenDock();
               break;
             }
             final isDockVisible = app.useMetadataSettings &&

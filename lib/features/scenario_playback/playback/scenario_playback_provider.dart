@@ -82,12 +82,13 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
   /// falling back to segment 0) or the group was deemed infeasible and the
   /// merged row degraded to ordinary single-file play.
   Future<VmStreamGroups> _vmGroupsForKey(
-      String scenarioId, String storageId, String path) async {
+      String scenarioId, String storageId, String path,
+      {bool forceRefresh = false}) async {
     final entryKey = canonicalKey(storageId, path);
     final signature = await _currentSignature();
-    var forceRefresh = false;
+    var mustRefresh = forceRefresh;
     final cached = _vmGroupsCache;
-    if (cached != null && cached.scenarioId == scenarioId) {
+    if (!mustRefresh && cached != null && cached.scenarioId == scenarioId) {
       final action = vmGroupsCacheAction(
         cachedSignature: cached.signature,
         currentSignature: signature,
@@ -99,12 +100,12 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
       // The provider cache missed but the resolver's signature-keyed cache
       // would still serve the same stale groups (its signature agrees with
       // ours), so the refresh must be forced explicitly.
-      forceRefresh = true;
+      mustRefresh = true;
     }
     final groups = await _store.resolver.resolveVmGroupsFor(
       scenarioId,
       playbackVersion: _store.state.playbackVersion,
-      forceRefresh: forceRefresh,
+      forceRefresh: mustRefresh,
     );
     _vmGroupsCache =
         _VmGroupsCache(scenarioId: scenarioId, signature: signature, groups: groups);
@@ -431,6 +432,25 @@ class ScenarioPlaybackProvider implements PlaybackProvider {
     // no-tag bookmark only when a tag view takes over the context — see
     // [captureCurrentVirtualSegment] via the tag controller's outgoing capture.
     return true;
+  }
+
+  /// Fresh merge groups for the file the LIVE VM session is on.
+  ///
+  /// Used after a 虚拟剪播 plan change (ADR 0032): the caller re-segments the
+  /// session from these so its durations match the newly active plan (or the
+  /// source, when the cut was closed).
+  Future<VmStreamGroups> vmGroupsForLiveSegment({bool forceRefresh = false}) async {
+    final scenarioId = _store.state.activeScenarioId;
+    final seg = VirtualMediaController.instance.currentSegmentOrNull;
+    if (scenarioId == null || seg == null) {
+      return const VmStreamGroups(byKey: {}, inOrder: []);
+    }
+    return _vmGroupsForKey(
+      scenarioId,
+      seg.storageId,
+      canonicalPath(seg.path.join('/')),
+      forceRefresh: forceRefresh,
+    );
   }
 
   /// Binds the file that is ALREADY playing to its merged group (a rule change

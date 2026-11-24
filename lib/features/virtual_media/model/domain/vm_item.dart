@@ -24,6 +24,149 @@ int clampVmLocalMs(
   return localMs.clamp(0, maxMs);
 }
 
+/// One kept source range of a 虚拟剪播 plan, on the SOURCE timeline.
+class VmCutKeep {
+  const VmCutKeep({required this.sourceStartMs, required this.durationMs});
+
+  /// First source millisecond this keep plays.
+  final int sourceStartMs;
+
+  /// Length of the kept range.
+  final int durationMs;
+
+  @override
+  bool operator ==(Object other) =>
+      other is VmCutKeep &&
+      other.sourceStartMs == sourceStartMs &&
+      other.durationMs == durationMs;
+
+  @override
+  int get hashCode => Object.hash(sourceStartMs, durationMs);
+
+  @override
+  String toString() => 'VmCutKeep($sourceStartMs+$durationMs)';
+}
+
+/// The kept ranges of a 虚拟剪播 plan, in PLAN order (never sorted, never
+/// de-duplicated) — a LosslessCut project may reorder, repeat or overlap ranges.
+///
+/// WHY a plan and not one range: a merge segment is opened as ONE EDL whose
+/// timeline is the CONCATENATION of the kept ranges, and its local offset is a
+/// position on that cut timeline. Mapping therefore walks the ordered ranges:
+/// cut → source picks the range the position falls in, while source → cut picks
+/// the FIRST range that plays that source point (ADR 0037) — a repeated or
+/// overlapping range legitimately has several hits, and playback resumes from
+/// the earliest one without a prompt (auto-advance must not block on a dialog).
+///
+/// This mirrors `FakeCutTimeline`, the mapping the standalone cut playback uses,
+/// so a merged segment and a standalone open agree column for column.
+class VmCutRange {
+  const VmCutRange({
+    required this.planPath,
+    this.planSignature = '',
+    required this.keeps,
+  });
+
+  /// Convenience for the overwhelmingly common one-range plan.
+  factory VmCutRange.single({
+    required String planPath,
+    String planSignature = '',
+    required int sourceStartMs,
+    required int durationMs,
+  }) =>
+      VmCutRange(
+        planPath: planPath,
+        planSignature: planSignature,
+        keeps: <VmCutKeep>[
+          VmCutKeep(sourceStartMs: sourceStartMs, durationMs: durationMs),
+        ],
+      );
+
+  /// Absolute `.llc` path the group resolved. The player opens THIS plan, so
+  /// the displayed duration and the played EDL can never describe two plans
+  /// (ADR 0032).
+  final String planPath;
+
+  /// Content signature of the plan this range was built from
+  /// (`fakeCutPlanSignature`). The player compares it with the signature of the
+  /// plan it actually opened, so an edit on disk requests one live re-derive
+  /// (ADR 0034). Deliberately NOT part of [==]: path + geometry identify the
+  /// range, the signature is advisory freshness.
+  final String planSignature;
+
+  /// Kept ranges in plan order.
+  final List<VmCutKeep> keeps;
+
+  /// Total cut length (the segment's playback duration).
+  int get durationMs {
+    var total = 0;
+    for (final VmCutKeep keep in keeps) {
+      total += keep.durationMs;
+    }
+    return total;
+  }
+
+  /// First kept source millisecond (display/back-compat; the plan may keep more).
+  int get sourceStartMs =>
+      keeps.isEmpty ? 0 : keeps.first.sourceStartMs;
+
+  /// Cut position → source position (what `media_nodes` stores).
+  ///
+  /// Clamps like `FakeCutTimeline`: before the head → the first keep's start;
+  /// at/after the tail → the last keep's end (mpv reports a tail seek that way).
+  int toSourceMs(int cutMs) {
+    if (keeps.isEmpty) return 0;
+    if (cutMs <= 0) return keeps.first.sourceStartMs;
+    var acc = 0;
+    for (final VmCutKeep keep in keeps) {
+      if (cutMs < acc + keep.durationMs) {
+        return keep.sourceStartMs + (cutMs - acc);
+      }
+      acc += keep.durationMs;
+    }
+    final VmCutKeep last = keeps.last;
+    return last.sourceStartMs + last.durationMs;
+  }
+
+  /// Source position → cut position, or null when the source point was cut
+  /// away (the caller then treats it as "from head").
+  ///
+  /// FIRST hit in plan order: a repeated/overlapping range has several hits and
+  /// the earliest is the deterministic resume point (ADR 0037).
+  int? toCutMs(int sourceMs) {
+    var acc = 0;
+    for (final VmCutKeep keep in keeps) {
+      if (sourceMs >= keep.sourceStartMs &&
+          sourceMs < keep.sourceStartMs + keep.durationMs) {
+        return acc + (sourceMs - keep.sourceStartMs);
+      }
+      acc += keep.durationMs;
+    }
+    return null;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is VmCutRange &&
+      other.planPath == planPath &&
+      other.keeps.length == keeps.length &&
+      _sameKeeps(other.keeps);
+
+  bool _sameKeeps(List<VmCutKeep> other) {
+    for (var i = 0; i < keeps.length; i++) {
+      if (other[i] != keeps[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(planPath, Object.hashAll(keeps));
+
+  @override
+  String toString() => 'VmCutRange($planPath, keeps=[${keeps.join(', ')}], '
+      'dur=$durationMs, sig=$planSignature)';
+}
+
 /// One physical video inside a Virtual Merge item.
 class VirtualSegment {
   /// Canonical media key `storageId:path` (the system-wide identity used by
@@ -67,6 +210,11 @@ class VirtualSegment {
   /// first one. Tag views deduplicate, so their segments are always 0.
   final int occurrenceIndex;
 
+  /// Non-null when this segment plays a 虚拟剪播 plan instead of the whole
+  /// source. [durationMs] is then the plan's total CUT length and every local
+  /// offset is a position on the concatenated cut timeline (see ADR 0037).
+  final VmCutRange? cutRange;
+
   const VirtualSegment({
     required this.mediaKey,
     required this.storageId,
@@ -80,6 +228,7 @@ class VirtualSegment {
     this.sizeInBytes,
     this.durationEstimated = false,
     this.occurrenceIndex = 0,
+    this.cutRange,
   });
 
   @override
@@ -97,6 +246,7 @@ class VirtualSegment {
           other.sizeInBytes == sizeInBytes &&
           other.durationEstimated == durationEstimated &&
           other.occurrenceIndex == occurrenceIndex &&
+          other.cutRange == cutRange &&
           _pathsEqual(other.path, path);
 
   @override
@@ -112,6 +262,7 @@ class VirtualSegment {
         sizeInBytes,
         durationEstimated,
         occurrenceIndex,
+        cutRange,
         Object.hashAll(path),
       );
 
@@ -141,6 +292,33 @@ class VirtualSegment {
       sizeInBytes: sizeInBytes,
       durationEstimated: durationEstimated,
       occurrenceIndex: occurrenceIndex,
+      cutRange: cutRange,
+    );
+  }
+
+  /// Returns a copy that plays [cut] (or the whole source when null). A cut's
+  /// length becomes the segment duration, matching the runtime derivation.
+  ///
+  /// When [cut] is null the SOURCE duration is restored from [sourceDurationMs].
+  /// Passing it is required to undo a cut on a receiver that already carries
+  /// one (its [durationMs] is then the CUT length, not the source). On a fresh
+  /// DB segment the current duration is already the source, so the argument is
+  /// optional and the historical behaviour is preserved when omitted.
+  VirtualSegment withCutRange(VmCutRange? cut, {int? sourceDurationMs}) {
+    return VirtualSegment(
+      mediaKey: mediaKey,
+      storageId: storageId,
+      path: path,
+      name: name,
+      parentPath: parentPath,
+      uri: uri,
+      durationMs: cut?.durationMs ?? sourceDurationMs ?? durationMs,
+      width: width,
+      height: height,
+      sizeInBytes: sizeInBytes,
+      durationEstimated: durationEstimated,
+      occurrenceIndex: occurrenceIndex,
+      cutRange: cut,
     );
   }
 }
